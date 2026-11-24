@@ -1,0 +1,377 @@
+import React from 'react';
+import { Printer, X } from 'lucide-react';
+import { buildZatcaTlvBase64 } from '../utils/zatca';
+import { CompanySettings, Invoice, Quotation, ReturnRecord, Voucher } from '../types/erp';
+import { QrMatrix } from './QrMatrix';
+
+interface PrintPreviewProps {
+  invoice?: Invoice | null;
+  voucher?: Voucher | null;
+  returnRecord?: ReturnRecord | null;
+  quotation?: Quotation | null;
+  company: CompanySettings;
+  onClose: () => void;
+}
+
+export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
+  invoice,
+  voucher,
+  returnRecord,
+  quotation,
+  company,
+  onClose,
+}) => {
+  if (!invoice && !voucher && !returnRecord && !quotation) return null;
+
+  const isAr = company.isArabic;
+
+  const docTitle = invoice
+    ? 'TAX INVOICE'
+    : returnRecord
+    ? isAr
+      ? 'إشعار دائن / CREDIT NOTE'
+      : 'CREDIT NOTE'
+    : quotation
+    ? isAr
+      ? 'عرض سعر / QUOTATION'
+      : 'QUOTATION'
+    : voucher?.type === 'receipt'
+    ? 'RECEIPT VOUCHER'
+    : 'PAYMENT VOUCHER';
+
+  const docId = invoice?.id ?? returnRecord?.id ?? quotation?.id ?? voucher?.id ?? '';
+  const docDate = invoice?.date ?? returnRecord?.date ?? quotation?.date ?? voucher?.date ?? '';
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+      <div className="bg-white text-slate-900 rounded-[20px] max-w-2xl w-full shadow-2xl overflow-hidden border border-slate-200 my-auto">
+        <div className="no-print flex items-center justify-between px-5 py-3.5 bg-[#0A3D2C] text-white">
+          <span className="font-bold text-sm">
+            {docTitle} · {docId}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => window.print()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#C9A227] text-slate-950 font-bold text-xs hover:opacity-90 cursor-pointer"
+            >
+              <Printer className="w-4 h-4" />
+              <span>{isAr ? 'طباعة / حفظ PDF' : 'Print / Save PDF'}</span>
+            </button>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg hover:bg-white/10 cursor-pointer"
+              aria-label="Close"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="p-6 sm:p-8 space-y-6 text-sm" dir={isAr ? 'rtl' : 'ltr'}>
+          {/* Company Header */}
+          <div className="bg-[#0A3D2C] text-white p-5 rounded-2xl flex flex-col sm:flex-row justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-extrabold">{company.companyName}</h2>
+              <p className="text-xs text-white/80 mt-1 tabular-nums">
+                VAT: {company.taxNumber} · CR: {company.crNumber}
+              </p>
+              <p className="text-xs text-white/80">
+                {company.phone} · {company.email}
+              </p>
+              <p className="text-xs text-white/75">{company.address}</p>
+            </div>
+            <div className={isAr ? 'sm:text-left' : 'sm:text-right'}>
+              <p className="text-[#C9A227] text-lg font-extrabold tracking-wide">{docTitle}</p>
+              <p className="font-mono text-xs mt-1">{docId}</p>
+              <p className="font-mono text-xs text-white/75">
+                {new Date(docDate).toLocaleDateString()}
+              </p>
+              {quotation && (
+                <p className="font-mono text-xs text-[#F4D573] mt-1">
+                  {isAr ? 'صالح حتى:' : 'Valid Until:'} {quotation.validUntil}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* TAX INVOICE */}
+          {invoice && (
+            <>
+              <div className="flex flex-col sm:flex-row justify-between items-start gap-4 border border-slate-200 rounded-xl p-4">
+                <div>
+                  <p className="text-xs font-bold text-slate-500">
+                    {isAr ? 'فاتورة إلى / BILL TO' : 'BILL TO'}
+                  </p>
+                  <p className="text-base font-extrabold mt-1">{invoice.customerName}</p>
+                  <p className="text-xs text-slate-600 font-mono mt-0.5">{invoice.customerPhone}</p>
+                  <p className="text-xs text-slate-600 mt-0.5 uppercase">Status: {invoice.status}</p>
+                </div>
+                <QrMatrix
+                  data={buildZatcaTlvBase64(
+                    company.companyName,
+                    company.taxNumber,
+                    invoice.date,
+                    invoice.total.toFixed(2),
+                    invoice.vat.toFixed(2),
+                  )}
+                />
+              </div>
+
+              {(() => {
+                const effRate =
+                  invoice.taxRate ??
+                  (invoice.subtotal > 0
+                    ? Number(((invoice.vat / invoice.subtotal) * 100).toFixed(1))
+                    : company.defaultSalesTaxRate ?? 15);
+                return (
+                  <>
+                    <table className="w-full border-collapse text-xs sm:text-sm">
+                      <thead>
+                        <tr className="bg-[#0A3D2C] text-white">
+                          <th className="p-2.5 text-start">{isAr ? 'البيان' : 'Description'}</th>
+                          <th className="p-2.5 text-end">{isAr ? 'المبلغ' : 'Subtotal'}</th>
+                          <th className="p-2.5 text-end">{isAr ? `ضريبة ${effRate}%` : `VAT ${effRate}%`}</th>
+                          <th className="p-2.5 text-end">{isAr ? 'الإجمالي' : 'Total'}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {invoice.items && invoice.items.length > 0 ? (
+                          invoice.items.map((it, idx) => {
+                            const itemVat = (it.total * effRate) / 100;
+                            return (
+                              <tr key={idx} className="border-b border-slate-200">
+                                <td className="p-3">
+                                  {it.productName} × {it.qty}
+                                </td>
+                                <td className="p-3 text-end font-mono tabular-nums">{it.total.toFixed(2)}</td>
+                                <td className="p-3 text-end font-mono tabular-nums">
+                                  {itemVat.toFixed(2)}
+                                </td>
+                                <td className="p-3 text-end font-mono font-bold tabular-nums">
+                                  {(it.total + itemVat).toFixed(2)} {company.currency}
+                                </td>
+                              </tr>
+                            );
+                          })
+                        ) : (
+                          <tr className="border-b border-slate-200">
+                            <td className="p-3">{invoice.description || 'Accounting & Supply Services'}</td>
+                            <td className="p-3 text-end font-mono tabular-nums">{invoice.subtotal.toFixed(2)}</td>
+                            <td className="p-3 text-end font-mono tabular-nums">{invoice.vat.toFixed(2)}</td>
+                            <td className="p-3 text-end font-mono font-bold tabular-nums">
+                              {invoice.total.toFixed(2)} {company.currency}
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+
+                    <div className="flex justify-end">
+                      <div className="w-full sm:w-64 bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2">
+                        <div className="flex justify-between text-xs">
+                          <span>{isAr ? 'المجموع الفرعي' : 'Subtotal'}</span>
+                          <span className="font-mono tabular-nums">
+                            {invoice.subtotal.toFixed(2)} {company.currency}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-xs">
+                          <span>{isAr ? `ضريبة القيمة المضافة ${effRate}%` : `VAT ${effRate}%`}</span>
+                          <span className="font-mono tabular-nums">
+                            {invoice.vat.toFixed(2)} {company.currency}
+                          </span>
+                        </div>
+                        <div className="border-t border-slate-300 pt-2 flex justify-between font-extrabold text-sm text-[#0A3D2C]">
+                          <span>{isAr ? 'الإجمالي المستحق' : 'TOTAL'}</span>
+                          <span className="font-mono tabular-nums">
+                            {invoice.total.toFixed(2)} {company.currency}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
+            </>
+          )}
+
+          {/* CREDIT NOTE (RETURN RECORD) */}
+          {returnRecord && (
+            <>
+              <div className="flex flex-col sm:flex-row justify-between items-start gap-4 border border-slate-200 rounded-xl p-4">
+                <div>
+                  <p className="text-xs font-bold text-slate-500">
+                    {returnRecord.type === 'sales'
+                      ? isAr
+                        ? 'إشعار دائن للعميل / CREDIT NOTE TO'
+                        : 'CREDIT NOTE TO'
+                      : isAr
+                      ? 'إشعار مرتجع للمورد / DEBIT NOTE TO'
+                      : 'PURCHASE RETURN TO'}
+                  </p>
+                  <p className="text-base font-extrabold mt-1">{returnRecord.partyName}</p>
+                  <p className="text-xs text-slate-600 font-mono mt-0.5">
+                    {isAr ? 'المرجع الأصلي:' : 'Original Doc:'} {returnRecord.originalDocId}
+                  </p>
+                  <p className="text-xs text-slate-600 mt-0.5">
+                    {isAr ? 'السبب:' : 'Reason:'} {returnRecord.reason}
+                  </p>
+                </div>
+                <QrMatrix
+                  data={buildZatcaTlvBase64(
+                    company.companyName,
+                    company.taxNumber,
+                    returnRecord.date,
+                    returnRecord.amount.toFixed(2),
+                    (returnRecord.amount * 0.15 / 1.15).toFixed(2),
+                  )}
+                />
+              </div>
+
+              <table className="w-full border-collapse text-xs sm:text-sm">
+                <thead>
+                  <tr className="bg-[#0A3D2C] text-white">
+                    <th className="p-2.5 text-start">{isAr ? 'الصنف المرتجع' : 'Returned Item'}</th>
+                    <th className="p-2.5 text-end">{isAr ? 'الكمية' : 'Qty'}</th>
+                    <th className="p-2.5 text-end">{isAr ? 'سعر الوحدة' : 'Unit Price'}</th>
+                    <th className="p-2.5 text-end">{isAr ? 'المبلغ الإجمالي' : 'Credit Total'}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="border-b border-slate-200">
+                    <td className="p-3">{returnRecord.productName}</td>
+                    <td className="p-3 text-end font-mono tabular-nums">{returnRecord.qty}</td>
+                    <td className="p-3 text-end font-mono tabular-nums">{returnRecord.unitPrice.toFixed(2)}</td>
+                    <td className="p-3 text-end font-mono font-bold tabular-nums">
+                      {returnRecord.amount.toFixed(2)} {company.currency}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              {returnRecord.notes && (
+                <p className="text-xs bg-slate-50 border border-slate-200 rounded-xl p-3">
+                  {isAr ? 'ملاحظات:' : 'Notes:'} {returnRecord.notes}
+                </p>
+              )}
+            </>
+          )}
+
+          {/* QUOTATION */}
+          {quotation && (
+            <>
+              <div className="flex flex-col sm:flex-row justify-between items-start gap-4 border border-slate-200 rounded-xl p-4">
+                <div>
+                  <p className="text-xs font-bold text-slate-500">
+                    {isAr ? 'عرض سعر مقدم إلى:' : 'QUOTATION FOR:'}
+                  </p>
+                  <p className="text-base font-extrabold mt-1">{quotation.customerName}</p>
+                  <p className="text-xs text-slate-600 font-mono">{quotation.customerPhone} · {quotation.customerEmail}</p>
+                </div>
+                <div className="text-xs font-mono">
+                  <p className="font-bold text-[#0A3D2C]">{isAr ? 'صالح حتى:' : 'Valid Until:'} {quotation.validUntil}</p>
+                  <p className="uppercase mt-1">{quotation.status}</p>
+                </div>
+              </div>
+
+              <table className="w-full border-collapse text-xs sm:text-sm">
+                <thead>
+                  <tr className="bg-[#0A3D2C] text-white">
+                    <th className="p-2.5 text-start">{isAr ? 'الصنف' : 'Item'}</th>
+                    <th className="p-2.5 text-end">{isAr ? 'الكمية' : 'Qty'}</th>
+                    <th className="p-2.5 text-end">{isAr ? 'السعر' : 'Unit Price'}</th>
+                    <th className="p-2.5 text-end">{isAr ? 'الإجمالي' : 'Total'}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {quotation.items.map((it, idx) => (
+                    <tr key={idx} className="border-b border-slate-200">
+                      <td className="p-3">{it.productName}</td>
+                      <td className="p-3 text-end font-mono tabular-nums">{it.qty}</td>
+                      <td className="p-3 text-end font-mono tabular-nums">{it.unitPrice.toFixed(2)}</td>
+                      <td className="p-3 text-end font-mono font-bold tabular-nums">{it.total.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <div className="flex justify-end">
+                <div className="w-full sm:w-64 bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <span>{isAr ? 'المجموع الفرعي' : 'Subtotal'}</span>
+                    <span className="font-mono tabular-nums">{quotation.subtotal.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>{isAr ? `الخصم (${quotation.discountPercent}%)` : `Discount (${quotation.discountPercent}%)`}</span>
+                    <span className="font-mono tabular-nums">-{quotation.discountAmount.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>{isAr ? 'ضريبة 15%' : 'VAT 15%'}</span>
+                    <span className="font-mono tabular-nums">{quotation.vat.toFixed(2)}</span>
+                  </div>
+                  <div className="border-t border-slate-300 pt-2 flex justify-between font-extrabold text-sm text-[#0A3D2C]">
+                    <span>{isAr ? 'الإجمالي' : 'TOTAL'}</span>
+                    <span className="font-mono tabular-nums">{quotation.total.toFixed(2)} {company.currency}</span>
+                  </div>
+                </div>
+              </div>
+              {quotation.notes && (
+                <p className="text-xs bg-slate-50 border border-slate-200 rounded-xl p-3">
+                  {isAr ? 'شروط وملاحظات:' : 'Terms & Notes:'} {quotation.notes}
+                </p>
+              )}
+            </>
+          )}
+
+          {/* VOUCHER */}
+          {voucher && (
+            <div className="space-y-5">
+              <div className="border-2 border-[#C9A227] rounded-2xl p-6 text-center bg-amber-50/40">
+                <p className="text-xs text-slate-500 font-semibold">
+                  {voucher.type === 'receipt'
+                    ? isAr
+                      ? 'مبلغ سند القبض'
+                      : 'RECEIPT AMOUNT'
+                    : isAr
+                    ? 'مبلغ سند الصرف'
+                    : 'PAYMENT AMOUNT'}
+                </p>
+                <p className="text-3xl font-extrabold text-[#0A3D2C] font-mono tabular-nums mt-1">
+                  {voucher.amount.toFixed(2)} {company.currency}
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-xs bg-slate-50 p-4 rounded-xl border border-slate-200">
+                <div>
+                  <span className="text-slate-500">{isAr ? 'الطرف:' : 'Party:'}</span>
+                  <p className="font-bold text-sm mt-0.5">{voucher.partyName}</p>
+                </div>
+                <div>
+                  <span className="text-slate-500">{isAr ? 'طريقة الدفع:' : 'Method:'}</span>
+                  <p className="font-bold text-sm mt-0.5">{voucher.paymentMethod}</p>
+                </div>
+                <div className="col-span-2">
+                  <span className="text-slate-500">{isAr ? 'البيان:' : 'Reason:'}</span>
+                  <p className="font-bold text-sm mt-0.5">{voucher.reason}</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Signatures + ZATCA Footer */}
+          <div className="pt-6 grid grid-cols-2 gap-8 text-center text-xs text-slate-600">
+            <div>
+              <div className="border-b border-slate-400 h-8 mb-2" />
+              <span>{isAr ? 'توقيع المحاسب / الإدارة' : 'Authorized Signature'}</span>
+            </div>
+            <div>
+              <div className="border-b border-slate-400 h-8 mb-2" />
+              <span>{isAr ? 'توقيع المستلم / العميل' : 'Recipient Signature'}</span>
+            </div>
+          </div>
+
+          <div className="border-t-2 border-[#C9A227] pt-3 text-center text-[11px] text-slate-500">
+            ZATCA Phase-1 Compliant E-Invoice · Generated by Ostora Systems (com.ostora.accounting)
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};

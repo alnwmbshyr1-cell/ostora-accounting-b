@@ -1,0 +1,33 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group android:scaleX="0.62"
+        android:scaleY="0.62"
+        android:translateX="20.52"
+        android:translateY="20.52">
+        <!-- Gold Shield Outline (#C9A227) -->
+        <path
+            android:fillColor="#00000000"
+            android:strokeColor="#C9A227"
+            android:strokeWidth="5.5"
+            android:strokeLineJoin="round"
+            android:pathData="M54,10 L90,23 L90,52 C90,74 74,90 54,98 C34,90 18,74 18,52 L18,23 Z" />
+        <!-- Ledger Column Bars -->
+        <path
+            android:fillColor="#C9A227"
+            android:pathData="M42,36 H66 V42 H42 Z M44,46 H50 V72 H44 Z M51,46 H57 V75 H51 Z M58,46 H64 V68 H58 Z" />
+        <!-- Upward Growth Arrow -->
+        <path
+            android:fillColor="#00000000"
+            android:strokeColor="#F4D573"
+            android:strokeWidth="4.5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:pathData="M30,68 L48,54 L57,61 L77,41" />
+        <path
+            android:fillColor="#F4D573"
+            android:pathData="M79,39 L67,40 L76,50 Z" />
+    </group>
+</vector>

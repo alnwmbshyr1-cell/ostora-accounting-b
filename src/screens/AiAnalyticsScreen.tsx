@@ -1,0 +1,136 @@
+import React from 'react';
+import { HealthScoreRing } from '../components/QrMatrix';
+import { strings } from '../data/translations';
+import { ScreenProps } from './types';
+
+export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) => {
+  const { state, metrics, actions } = store;
+  const isAr = state.settings.isArabic;
+  const cur = state.settings.currency;
+  const t = strings[isAr ? 'ar' : 'en'];
+
+  const baseSales = metrics.totalSales;
+  const goal = state.settings.monthlySalesGoal || 120000;
+  const progress = Math.min(100, Math.round((baseSales / Math.max(1, goal)) * 100));
+  const cashRunwayMonths =
+    metrics.totalExpenses > 0 ? (metrics.totalCashAndBanks / metrics.totalExpenses).toFixed(1) : '—';
+  const collectionRatio =
+    metrics.totalSales > 0
+      ? Math.max(0, Math.round(((metrics.totalSales - metrics.customerDebt) / metrics.totalSales) * 100))
+      : 100;
+  const forecastBase = baseSales > 0 ? baseSales : 10000;
+  const points = Array.from({ length: 6 }, (_, i) => ({
+    label: `M${i + 1}`,
+    value: Math.round(forecastBase * (1 + (i + 1) * 0.085)),
+  }));
+  const maxVal = Math.max(...points.map((p) => p.value), 1);
+
+  return (
+    <div className="space-y-5">
+      <div className="bg-[#0A3D2C] text-white rounded-[20px] p-6 flex flex-col sm:flex-row items-center gap-6">
+        <HealthScoreRing score={metrics.healthScore} label={t.healthScore} />
+        <div className="flex-1 w-full space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
+            <span>{t.salesGoal}</span>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={1000}
+                step={5000}
+                value={goal}
+                onChange={(e) => {
+                  const nextGoal = parseFloat(e.target.value);
+                  if (nextGoal > 0) actions.updateSettings({ monthlySalesGoal: nextGoal });
+                }}
+                aria-label={t.salesGoal}
+                className="w-28 px-2.5 py-1 rounded-lg bg-white/15 border border-white/20 text-white font-mono text-xs tabular-nums"
+              />
+              <span className="text-[#C9A227] font-mono tabular-nums">{progress}%</span>
+            </div>
+          </div>
+          <div className="w-full h-3 rounded-full bg-white/15 overflow-hidden">
+            <div className="h-full bg-[#C9A227] rounded-full transition-all" style={{ width: `${progress}%` }} />
+          </div>
+          <p className="text-xs text-white/80 font-mono tabular-nums">
+            {baseSales.toLocaleString()} / {goal.toLocaleString()} {cur}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-1">
+          <p className="text-xs font-bold text-slate-500">
+            {isAr ? 'معدل كفاية السيولة للمصروفات' : 'Cash Expense Coverage'}
+          </p>
+          <p className="text-2xl font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227]">
+            {cashRunwayMonths} {isAr ? 'شهر' : 'mo'}
+          </p>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-1">
+          <p className="text-xs font-bold text-slate-500">
+            {isAr ? 'نسبة التحصيل من المبيعات' : 'Sales Collection Ratio'}
+          </p>
+          <p className="text-2xl font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227]">
+            {collectionRatio}%
+          </p>
+        </div>
+      </div>
+
+      <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-4">
+        <h3 className="text-base font-extrabold">{t.forecast6m}</h3>
+        <div className="grid grid-cols-6 gap-3 items-end h-44 pt-4">
+          {points.map((pt) => {
+            const hPct = Math.max(18, Math.round((pt.value / maxVal) * 100));
+            return (
+              <div key={pt.label} className="flex flex-col items-center justify-end h-full gap-1.5">
+                <span className="text-[10px] font-mono font-bold text-slate-500 tabular-nums">
+                  {(pt.value / 1000).toFixed(1)}k
+                </span>
+                <div
+                  className="w-full max-w-[44px] rounded-t-xl bg-[#0A3D2C] dark:bg-[#C9A227] transition-all"
+                  style={{ height: `${hPct}%` }}
+                />
+                <span className="text-xs font-mono font-bold">{pt.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <h3 className="text-base font-extrabold">{t.smartAlerts}</h3>
+        {metrics.smartAlerts.length === 0 ? (
+          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-6 text-center text-sm text-slate-500">
+            {t.noData}
+          </div>
+        ) : (
+          metrics.smartAlerts.map((a) => (
+            <div
+              key={a.id}
+              className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+            >
+              <div>
+                <h4 className="font-extrabold text-sm">{isAr ? a.titleAr : a.titleEn}</h4>
+                <p className="text-xs text-slate-500 mt-0.5">{isAr ? a.subtitleAr : a.subtitleEn}</p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => actions.dismissAlert(a.id)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-500 hover:bg-slate-100 dark:hover:bg-[#1A2C24] cursor-pointer"
+                >
+                  {t.dismiss}
+                </button>
+                <button
+                  onClick={() => onNavigate(a.actionRoute)}
+                  className="px-3.5 py-1.5 rounded-lg bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer"
+                >
+                  {t.takeAction}
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+};

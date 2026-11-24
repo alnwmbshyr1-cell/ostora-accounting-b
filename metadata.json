@@ -1,0 +1,6 @@
+{
+  "name": "أسطورة المحاسبة - Legend of Accounting",
+  "description": "Complete bilingual Arabic/English offline-first mobile ERP & accounting suite (com.ostora.accounting) with interactive preview and Google Play AAB-ready Flutter + Dart codebase.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
