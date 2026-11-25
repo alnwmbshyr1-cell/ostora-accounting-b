@@ -106,8 +106,8 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-white text-slate-900 rounded-[20px] max-w-2xl w-full shadow-2xl overflow-hidden border border-slate-200 my-auto">
+    <div className="print-modal-root fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+      <div className="print-modal-card bg-white text-slate-900 rounded-[20px] max-w-2xl w-full shadow-2xl overflow-hidden border border-slate-200 my-auto">
         <div className="no-print flex items-center justify-between px-5 py-3.5 bg-[#0A3D2C] text-white">
           <span className="font-bold text-sm">
             {docTitle} · {docId}
@@ -133,15 +133,24 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
         <div className="p-6 sm:p-8 space-y-6 text-sm" dir={isAr ? 'rtl' : 'ltr'}>
           {/* Company Header */}
           <div className="bg-[#0A3D2C] text-white p-5 rounded-2xl flex flex-col sm:flex-row justify-between gap-4">
-            <div>
-              <h2 className="text-lg font-extrabold">{company.companyName}</h2>
-              <p className="text-xs text-white/80 mt-1 tabular-nums">
-                VAT: {company.taxNumber} · CR: {company.crNumber}
-              </p>
-              <p className="text-xs text-white/80">
-                {company.phone} · {company.email}
-              </p>
-              <p className="text-xs text-white/75">{company.address}</p>
+            <div className="flex items-start gap-3">
+              {company.logoBase64 && (
+                <img
+                  src={company.logoBase64}
+                  alt={company.companyName}
+                  className="w-14 h-14 rounded-xl border-2 border-[#C9A227] object-cover shrink-0 bg-white"
+                />
+              )}
+              <div>
+                <h2 className="text-lg font-extrabold">{company.companyName}</h2>
+                <p className="text-xs text-white/80 mt-1 tabular-nums">
+                  VAT: {company.taxNumber} · CR: {company.crNumber}
+                </p>
+                <p className="text-xs text-white/80">
+                  {company.phone} · {company.email}
+                </p>
+                <p className="text-xs text-white/75">{company.address}</p>
+              </div>
             </div>
             <div className={isAr ? 'sm:text-left' : 'sm:text-right'}>
               <p className="text-[#C9A227] text-lg font-extrabold tracking-wide">{docTitle}</p>
@@ -149,6 +158,11 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
               <p className="font-mono text-xs text-white/75">
                 {new Date(docDate).toLocaleDateString()}
               </p>
+              {invoice?.dueDate && (
+                <p className="font-mono text-[11px] text-[#F4D573]">
+                  {isAr ? 'الاستحقاق:' : 'Due:'} {invoice.dueDate}
+                </p>
+              )}
               {quotation && (
                 <p className="font-mono text-xs text-[#F4D573] mt-1">
                   {isAr ? 'صالح حتى:' : 'Valid Until:'} {quotation.validUntil}
@@ -161,13 +175,30 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
           {invoice && (
             <>
               <div className="flex flex-col sm:flex-row justify-between items-start gap-4 border border-slate-200 rounded-xl p-4">
-                <div>
+                <div className="space-y-1">
                   <p className="text-xs font-bold text-slate-500">
                     {isAr ? 'فاتورة إلى / BILL TO' : 'BILL TO'}
                   </p>
-                  <p className="text-base font-extrabold mt-1">{invoice.customerName}</p>
-                  <p className="text-xs text-slate-600 font-mono mt-0.5">{invoice.customerPhone}</p>
-                  <p className="text-xs text-slate-600 mt-0.5 uppercase">Status: {invoice.status}</p>
+                  <p className="text-base font-extrabold">{invoice.customerName}</p>
+                  <p className="text-xs text-slate-600 font-mono">{invoice.customerPhone}</p>
+                  <div className="flex flex-wrap gap-1.5 pt-1 text-[11px] text-slate-600">
+                    <span className="px-2 py-0.5 rounded bg-slate-100 font-bold uppercase">{invoice.status}</span>
+                    {invoice.paymentMethod && (
+                      <span className="px-2 py-0.5 rounded bg-slate-100 font-bold">{invoice.paymentMethod}</span>
+                    )}
+                    {invoice.branchName && (
+                      <span className="px-2 py-0.5 rounded bg-emerald-50 text-[#0A3D2C] font-bold">{invoice.branchName}</span>
+                    )}
+                    {invoice.warehouseName && (
+                      <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-800 font-bold">{invoice.warehouseName}</span>
+                    )}
+                    {invoice.salespersonName && (
+                      <span className="px-2 py-0.5 rounded bg-slate-100">{invoice.salespersonName}</span>
+                    )}
+                    {invoice.shiftName && (
+                      <span className="px-2 py-0.5 rounded bg-slate-100">{invoice.shiftName}</span>
+                    )}
+                  </div>
                 </div>
                 <div className="flex flex-col items-center gap-1.5">
                   <QrMatrix data={zatcaQrBase64} size={124} />
@@ -300,6 +331,24 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                             {invoice.subtotal.toFixed(2)} {invCur}
                           </span>
                         </div>
+                        {(invoice.discountTotal ?? 0) > 0 && (
+                          <div className="flex justify-between text-xs text-amber-700">
+                            <span>{isAr ? 'الخصم' : 'Discount'}</span>
+                            <span className="font-mono tabular-nums">-{(invoice.discountTotal ?? 0).toFixed(2)} {invCur}</span>
+                          </div>
+                        )}
+                        {(invoice.shippingFee ?? 0) > 0 && (
+                          <div className="flex justify-between text-xs">
+                            <span>{isAr ? 'الشحن والتوصيل' : 'Shipping'}</span>
+                            <span className="font-mono tabular-nums">{(invoice.shippingFee ?? 0).toFixed(2)} {invCur}</span>
+                          </div>
+                        )}
+                        {(invoice.extraFee ?? 0) > 0 && (
+                          <div className="flex justify-between text-xs">
+                            <span>{isAr ? 'رسوم إضافية' : 'Extra Fees'}</span>
+                            <span className="font-mono tabular-nums">{(invoice.extraFee ?? 0).toFixed(2)} {invCur}</span>
+                          </div>
+                        )}
                         <div className="flex justify-between text-xs">
                           <span>{isAr ? `ضريبة القيمة المضافة ${effRate}%` : `VAT ${effRate}%`}</span>
                           <span className="font-mono tabular-nums">
@@ -312,6 +361,18 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                             {invoice.total.toFixed(2)} {invCur}
                           </span>
                         </div>
+                        {(invoice.paidAmount ?? 0) > 0 && (
+                          <div className="flex justify-between text-xs text-emerald-700">
+                            <span>{isAr ? 'المدفوع' : 'Paid'}</span>
+                            <span className="font-mono font-bold tabular-nums">{(invoice.paidAmount ?? 0).toFixed(2)} {invCur}</span>
+                          </div>
+                        )}
+                        {(invoice.remainingAmount ?? 0) > 0 && (
+                          <div className="flex justify-between text-xs text-rose-700">
+                            <span>{isAr ? 'المتبقي' : 'Remaining'}</span>
+                            <span className="font-mono font-bold tabular-nums">{(invoice.remainingAmount ?? 0).toFixed(2)} {invCur}</span>
+                          </div>
+                        )}
                         {invCur !== company.currency && (
                           <div className="border-t border-slate-200 pt-2 flex justify-between text-[11px] text-slate-600 font-mono">
                             <span>1 {invCur} = {fxRate.toFixed(4)} {company.currency}</span>
@@ -322,6 +383,12 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                         )}
                       </div>
                     </div>
+                    {(invoice.notes || invoice.terms) && (
+                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs space-y-1">
+                        {invoice.notes && <p><span className="font-bold">{isAr ? 'ملاحظات:' : 'Notes:'}</span> {invoice.notes}</p>}
+                        {invoice.terms && <p><span className="font-bold">{isAr ? 'الشروط والأحكام:' : 'Terms:'}</span> {invoice.terms}</p>}
+                      </div>
+                    )}
                   </>
                 );
               })()}
@@ -493,14 +560,22 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
             </div>
           )}
 
-          {/* Signatures + ZATCA Footer */}
-          <div className="pt-6 grid grid-cols-2 gap-8 text-center text-xs text-slate-600">
+          {/* Signatures + Official Stamp + ZATCA Footer */}
+          <div className="pt-6 grid grid-cols-3 gap-6 text-center text-xs text-slate-600 items-end">
             <div>
-              <div className="border-b border-slate-400 h-8 mb-2" />
-              <span>{isAr ? 'توقيع المحاسب / الإدارة' : 'Authorized Signature'}</span>
+              <p className="font-bold text-[#0A3D2C] h-6">{invoice?.sellerSignature || ''}</p>
+              <div className="border-b border-slate-400 h-2 mb-2" />
+              <span>{isAr ? 'توقيع البائع / المحاسب' : 'Seller Signature'}</span>
+            </div>
+            <div className="flex flex-col items-center">
+              <div className="w-16 h-16 rounded-full border-2 border-dashed border-[#0A3D2C]/50 flex items-center justify-center text-[9px] font-extrabold text-[#0A3D2C] uppercase rotate-[-8deg] p-1">
+                {company.companyName.slice(0, 14)}
+              </div>
+              <span className="mt-1">{isAr ? 'الختم الرسمي' : 'Official Stamp'}</span>
             </div>
             <div>
-              <div className="border-b border-slate-400 h-8 mb-2" />
+              <p className="font-bold text-[#0A3D2C] h-6">{invoice?.customerSignature || ''}</p>
+              <div className="border-b border-slate-400 h-2 mb-2" />
               <span>{isAr ? 'توقيع المستلم / العميل' : 'Recipient Signature'}</span>
             </div>
           </div>

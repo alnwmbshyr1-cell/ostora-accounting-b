@@ -1,4 +1,4 @@
-import { Invoice, Quotation, ReturnRecord, RouteId, Voucher } from '../types/erp';
+import { BatchPrintItem, Invoice, Quotation, ReturnRecord, RouteId, Voucher } from '../types/erp';
 import { useErpStore } from '../store/useErpStore';
 
 export type ErpStore = ReturnType<typeof useErpStore>;
@@ -10,4 +10,5 @@ export interface ScreenProps {
   onPrintVoucher?: (v: Voucher) => void;
   onPrintReturn?: (ret: ReturnRecord) => void;
   onPrintQuotation?: (qt: Quotation) => void;
+  onOpenBatchPrint?: (items: BatchPrintItem[]) => void;
 }

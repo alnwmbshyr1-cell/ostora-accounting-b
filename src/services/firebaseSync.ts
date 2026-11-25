@@ -23,7 +23,12 @@ import {
   DEFAULT_ENABLED_CURRENCIES,
 } from '../utils/currencies';
 import {
+  ArchivedDocument,
+  AuditLogEntry,
   BankAccount,
+  Branch,
+  ChartAccount,
+  CloudBackupMeta,
   CurrencyCode,
   Customer,
   Employee,
@@ -35,16 +40,21 @@ import {
   Product,
   PurchaseOrder,
   Quotation,
+  RecurringInvoice,
   ReturnRecord,
   RoleId,
   RouteId,
+  StockMovement,
+  StocktakeRecord,
   Supplier,
   Voucher,
+  Warehouse,
 } from '../types/erp';
 import { handleFirestoreError, OperationType } from '../utils/firestoreErrors';
 
 const SUBCOLLECTIONS = [
   'invoices',
+  'recurringInvoices',
   'returns',
   'quotations',
   'customers',
@@ -52,10 +62,17 @@ const SUBCOLLECTIONS = [
   'purchaseOrders',
   'vouchers',
   'journals',
+  'documents',
   'products',
   'employees',
   'expenses',
   'banks',
+  'branches',
+  'warehouses',
+  'chartOfAccounts',
+  'stockMovements',
+  'stocktakes',
+  'auditLogs',
 ] as const;
 
 type SubcollectionName = (typeof SUBCOLLECTIONS)[number];
@@ -87,13 +104,13 @@ function clampNum(raw: unknown, min = 0, max = Number.MAX_SAFE_INTEGER): number 
 }
 
 function sanitizePermissionsMatrix(matrix: PermissionsMatrix | undefined): PermissionsMatrix {
-  const roles: RoleId[] = ['owner', 'accountant', 'salesman', 'warehouse'];
+  const roles: RoleId[] = ['owner', 'accountant', 'cashier', 'salesman', 'warehouse'];
   const out = {} as PermissionsMatrix;
   for (const r of roles) {
     const src = matrix?.[r] ?? DEFAULT_PERMISSIONS_MATRIX[r] ?? [];
     out[r] = src
       .filter((x): x is RouteId => typeof x === 'string' && x.length > 0 && x.length <= 40)
-      .slice(0, 25);
+      .slice(0, 40);
   }
   return out;
 }
@@ -113,6 +130,31 @@ function sanitizeExchangeRates(
     out[code] = code === base ? 1 : typeof val === 'number' && Number.isFinite(val) && val > 0 ? val : defaults[code];
   }
   return out;
+}
+
+function sanitizeLineItems(items: Invoice['items'] | undefined) {
+  return (items ?? []).slice(0, 50).map((it) => {
+    const row: Record<string, unknown> = {
+      productId: clampString(it.productId, 128),
+      productName: clampNonEmpty(it.productName, 160, 'Item'),
+      qty: clampNum(it.qty, 0),
+      unitPrice: clampNum(it.unitPrice, 0),
+      total: clampNum(it.total, 0),
+    };
+    if (it.barcode) row.barcode = clampString(it.barcode, 64);
+    if (it.imageBase64 && it.imageBase64.length <= 250000) row.imageBase64 = it.imageBase64;
+    if (it.category) row.category = clampString(it.category, 80);
+    if (it.unit && ['piece', 'carton', 'kg', 'meter'].includes(it.unit)) row.unit = it.unit;
+    if (typeof it.costPrice === 'number' && Number.isFinite(it.costPrice) && it.costPrice >= 0) row.costPrice = it.costPrice;
+    if (typeof it.wholesalePrice === 'number' && Number.isFinite(it.wholesalePrice) && it.wholesalePrice >= 0) row.wholesalePrice = it.wholesalePrice;
+    if (typeof it.discountPercent === 'number' && Number.isFinite(it.discountPercent)) row.discountPercent = clampNum(it.discountPercent, 0, 100);
+    if (typeof it.discountAmount === 'number' && Number.isFinite(it.discountAmount)) row.discountAmount = clampNum(it.discountAmount, 0);
+    if (typeof it.taxRate === 'number' && Number.isFinite(it.taxRate)) row.taxRate = clampNum(it.taxRate, 0, 100);
+    if (typeof it.taxAmount === 'number' && Number.isFinite(it.taxAmount)) row.taxAmount = clampNum(it.taxAmount, 0);
+    if (it.expiryDate) row.expiryDate = clampString(it.expiryDate, 32);
+    if (it.note) row.note = clampString(it.note, 200);
+    return row;
+  });
 }
 
 function sanitizeWorkspaceFields(uid: string, state: PersistedState) {
@@ -146,7 +188,7 @@ function sanitizeWorkspaceFields(uid: string, state: PersistedState) {
     autoSyncIntervalMinutes: clampNum(state.settings.autoSyncIntervalMinutes ?? 0, 0, 1440),
     activePlan: clampNonEmpty(state.activePlan, 40, 'trial'),
     trialStartIso: clampNonEmpty(state.trialStartIso, 64, new Date().toISOString()),
-    currentRole: ['owner', 'accountant', 'salesman', 'warehouse'].includes(state.currentRole)
+    currentRole: ['owner', 'accountant', 'cashier', 'salesman', 'warehouse'].includes(state.currentRole)
       ? state.currentRole
       : 'owner',
     permissionsMatrix: sanitizePermissionsMatrix(state.permissionsMatrix),
@@ -157,6 +199,21 @@ function sanitizeWorkspaceFields(uid: string, state: PersistedState) {
   }
   if (state.settings.lastRatesUpdate) {
     payload.lastRatesUpdate = clampString(state.settings.lastRatesUpdate, 64);
+  }
+  if (state.settings.logoBase64 && state.settings.logoBase64.length <= 250000) {
+    payload.logoBase64 = state.settings.logoBase64;
+  }
+  if (state.settings.fiscalLockDate) {
+    payload.fiscalLockDate = clampString(state.settings.fiscalLockDate, 32);
+  }
+  if (state.settings.defaultBranchId) {
+    payload.defaultBranchId = clampString(state.settings.defaultBranchId, 128);
+  }
+  if (state.settings.defaultWarehouseId) {
+    payload.defaultWarehouseId = clampString(state.settings.defaultWarehouseId, 128);
+  }
+  if (state.settings.receiptFooter) {
+    payload.receiptFooter = clampString(state.settings.receiptFooter, 300);
   }
 
   return payload;
@@ -173,13 +230,7 @@ function sanitizeEntityForWrite(
   switch (sub) {
     case 'invoices': {
       const inv = item as Invoice;
-      const items = (inv.items ?? []).slice(0, 50).map((it) => ({
-        productId: clampString(it.productId, 128),
-        productName: clampNonEmpty(it.productName, 160, 'Item'),
-        qty: clampNum(it.qty, 0),
-        unitPrice: clampNum(it.unitPrice, 0),
-        total: clampNum(it.total, 0),
-      }));
+      const items = sanitizeLineItems(inv.items);
       const invCurrency = sanitizeCurrencyCode(inv.currency, baseCurrency);
       const exchangeRate =
         invCurrency === baseCurrency
@@ -187,7 +238,7 @@ function sanitizeEntityForWrite(
           : clampNum(inv.exchangeRate ?? 1, 0.0001, 1000000);
       const total = clampNum(inv.total, 0);
       const baseTotal = clampNum(inv.baseTotal ?? Number((total * exchangeRate).toFixed(2)), 0);
-      return {
+      const out: Record<string, unknown> = {
         id: sanitizeId(inv.id, 'INV'),
         ownerId: uid,
         customerId: clampString(inv.customerId, 128),
@@ -202,9 +253,36 @@ function sanitizeEntityForWrite(
         currency: invCurrency,
         exchangeRate,
         baseTotal,
-        status: ['paid', 'pending', 'overdue'].includes(inv.status) ? inv.status : 'pending',
+        status: ['paid', 'partial', 'pending', 'overdue', 'cancelled'].includes(inv.status) ? inv.status : 'pending',
         date: clampNonEmpty(inv.date, 64, new Date().toISOString()),
       };
+      if (inv.invoiceType && ['sales', 'return', 'quotation'].includes(inv.invoiceType)) out.invoiceType = inv.invoiceType;
+      if (inv.dueDate) out.dueDate = clampString(inv.dueDate, 64);
+      if (inv.branchId) out.branchId = clampString(inv.branchId, 128);
+      if (inv.branchName) out.branchName = clampString(inv.branchName, 120);
+      if (inv.warehouseId) out.warehouseId = clampString(inv.warehouseId, 128);
+      if (inv.warehouseName) out.warehouseName = clampString(inv.warehouseName, 120);
+      if (inv.salespersonName) out.salespersonName = clampString(inv.salespersonName, 120);
+      if (inv.shiftName) out.shiftName = clampString(inv.shiftName, 80);
+      if (inv.paymentMethod && ['cash', 'credit', 'pos_card', 'transfer', 'cheque', 'installment'].includes(inv.paymentMethod)) {
+        out.paymentMethod = inv.paymentMethod;
+      }
+      if (typeof inv.discountTotal === 'number') out.discountTotal = clampNum(inv.discountTotal, 0);
+      if (typeof inv.shippingFee === 'number') out.shippingFee = clampNum(inv.shippingFee, 0);
+      if (typeof inv.extraFee === 'number') out.extraFee = clampNum(inv.extraFee, 0);
+      if (typeof inv.paidAmount === 'number') out.paidAmount = clampNum(inv.paidAmount, 0);
+      if (typeof inv.remainingAmount === 'number') out.remainingAmount = clampNum(inv.remainingAmount, 0);
+      if (inv.notes) out.notes = clampString(inv.notes, 500);
+      if (inv.terms) out.terms = clampString(inv.terms, 500);
+      if (inv.sellerSignature) out.sellerSignature = clampString(inv.sellerSignature, 160);
+      if (inv.customerSignature) out.customerSignature = clampString(inv.customerSignature, 160);
+      if (Array.isArray(inv.installments) && inv.installments.length > 0) {
+        out.installments = inv.installments.slice(0, 36);
+      }
+      if (inv.createdByRole && ['owner', 'accountant', 'cashier', 'salesman', 'warehouse'].includes(inv.createdByRole)) {
+        out.createdByRole = inv.createdByRole;
+      }
+      return out;
     }
     case 'returns': {
       const ret = item as ReturnRecord;
@@ -229,13 +307,7 @@ function sanitizeEntityForWrite(
     }
     case 'quotations': {
       const qt = item as Quotation;
-      const items = (qt.items ?? []).slice(0, 50).map((it) => ({
-        productId: clampString(it.productId, 128),
-        productName: clampNonEmpty(it.productName, 160, 'Item'),
-        qty: clampNum(it.qty, 0),
-        unitPrice: clampNum(it.unitPrice, 0),
-        total: clampNum(it.total, 0),
-      }));
+      const items = sanitizeLineItems(qt.items);
       if (items.length === 0) {
         items.push({ productId: '', productName: 'Item', qty: 1, unitPrice: 0, total: 0 });
       }
@@ -273,11 +345,36 @@ function sanitizeEntityForWrite(
       if (typeof c.creditLimit === 'number' && Number.isFinite(c.creditLimit) && c.creditLimit >= 0) {
         out.creditLimit = clampNum(c.creditLimit, 0);
       }
+      if (c.code) out.code = clampString(c.code, 64);
+      if (c.companyName) out.companyName = clampString(c.companyName, 160);
+      if (c.photoBase64 && c.photoBase64.length <= 250000) out.photoBase64 = c.photoBase64;
+      if (c.whatsapp) out.whatsapp = clampString(c.whatsapp, 40);
+      if (c.address) out.address = clampString(c.address, 300);
+      if (c.city) out.city = clampString(c.city, 80);
+      if (c.country) out.country = clampString(c.country, 80);
+      if (c.mapUrl) out.mapUrl = clampString(c.mapUrl, 300);
+      if (c.customerType && ['individual', 'company', 'VIP', 'wholesale', 'retail'].includes(c.customerType)) {
+        out.customerType = c.customerType;
+      }
+      if (c.taxNumber) out.taxNumber = clampString(c.taxNumber, 64);
+      if (c.nationalId) out.nationalId = clampString(c.nationalId, 64);
+      if (c.birthDate) out.birthDate = clampString(c.birthDate, 32);
+      if (typeof c.creditTermDays === 'number') out.creditTermDays = clampNum(c.creditTermDays, 0);
+      if (c.preferredPaymentMethod && ['cash', 'credit', 'pos_card', 'transfer', 'cheque', 'installment'].includes(c.preferredPaymentMethod)) {
+        out.preferredPaymentMethod = c.preferredPaymentMethod;
+      }
+      if (c.salesRep) out.salesRep = clampString(c.salesRep, 120);
+      if (c.branchId) out.branchId = clampString(c.branchId, 128);
+      if (c.status && ['active', 'paused', 'blocked'].includes(c.status)) out.status = c.status;
+      if (c.notes) out.notes = clampString(c.notes, 500);
+      if (c.callLogs) out.callLogs = clampString(c.callLogs, 1000);
+      if (c.createdAtDate) out.createdAtDate = clampString(c.createdAtDate, 64);
+      if (c.createdBy) out.createdBy = clampString(c.createdBy, 120);
       return out;
     }
     case 'suppliers': {
       const s = item as Supplier;
-      return {
+      const out: Record<string, unknown> = {
         id: sanitizeId(s.id, 'S'),
         ownerId: uid,
         name: clampNonEmpty(s.name, 160, 'Supplier'),
@@ -285,13 +382,41 @@ function sanitizeEntityForWrite(
         category: clampString(s.category, 100),
         payable: clampNum(s.payable, 0),
       };
+      if (s.code) out.code = clampString(s.code, 64);
+      if (s.companyName) out.companyName = clampString(s.companyName, 160);
+      if (s.photoBase64 && s.photoBase64.length <= 250000) out.photoBase64 = s.photoBase64;
+      if (s.whatsapp) out.whatsapp = clampString(s.whatsapp, 40);
+      if (s.email) out.email = clampString(s.email, 160);
+      if (s.address) out.address = clampString(s.address, 300);
+      if (s.city) out.city = clampString(s.city, 80);
+      if (s.country) out.country = clampString(s.country, 80);
+      if (s.supplierType && ['primary', 'secondary', 'manufacturer', 'importer'].includes(s.supplierType)) {
+        out.supplierType = s.supplierType;
+      }
+      if (s.taxNumber) out.taxNumber = clampString(s.taxNumber, 64);
+      if (s.crNumber) out.crNumber = clampString(s.crNumber, 64);
+      if (s.bankAccount) out.bankAccount = clampString(s.bankAccount, 80);
+      if (s.bankName) out.bankName = clampString(s.bankName, 120);
+      if (typeof s.creditLimit === 'number') out.creditLimit = clampNum(s.creditLimit, 0);
+      if (typeof s.paymentTermDays === 'number') out.paymentTermDays = clampNum(s.paymentTermDays, 0);
+      if (s.preferredPaymentMethod && ['cash', 'credit', 'pos_card', 'transfer', 'cheque', 'installment'].includes(s.preferredPaymentMethod)) {
+        out.preferredPaymentMethod = s.preferredPaymentMethod;
+      }
+      if (s.branchId) out.branchId = clampString(s.branchId, 128);
+      if (s.repName) out.repName = clampString(s.repName, 120);
+      if (s.status && ['active', 'paused', 'blocked'].includes(s.status)) out.status = s.status;
+      if (s.notes) out.notes = clampString(s.notes, 500);
+      if (s.contractsNotes) out.contractsNotes = clampString(s.contractsNotes, 500);
+      if (s.createdAtDate) out.createdAtDate = clampString(s.createdAtDate, 64);
+      if (s.createdBy) out.createdBy = clampString(s.createdBy, 120);
+      return out;
     }
     case 'purchaseOrders': {
       const po = item as PurchaseOrder;
       const subtotal = clampNum(po.subtotal ?? po.quantity * po.unitCost, 0);
       const taxRate = clampNum(po.taxRate ?? defaultPurchaseTaxRate, 0, 100);
       const vat = clampNum(po.vat ?? Number(((subtotal * taxRate) / 100).toFixed(2)), 0);
-      return {
+      const out: Record<string, unknown> = {
         id: sanitizeId(po.id, 'PO'),
         ownerId: uid,
         supplierId: clampString(po.supplierId, 128),
@@ -308,6 +433,14 @@ function sanitizeEntityForWrite(
         status: po.status === 'received' ? 'received' : 'ordered',
         date: clampNonEmpty(po.date, 64, new Date().toISOString()),
       };
+      if (po.branchId) out.branchId = clampString(po.branchId, 128);
+      if (po.warehouseId) out.warehouseId = clampString(po.warehouseId, 128);
+      if (po.paymentMethod && ['cash', 'credit', 'pos_card', 'transfer', 'cheque', 'installment'].includes(po.paymentMethod)) {
+        out.paymentMethod = po.paymentMethod;
+      }
+      if (po.notes) out.notes = clampString(po.notes, 500);
+      if (typeof po.paidAmount === 'number') out.paidAmount = clampNum(po.paidAmount, 0);
+      return out;
     }
     case 'vouchers': {
       const v = item as Voucher;
@@ -354,9 +487,16 @@ function sanitizeEntityForWrite(
         cost: clampNum(p.cost, 0),
         price: clampNum(p.price, 0),
       };
-      if (p.imageBase64 && p.imageBase64.length <= 250000) {
-        out.imageBase64 = p.imageBase64;
-      }
+      if (p.imageBase64 && p.imageBase64.length <= 250000) out.imageBase64 = p.imageBase64;
+      if (p.category) out.category = clampString(p.category, 80);
+      if (p.unit && ['piece', 'carton', 'kg', 'meter'].includes(p.unit)) out.unit = p.unit;
+      if (typeof p.wholesalePrice === 'number') out.wholesalePrice = clampNum(p.wholesalePrice, 0);
+      if (typeof p.taxRate === 'number') out.taxRate = clampNum(p.taxRate, 0, 100);
+      if (typeof p.minStock === 'number') out.minStock = clampNum(p.minStock, 0);
+      if (typeof p.maxStock === 'number') out.maxStock = clampNum(p.maxStock, 0);
+      if (p.expiryDate) out.expiryDate = clampString(p.expiryDate, 32);
+      if (p.supplierId) out.supplierId = clampString(p.supplierId, 128);
+      if (p.warehouseId) out.warehouseId = clampString(p.warehouseId, 128);
       return out;
     }
     case 'employees': {
@@ -366,10 +506,10 @@ function sanitizeEntityForWrite(
         ownerId: uid,
         name: clampNonEmpty(e.name, 160, 'Employee'),
         roleTitle: clampString(e.roleTitle, 100),
-        role: ['owner', 'accountant', 'salesman', 'warehouse'].includes(e.role) ? e.role : 'accountant',
+        role: ['owner', 'accountant', 'cashier', 'salesman', 'warehouse'].includes(e.role) ? e.role : 'accountant',
         permissions: (e.permissions ?? [])
           .filter((x): x is RouteId => typeof x === 'string' && x.length > 0 && x.length <= 40)
-          .slice(0, 25),
+          .slice(0, 40),
         phone: clampString(e.phone, 40),
         salary: clampNum(e.salary, 0),
       };
@@ -380,7 +520,7 @@ function sanitizeEntityForWrite(
     }
     case 'expenses': {
       const ex = item as Expense;
-      return {
+      const out: Record<string, unknown> = {
         id: sanitizeId(ex.id, 'EXP'),
         ownerId: uid,
         title: clampNonEmpty(ex.title, 160, 'Expense'),
@@ -389,16 +529,172 @@ function sanitizeEntityForWrite(
         paidFromBankId: clampString(ex.paidFromBankId, 128),
         date: clampNonEmpty(ex.date, 64, new Date().toISOString()),
       };
+      if (ex.branchId) out.branchId = clampString(ex.branchId, 128);
+      return out;
     }
     case 'banks': {
       const b = item as BankAccount;
-      return {
+      const out: Record<string, unknown> = {
         id: sanitizeId(b.id, 'BNK'),
         ownerId: uid,
         nameAr: clampNonEmpty(b.nameAr, 120, 'حساب بنكي'),
         nameEn: clampNonEmpty(b.nameEn, 120, 'Bank Account'),
         accountNumber: clampString(b.accountNumber, 64),
         balance: typeof b.balance === 'number' && Number.isFinite(b.balance) ? b.balance : 0,
+      };
+      if (b.lastReconciledDate) out.lastReconciledDate = clampString(b.lastReconciledDate, 64);
+      return out;
+    }
+    case 'recurringInvoices': {
+      const rec = item as RecurringInvoice;
+      const items = sanitizeLineItems(rec.items);
+      const out: Record<string, unknown> = {
+        id: sanitizeId(rec.id, 'REC'),
+        ownerId: uid,
+        customerId: clampString(rec.customerId, 128),
+        customerName: clampNonEmpty(rec.customerName, 160, 'Customer'),
+        customerPhone: clampString(rec.customerPhone, 40),
+        description: clampString(rec.description, 500),
+        items,
+        subtotal: clampNum(rec.subtotal, 0),
+        taxRate: clampNum(rec.taxRate ?? defaultTaxRate, 0, 100),
+        currency: sanitizeCurrencyCode(rec.currency, baseCurrency),
+        frequency: ['weekly', 'monthly', 'quarterly', 'yearly'].includes(rec.frequency)
+          ? rec.frequency
+          : 'monthly',
+        nextRunDate: clampNonEmpty(rec.nextRunDate, 64, new Date().toISOString().slice(0, 10)),
+        targetStatus: ['paid', 'partial', 'pending', 'overdue', 'cancelled'].includes(rec.targetStatus)
+          ? rec.targetStatus
+          : 'pending',
+        autoGenerate: Boolean(rec.autoGenerate),
+        active: Boolean(rec.active),
+        generatedCount: clampNum(rec.generatedCount, 0),
+        notes: clampString(rec.notes, 500),
+        date: clampNonEmpty(rec.date, 64, new Date().toISOString()),
+      };
+      if (rec.lastGeneratedDate) {
+        out.lastGeneratedDate = clampString(rec.lastGeneratedDate, 64);
+      }
+      return out;
+    }
+    case 'documents': {
+      const d = item as ArchivedDocument;
+      const out: Record<string, unknown> = {
+        id: sanitizeId(d.id, 'DOC'),
+        ownerId: uid,
+        title: clampNonEmpty(d.title, 160, 'Document'),
+        docType: ['contract', 'receipt', 'tax_cert', 'id_doc', 'invoice_scan', 'other'].includes(d.docType)
+          ? d.docType
+          : 'other',
+        partyName: clampString(d.partyName, 160),
+        referenceId: clampString(d.referenceId, 128),
+        fileName: clampString(d.fileName, 200),
+        fileType: clampString(d.fileType, 120),
+        fileSizeBytes: clampNum(d.fileSizeBytes, 0),
+        notes: clampString(d.notes, 500),
+        date: clampNonEmpty(d.date, 64, new Date().toISOString()),
+      };
+      if (d.fileDataBase64 && d.fileDataBase64.length <= 250000) {
+        out.fileDataBase64 = d.fileDataBase64;
+      }
+      return out;
+    }
+    case 'branches': {
+      const b = item as Branch;
+      const out: Record<string, unknown> = {
+        id: sanitizeId(b.id, 'BR'),
+        ownerId: uid,
+        nameAr: clampNonEmpty(b.nameAr, 120, 'الفرع الرئيسي'),
+        nameEn: clampNonEmpty(b.nameEn, 120, 'Main Branch'),
+        city: clampString(b.city, 80),
+        phone: clampString(b.phone, 40),
+        managerName: clampString(b.managerName, 120),
+        active: Boolean(b.active),
+      };
+      if (typeof b.isMain === 'boolean') out.isMain = b.isMain;
+      return out;
+    }
+    case 'warehouses': {
+      const w = item as Warehouse;
+      return {
+        id: sanitizeId(w.id, 'WH'),
+        ownerId: uid,
+        nameAr: clampNonEmpty(w.nameAr, 120, 'المستودع الرئيسي'),
+        nameEn: clampNonEmpty(w.nameEn, 120, 'Main Warehouse'),
+        branchId: clampString(w.branchId, 128),
+        location: clampString(w.location, 160),
+        managerName: clampString(w.managerName, 120),
+        active: Boolean(w.active),
+      };
+    }
+    case 'chartOfAccounts': {
+      const a = item as ChartAccount;
+      const out: Record<string, unknown> = {
+        id: sanitizeId(a.id, 'COA'),
+        ownerId: uid,
+        code: clampNonEmpty(a.code, 32, '1000'),
+        nameAr: clampNonEmpty(a.nameAr, 160, 'حساب'),
+        nameEn: clampNonEmpty(a.nameEn, 160, 'Account'),
+        category: ['assets', 'liabilities', 'equity', 'revenue', 'expenses'].includes(a.category)
+          ? a.category
+          : 'assets',
+      };
+      if (a.parentCode) out.parentCode = clampString(a.parentCode, 32);
+      if (typeof a.isSystem === 'boolean') out.isSystem = a.isSystem;
+      return out;
+    }
+    case 'stockMovements': {
+      const m = item as StockMovement;
+      const out: Record<string, unknown> = {
+        id: sanitizeId(m.id, 'MOV'),
+        ownerId: uid,
+        productId: clampString(m.productId, 128),
+        productName: clampNonEmpty(m.productName, 160, 'Product'),
+        movementType: ['sale', 'purchase', 'return_in', 'return_out', 'transfer', 'stocktake'].includes(m.movementType)
+          ? m.movementType
+          : 'sale',
+        qtyDelta: typeof m.qtyDelta === 'number' && Number.isFinite(m.qtyDelta) ? m.qtyDelta : 0,
+        referenceId: clampString(m.referenceId, 128),
+        notes: clampString(m.notes, 400),
+        date: clampNonEmpty(m.date, 64, new Date().toISOString()),
+      };
+      if (m.fromWarehouseId) out.fromWarehouseId = clampString(m.fromWarehouseId, 128);
+      if (m.toWarehouseId) out.toWarehouseId = clampString(m.toWarehouseId, 128);
+      return out;
+    }
+    case 'stocktakes': {
+      const st = item as StocktakeRecord;
+      return {
+        id: sanitizeId(st.id, 'STK'),
+        ownerId: uid,
+        warehouseId: clampString(st.warehouseId, 128),
+        warehouseName: clampString(st.warehouseName, 120),
+        productId: clampString(st.productId, 128),
+        productName: clampNonEmpty(st.productName, 160, 'Product'),
+        systemQty: clampNum(st.systemQty, 0),
+        actualQty: clampNum(st.actualQty, 0),
+        varianceQty: typeof st.varianceQty === 'number' && Number.isFinite(st.varianceQty) ? st.varianceQty : 0,
+        varianceValue: typeof st.varianceValue === 'number' && Number.isFinite(st.varianceValue) ? st.varianceValue : 0,
+        notes: clampString(st.notes, 400),
+        date: clampNonEmpty(st.date, 64, new Date().toISOString()),
+      };
+    }
+    case 'auditLogs': {
+      const log = item as AuditLogEntry;
+      return {
+        id: sanitizeId(log.id, 'AUD'),
+        ownerId: uid,
+        actor: clampNonEmpty(log.actor, 160, 'User'),
+        actorRole: ['owner', 'accountant', 'cashier', 'salesman', 'warehouse'].includes(log.actorRole)
+          ? log.actorRole
+          : 'owner',
+        action: ['create', 'update', 'delete', 'pay', 'receive', 'transfer', 'reconcile', 'stocktake', 'fiscal_lock', 'backup'].includes(log.action)
+          ? log.action
+          : 'update',
+        entity: clampNonEmpty(log.entity, 80, 'Record'),
+        entityId: clampString(log.entityId, 128),
+        summary: clampNonEmpty(log.summary, 400, 'Action logged'),
+        timestamp: clampNonEmpty(log.timestamp, 64, new Date().toISOString()),
       };
     }
   }
@@ -508,6 +804,11 @@ export async function loadOrSeedWorkspace(
       autoSyncIntervalMinutes: Number(
         wsData.autoSyncIntervalMinutes ?? localState.settings.autoSyncIntervalMinutes ?? 0,
       ),
+      logoBase64: (wsData.logoBase64 as string | undefined) ?? localState.settings.logoBase64,
+      fiscalLockDate: (wsData.fiscalLockDate as string | undefined) ?? localState.settings.fiscalLockDate,
+      defaultBranchId: (wsData.defaultBranchId as string | undefined) ?? localState.settings.defaultBranchId,
+      defaultWarehouseId: (wsData.defaultWarehouseId as string | undefined) ?? localState.settings.defaultWarehouseId,
+      receiptFooter: (wsData.receiptFooter as string | undefined) ?? localState.settings.receiptFooter,
     },
   };
 
@@ -517,7 +818,9 @@ export async function loadOrSeedWorkspace(
       const q = query(collection(db, 'workspaces', uid, sub), where('ownerId', '==', uid));
       const snap = await getDocs(q);
       const docs = snap.docs.map((d) => stripFirestoreMeta(d.data()));
-      (loaded as Record<string, unknown>)[sub] = docs;
+      if (docs.length > 0 || !['branches', 'warehouses', 'chartOfAccounts'].includes(sub)) {
+        (loaded as Record<string, unknown>)[sub] = docs;
+      }
     } catch (error) {
       handleFirestoreError(error, OperationType.LIST, subPath);
     }
@@ -530,7 +833,7 @@ async function seedAllSubcollections(uid: string, state: PersistedState): Promis
   const ops: { path: string; sub: SubcollectionName; id: string; payload: Record<string, unknown> }[] = [];
 
   for (const sub of SUBCOLLECTIONS) {
-    const items = state[sub] as unknown[];
+    const items = (state[sub] as unknown[]) ?? [];
     for (const item of items) {
       const sanitized = sanitizeEntityForWrite(
         sub,
@@ -616,6 +919,11 @@ export function subscribeWorkspace(
             autoCloudSync:
               typeof wsData.autoCloudSync === 'boolean' ? wsData.autoCloudSync : true,
             autoSyncIntervalMinutes: Number(wsData.autoSyncIntervalMinutes ?? 0),
+            logoBase64: wsData.logoBase64 as string | undefined,
+            fiscalLockDate: wsData.fiscalLockDate as string | undefined,
+            defaultBranchId: wsData.defaultBranchId as string | undefined,
+            defaultWarehouseId: wsData.defaultWarehouseId as string | undefined,
+            receiptFooter: wsData.receiptFooter as string | undefined,
           },
         });
       },
@@ -638,7 +946,9 @@ export function subscribeWorkspace(
         (snap) => {
           if (snap.metadata.hasPendingWrites) return;
           const items = snap.docs.map((d) => stripFirestoreMeta(d.data()));
-          onPatch({ [sub]: items } as Partial<PersistedState>);
+          if (items.length > 0 || !['branches', 'warehouses', 'chartOfAccounts'].includes(sub)) {
+            onPatch({ [sub]: items } as Partial<PersistedState>);
+          }
         },
         (error) => {
           try {
@@ -680,19 +990,22 @@ export async function syncStateDiffToFirestore(
 
   if (!stableEqual(prevWs, nextWs)) {
     const wsPath = `workspaces/${uid}`;
+    const wsPatch: Record<string, unknown> = { ...nextWs, updatedAt: serverTimestamp() };
+    for (const optKey of ['logoBase64', 'fiscalLockDate', 'defaultBranchId', 'defaultWarehouseId', 'receiptFooter']) {
+      if (prevWs[optKey] !== undefined && nextWs[optKey] === undefined) {
+        wsPatch[optKey] = deleteField();
+      }
+    }
     try {
-      await updateDoc(doc(db, 'workspaces', uid), {
-        ...nextWs,
-        updatedAt: serverTimestamp(),
-      });
+      await updateDoc(doc(db, 'workspaces', uid), wsPatch);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, wsPath);
     }
   }
 
   for (const sub of SUBCOLLECTIONS) {
-    const prevList = (prev[sub] as { id: string }[]) ?? [];
-    const nextList = (next[sub] as { id: string }[]) ?? [];
+    const prevList = ((prev[sub] as { id: string }[]) ?? []);
+    const nextList = ((next[sub] as { id: string }[]) ?? []);
     const prevMap = new Map(prevList.map((item) => [sanitizeId(item.id, sub), item]));
     const nextMap = new Map(nextList.map((item) => [sanitizeId(item.id, sub), item]));
 
@@ -719,6 +1032,10 @@ export async function syncStateDiffToFirestore(
           handleFirestoreError(error, OperationType.CREATE, docPath);
         }
       } else {
+        // Audit logs, stock movements, and stocktakes are append-only in Firestore rules
+        if (sub === 'auditLogs' || sub === 'stockMovements' || sub === 'stocktakes') {
+          continue;
+        }
         const prevSanitized = sanitizeEntityForWrite(
           sub,
           uid,
@@ -741,6 +1058,13 @@ export async function syncStateDiffToFirestore(
           ) {
             patch.creditLimit = deleteField();
           }
+          if (
+            sub === 'documents' &&
+            prevSanitized.fileDataBase64 !== undefined &&
+            nextSanitized.fileDataBase64 === undefined
+          ) {
+            patch.fileDataBase64 = deleteField();
+          }
           try {
             await updateDoc(doc(db, 'workspaces', uid, sub, id), {
               ...patch,
@@ -753,13 +1077,15 @@ export async function syncStateDiffToFirestore(
       }
     }
 
-    for (const id of prevMap.keys()) {
-      if (!nextMap.has(id)) {
-        const docPath = `workspaces/${uid}/${sub}/${id}`;
-        try {
-          await deleteDoc(doc(db, 'workspaces', uid, sub, id));
-        } catch (error) {
-          handleFirestoreError(error, OperationType.DELETE, docPath);
+    if (sub !== 'auditLogs') {
+      for (const id of prevMap.keys()) {
+        if (!nextMap.has(id)) {
+          const docPath = `workspaces/${uid}/${sub}/${id}`;
+          try {
+            await deleteDoc(doc(db, 'workspaces', uid, sub, id));
+          } catch (error) {
+            handleFirestoreError(error, OperationType.DELETE, docPath);
+          }
         }
       }
     }
@@ -788,4 +1114,87 @@ export async function pushFullStateToCloud(uid: string, state: PersistedState): 
   }
 
   await seedAllSubcollections(uid, state);
+}
+
+export async function saveCloudBackupSnapshot(
+  uid: string,
+  state: PersistedState,
+  dateKey: string,
+): Promise<CloudBackupMeta | null> {
+  const backupId = sanitizeId(`BKP-${dateKey}`, 'BKP');
+  const payloadJson = JSON.stringify(state);
+  if (payloadJson.length > 840000) {
+    return null;
+  }
+  const recordCount =
+    state.invoices.length +
+    state.customers.length +
+    state.suppliers.length +
+    state.products.length +
+    state.journals.length;
+  const sizeBytes = new Blob([payloadJson]).size;
+  const refDoc = doc(db, 'workspaces', uid, 'cloudBackups', backupId);
+  try {
+    const existing = await getDoc(refDoc);
+    if (existing.exists()) {
+      await updateDoc(refDoc, {
+        dateKey,
+        recordCount,
+        sizeBytes,
+        payloadJson,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await setDoc(refDoc, {
+        id: backupId,
+        ownerId: uid,
+        dateKey,
+        recordCount,
+        sizeBytes,
+        payloadJson,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+    return {
+      id: backupId,
+      dateKey,
+      createdAt: new Date().toISOString(),
+      recordCount,
+      sizeBytes,
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `workspaces/${uid}/cloudBackups/${backupId}`);
+  }
+}
+
+export async function listCloudBackupSnapshots(uid: string): Promise<CloudBackupMeta[]> {
+  try {
+    const q = query(collection(db, 'workspaces', uid, 'cloudBackups'), where('ownerId', '==', uid));
+    const snap = await getDocs(q);
+    return snap.docs
+      .map((d) => {
+        const data = d.data();
+        return {
+          id: String(data.id ?? d.id),
+          dateKey: String(data.dateKey ?? ''),
+          createdAt: String(data.dateKey ?? ''),
+          recordCount: Number(data.recordCount ?? 0),
+          sizeBytes: Number(data.sizeBytes ?? 0),
+        };
+      })
+      .sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchCloudBackupSnapshotJson(uid: string, backupId: string): Promise<string | null> {
+  try {
+    const snap = await getDoc(doc(db, 'workspaces', uid, 'cloudBackups', sanitizeId(backupId, 'BKP')));
+    if (!snap.exists()) return null;
+    return String(snap.data().payloadJson ?? '');
+  } catch {
+    return null;
+  }
 }

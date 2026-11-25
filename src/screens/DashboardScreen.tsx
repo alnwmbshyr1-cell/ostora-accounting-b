@@ -1,7 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  BarChart2,
   Calendar,
+  CheckCircle2,
   Compass,
   FileText,
   Package,
@@ -15,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { strings } from '../data/translations';
+import { computeDashboardTodayKpis, computeMonthlySummaryRich } from '../domain/analytics';
 import { RouteId } from '../types/erp';
 import { HealthScoreRing } from '../components/QrMatrix';
 import { ScreenProps } from './types';
@@ -25,6 +28,9 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
   const cur = state.settings.currency;
   const t = strings[isAr ? 'ar' : 'en'];
   const [tourStep, setTourStep] = useState<number | null>(null);
+
+  const todayKpis = useMemo(() => computeDashboardTodayKpis(state), [state]);
+  const richMonth = useMemo(() => computeMonthlySummaryRich(state), [state]);
 
   const allKpis = [
     { label: t.totalSales, value: metrics.totalSales, icon: TrendingUp, target: 'invoices' as RouteId },
@@ -91,6 +97,57 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
       momDeltaPct,
     };
   }, [state.invoices, state.expenses, state.settings.monthlySalesGoal, isAr]);
+
+  const performanceInsights = useMemo(() => {
+    const rev = metrics.revenueExVat;
+    const netMarginPct = rev > 0 ? Math.round((metrics.netProfit / rev) * 100) : 0;
+    const collectionRatePct =
+      metrics.totalSales > 0
+        ? Math.max(0, Math.min(100, Math.round(((metrics.totalSales - metrics.customerDebt) / metrics.totalSales) * 100)))
+        : 100;
+    const expenseRatioPct = rev > 0 ? Math.round((metrics.totalExpenses / rev) * 100) : 0;
+
+    const salesByCustomer = new Map<string, number>();
+    const qtyByProduct = new Map<string, number>();
+    for (const inv of state.invoices) {
+      const baseAmt = inv.baseTotal ?? inv.total * (inv.exchangeRate ?? 1);
+      salesByCustomer.set(inv.customerName, (salesByCustomer.get(inv.customerName) ?? 0) + baseAmt);
+      for (const it of inv.items ?? []) {
+        qtyByProduct.set(it.productName, (qtyByProduct.get(it.productName) ?? 0) + it.qty);
+      }
+    }
+
+    let topCustomerName = '—';
+    let topCustomerTotal = 0;
+    salesByCustomer.forEach((total, name) => {
+      if (total > topCustomerTotal) {
+        topCustomerTotal = total;
+        topCustomerName = name;
+      }
+    });
+
+    let topProductName = '—';
+    let topProductQty = 0;
+    qtyByProduct.forEach((qty, name) => {
+      if (qty > topProductQty) {
+        topProductQty = qty;
+        topProductName = name;
+      }
+    });
+
+    const lowStockCount = state.products.filter((p) => p.qty <= 10).length;
+
+    return {
+      netMarginPct,
+      collectionRatePct,
+      expenseRatioPct,
+      topCustomerName,
+      topCustomerTotal,
+      topProductName,
+      topProductQty,
+      lowStockCount,
+    };
+  }, [metrics.revenueExVat, metrics.netProfit, metrics.totalSales, metrics.customerDebt, metrics.totalExpenses, state.invoices, state.products]);
 
   const tourSteps = [
     {
@@ -209,6 +266,37 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
         </div>
       )}
 
+      {/* Today Live KPIs: Today Sales, Today Profit, Cash Box Balance */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+        <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/30 rounded-[20px] p-4 flex items-center justify-between gap-3">
+          <div>
+            <span className="text-xs font-bold text-slate-500 block">{t.todaySales}</span>
+            <p className="text-lg sm:text-xl font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227] mt-1">
+              {todayKpis.todaySales.toLocaleString(undefined, { maximumFractionDigits: 2 })} {cur}
+            </p>
+          </div>
+          <TrendingUp className="w-6 h-6 text-[#0A3D2C] dark:text-[#C9A227] shrink-0" />
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/30 rounded-[20px] p-4 flex items-center justify-between gap-3">
+          <div>
+            <span className="text-xs font-bold text-slate-500 block">{t.todayProfit}</span>
+            <p className={`text-lg sm:text-xl font-extrabold font-mono tabular-nums mt-1 ${todayKpis.todayProfit >= 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-600'}`}>
+              {todayKpis.todayProfit.toLocaleString(undefined, { maximumFractionDigits: 2 })} {cur}
+            </p>
+          </div>
+          <BarChart2 className="w-6 h-6 text-emerald-600 dark:text-emerald-400 shrink-0" />
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/30 rounded-[20px] p-4 flex items-center justify-between gap-3">
+          <div>
+            <span className="text-xs font-bold text-slate-500 block">{t.cashBoxBalance}</span>
+            <p className="text-lg sm:text-xl font-extrabold font-mono tabular-nums text-slate-900 dark:text-white mt-1">
+              {todayKpis.cashBoxBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })} {cur}
+            </p>
+          </div>
+          <Receipt className="w-6 h-6 text-[#C9A227] shrink-0" />
+        </div>
+      </div>
+
       <div className={`grid grid-cols-2 lg:grid-cols-4 gap-3.5 ${tourStep === 1 ? 'ring-2 ring-[#C9A227] rounded-[22px] p-1' : ''}`}>
         {allKpis.map((k) => {
           const Icon = k.icon;
@@ -299,6 +387,21 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
           </div>
         </div>
 
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+          <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] flex items-center justify-between text-xs">
+            <span className="font-bold text-slate-500">{isAr ? 'أفضل عميل هذا الشهر' : 'Best Customer This Month'}</span>
+            <span className="font-extrabold text-[#0A3D2C] dark:text-[#C9A227]">
+              {richMonth.bestCustomer ? `${richMonth.bestCustomer.name} (${richMonth.bestCustomer.revenue.toLocaleString()} ${cur})` : '—'}
+            </span>
+          </div>
+          <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] flex items-center justify-between text-xs">
+            <span className="font-bold text-slate-500">{isAr ? 'أكثر منتج طلباً هذا الشهر' : 'Top Product This Month'}</span>
+            <span className="font-extrabold text-[#0A3D2C] dark:text-[#C9A227]">
+              {richMonth.topProduct ? `${richMonth.topProduct.name} (${richMonth.topProduct.qty})` : '—'}
+            </span>
+          </div>
+        </div>
+
         <div className="space-y-1.5">
           <div className="flex items-center justify-between text-xs">
             <span className="font-bold text-slate-600 dark:text-slate-300">{t.salesGoalProgress}</span>
@@ -312,6 +415,84 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
               className="h-full rounded-full bg-gradient-to-r from-[#0A3D2C] to-[#C9A227] transition-all duration-300"
               style={{ width: `${monthlySummary.goalPct}%` }}
             />
+          </div>
+        </div>
+      </div>
+
+      {/* Performance Insights (رؤى الأداء) */}
+      <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-[#0A3D2C]/10 dark:bg-[#C9A227]/15 flex items-center justify-center shrink-0">
+              <BarChart2 className="w-4 h-4 text-[#0A3D2C] dark:text-[#C9A227]" />
+            </div>
+            <div>
+              <h3 className="text-sm sm:text-base font-extrabold">{t.performanceInsights}</h3>
+              <p className="text-xs text-slate-500">
+                {performanceInsights.lowStockCount > 0
+                  ? `${performanceInsights.lowStockCount} ${t.lowStockRiskLabel}`
+                  : t.insightHealthy}
+              </p>
+            </div>
+          </div>
+          {hasPermission('ai_analytics') && (
+            <button
+              onClick={() => onNavigate('ai_analytics')}
+              className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-[#1F332B] hover:border-[#0A3D2C] dark:hover:border-[#C9A227] text-xs font-bold text-[#0A3D2C] dark:text-[#C9A227] cursor-pointer transition-colors"
+            >
+              {t.ai_analytics}
+            </button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] space-y-1">
+            <span className="text-xs font-bold text-slate-500 block">{t.grossMarginLabel}</span>
+            <p className={`text-lg font-extrabold font-mono tabular-nums ${performanceInsights.netMarginPct >= 15 ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-[#C9A227]'}`}>
+              {performanceInsights.netMarginPct}%
+            </p>
+            <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
+              {performanceInsights.netMarginPct >= 15 ? <CheckCircle2 className="w-3 h-3 text-emerald-600" /> : <AlertTriangle className="w-3 h-3 text-amber-600" />}
+              <span>{performanceInsights.netMarginPct >= 15 ? t.insightHealthy : t.insightAttention}</span>
+            </span>
+          </div>
+
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] space-y-1">
+            <span className="text-xs font-bold text-slate-500 block">{t.collectionRateLabel}</span>
+            <p className={`text-lg font-extrabold font-mono tabular-nums ${performanceInsights.collectionRatePct >= 70 ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+              {performanceInsights.collectionRatePct}%
+            </p>
+            <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
+              {performanceInsights.collectionRatePct >= 70 ? <CheckCircle2 className="w-3 h-3 text-emerald-600" /> : <AlertTriangle className="w-3 h-3 text-red-600" />}
+              <span>{performanceInsights.collectionRatePct >= 70 ? t.insightHealthy : t.insightAttention}</span>
+            </span>
+          </div>
+
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] space-y-1">
+            <span className="text-xs font-bold text-slate-500 block">{t.expenseRatioLabel}</span>
+            <p className={`text-lg font-extrabold font-mono tabular-nums ${performanceInsights.expenseRatioPct <= 60 ? 'text-[#0A3D2C] dark:text-[#C9A227]' : 'text-red-600 dark:text-red-400'}`}>
+              {performanceInsights.expenseRatioPct}%
+            </p>
+            <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
+              {performanceInsights.expenseRatioPct <= 60 ? <CheckCircle2 className="w-3 h-3 text-emerald-600" /> : <AlertTriangle className="w-3 h-3 text-red-600" />}
+              <span>{performanceInsights.expenseRatioPct <= 60 ? t.insightHealthy : t.insightAttention}</span>
+            </span>
+          </div>
+
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] space-y-1">
+            <span className="text-xs font-bold text-slate-500 block">{t.topCustomerLabel}</span>
+            <p className="text-sm font-extrabold truncate">{performanceInsights.topCustomerName}</p>
+            <span className="text-[11px] font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227] block">
+              {performanceInsights.topCustomerTotal > 0 ? `${performanceInsights.topCustomerTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${cur}` : '—'}
+            </span>
+          </div>
+
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] space-y-1">
+            <span className="text-xs font-bold text-slate-500 block">{t.topProductLabel}</span>
+            <p className="text-sm font-extrabold truncate">{performanceInsights.topProductName}</p>
+            <span className="text-[11px] font-mono tabular-nums text-slate-500 block">
+              {performanceInsights.topProductQty > 0 ? `${performanceInsights.topProductQty} ${t.qty}` : `${performanceInsights.lowStockCount} ${t.lowStock}`}
+            </span>
           </div>
         </div>
       </div>
@@ -394,10 +575,44 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
         </div>
       )}
 
+      {/* Top 5 Selling Products */}
+      {todayKpis.top5Products.length > 0 && (
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-base font-extrabold">{t.top5Products}</h3>
+            {hasPermission('inventory') && (
+              <button
+                onClick={() => onNavigate('inventory')}
+                className="text-xs font-bold text-[#0A3D2C] dark:text-[#C9A227] hover:underline cursor-pointer"
+              >
+                {t.inventory}
+              </button>
+            )}
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+            {todayKpis.top5Products.map((tp, idx) => (
+              <div
+                key={tp.productId}
+                className="p-3 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] space-y-1"
+              >
+                <div className="flex items-center justify-between text-[11px] font-mono text-[#C9A227] font-bold">
+                  <span>#{idx + 1}</span>
+                  <span>{tp.qtySold} {t.qty}</span>
+                </div>
+                <p className="text-xs font-extrabold truncate">{tp.productName}</p>
+                <p className="text-xs font-mono font-bold text-[#0A3D2C] dark:text-emerald-400 tabular-nums">
+                  {tp.revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {hasPermission('invoices') && (
         <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-base font-extrabold">{t.recentInvoices}</h3>
+            <h3 className="text-base font-extrabold">{t.latest10Invoices}</h3>
             <button
               onClick={() => onNavigate('invoices')}
               className="text-xs font-bold text-[#0A3D2C] dark:text-[#C9A227] hover:underline cursor-pointer"
@@ -405,11 +620,11 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
               {t.all}
             </button>
           </div>
-          {state.invoices.length === 0 ? (
+          {todayKpis.latest10Invoices.length === 0 ? (
             <p className="text-sm text-slate-500 py-6 text-center">{t.noData}</p>
           ) : (
             <div className="divide-y divide-slate-100 dark:divide-[#1F332B]">
-              {state.invoices.slice(0, 5).map((inv) => (
+              {todayKpis.latest10Invoices.map((inv) => (
                 <div
                   key={inv.id}
                   onClick={() => onNavigate('invoices')}
@@ -418,7 +633,7 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                   <div className="min-w-0">
                     <p className="font-bold text-sm truncate">{inv.customerName}</p>
                     <p className="text-xs text-slate-500 font-mono">
-                      {inv.id} · {t[inv.status]}
+                      {inv.id} · {t[inv.status]} · {inv.date.slice(0, 10)}
                     </p>
                   </div>
                   <span

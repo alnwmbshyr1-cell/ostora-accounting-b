@@ -1,18 +1,19 @@
 import React, { useState } from 'react';
-import { Edit2, FileSpreadsheet, MessageCircle, Plus, Printer, Trash2 } from 'lucide-react';
+import { Edit2, FileSpreadsheet, Layers, MessageCircle, Plus, Printer, Trash2 } from 'lucide-react';
 import { strings } from '../data/translations';
 import { ReturnReason, ReturnRecord, ReturnType as ReturnKind } from '../types/erp';
 import { exportMultiSheetExcel } from '../utils/export';
 import { buildWhatsAppLink } from '../utils/messaging';
 import { ScreenProps } from './types';
 
-export const ReturnsScreen: React.FC<ScreenProps> = ({ store, onPrintReturn }) => {
+export const ReturnsScreen: React.FC<ScreenProps> = ({ store, onPrintReturn, onOpenBatchPrint }) => {
   const { state, actions } = store;
   const isAr = state.settings.isArabic;
   const cur = state.settings.currency;
   const t = strings[isAr ? 'ar' : 'en'];
 
   const [retTab, setRetTab] = useState<ReturnKind>('sales');
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [retModal, setRetModal] = useState<{ open: boolean; editId?: string }>({ open: false });
   const [retForm, setRetForm] = useState({
     originalDocId: '',
@@ -98,6 +99,26 @@ export const ReturnsScreen: React.FC<ScreenProps> = ({ store, onPrintReturn }) =
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {list.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                const targets =
+                  selectedIds.length > 0
+                    ? list.filter((r) => selectedIds.includes(r.id))
+                    : list;
+                onOpenBatchPrint?.(targets.map((r) => ({ kind: 'return', data: r })));
+              }}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#C9A227] text-slate-950 font-extrabold text-xs cursor-pointer"
+            >
+              <Layers className="w-4 h-4" />
+              <span>
+                {selectedIds.length > 0
+                  ? `${t.batchPrintSelected} (${list.filter((r) => selectedIds.includes(r.id)).length})`
+                  : `${t.batchPrint} (${list.length})`}
+              </span>
+            </button>
+          )}
           <button
             onClick={() => {
               exportMultiSheetExcel('ostora_returns.xls', [
@@ -163,6 +184,16 @@ export const ReturnsScreen: React.FC<ScreenProps> = ({ store, onPrintReturn }) =
           <table className="w-full text-xs sm:text-sm min-w-[760px]">
             <thead className="bg-[#0A3D2C]/5 dark:bg-[#C9A227]/10 border-b border-slate-200 dark:border-[#1F332B]">
               <tr>
+                <th className="p-3 w-10 text-center">
+                  <input
+                    type="checkbox"
+                    checked={list.length > 0 && list.every((r) => selectedIds.includes(r.id))}
+                    onChange={(e) =>
+                      setSelectedIds(e.target.checked ? list.map((r) => r.id) : [])
+                    }
+                    className="w-4 h-4 rounded accent-[#0A3D2C] cursor-pointer"
+                  />
+                </th>
                 <th className="p-3 text-start">ID</th>
                 <th className="p-3 text-start">{t.originalInvoice}</th>
                 <th className="p-3 text-start">{retTab === 'sales' ? t.client : t.suppliers}</th>
@@ -177,6 +208,18 @@ export const ReturnsScreen: React.FC<ScreenProps> = ({ store, onPrintReturn }) =
             <tbody className="divide-y divide-slate-100 dark:divide-[#1F332B]">
               {list.map((r) => (
                 <tr key={r.id} className="hover:bg-slate-50/70 dark:hover:bg-[#182821]">
+                  <td className="p-3 text-center">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(r.id)}
+                      onChange={() =>
+                        setSelectedIds((prev) =>
+                          prev.includes(r.id) ? prev.filter((x) => x !== r.id) : [...prev, r.id],
+                        )
+                      }
+                      className="w-4 h-4 rounded accent-[#0A3D2C] cursor-pointer"
+                    />
+                  </td>
                   <td className="p-3 font-mono font-bold text-slate-500">{r.id}</td>
                   <td className="p-3 font-mono">{r.originalDocId}</td>
                   <td className="p-3 font-bold">{r.partyName}</td>

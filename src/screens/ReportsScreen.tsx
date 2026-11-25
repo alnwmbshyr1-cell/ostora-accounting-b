@@ -20,6 +20,8 @@ import {
   YAxis,
 } from 'recharts';
 import { strings } from '../data/translations';
+import { computeAccountLedger, computeProfitAnalytics } from '../domain/accounting';
+import { fromHalalas, toHalalas } from '../domain/halala';
 import { downloadTextFile, exportMultiSheetExcel } from '../utils/export';
 import { ScreenProps } from './types';
 
@@ -109,10 +111,14 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
   const cur = state.settings.currency;
   const t = strings[isAr ? 'ar' : 'en'];
 
-  const [reportTab, setReportTab] = useState<0 | 1 | 2>(0);
+  const [reportTab, setReportTab] = useState<0 | 1 | 2 | 3 | 4 | 5 | 6 | 7>(0);
   const [monthRange, setMonthRange] = useState<6 | 12>(6);
   const [selectedMonthKey, setSelectedMonthKey] = useState<string | null>(null);
   const [printAllMode, setPrintAllMode] = useState(false);
+  const [profitDimension, setProfitDimension] = useState<'invoice' | 'product' | 'customer' | 'branch'>('invoice');
+  const [selectedAccountCode, setSelectedAccountCode] = useState<string>('1010');
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string>(state.customers[0]?.id ?? '');
+  const [selectedSupplierId, setSelectedSupplierId] = useState<string>(state.suppliers[0]?.id ?? '');
 
   useEffect(() => {
     const onAfterPrint = () => setPrintAllMode(false);
@@ -230,7 +236,120 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
     ],
   ];
 
-  const rows = reportTab === 0 ? trialRows : reportTab === 1 ? incomeRows : balanceRows;
+  const profitAnalytics = useMemo(() => computeProfitAnalytics(state), [state]);
+  const glData = useMemo(() => computeAccountLedger(selectedAccountCode, state.journals), [selectedAccountCode, state.journals]);
+
+  const inputVatTotal = useMemo(() => {
+    let h = 0;
+    for (const po of state.purchaseOrders) {
+      if (po.status === 'received') {
+        h += toHalalas(po.vat ?? 0);
+      }
+    }
+    return fromHalalas(h);
+  }, [state.purchaseOrders]);
+  const netVatPayable = fromHalalas(toHalalas(vat) - toHalalas(inputVatTotal));
+
+  const profitRows: string[][] = useMemo(() => {
+    const src =
+      profitDimension === 'invoice'
+        ? profitAnalytics.byInvoice
+        : profitDimension === 'product'
+        ? profitAnalytics.byProduct
+        : profitDimension === 'customer'
+        ? profitAnalytics.byCustomer
+        : profitAnalytics.byBranch;
+    const header = [
+      isAr ? 'البند' : 'Item',
+      t.revenueLabel,
+      isAr ? 'التكلفة التقديرية' : 'Est. Cost',
+      t.netProfit,
+      t.profitMargin,
+    ];
+    return [
+      header,
+      ...src.map((r) => [
+        r.label,
+        r.revenue.toFixed(2),
+        r.estimatedCost.toFixed(2),
+        r.profit.toFixed(2),
+        `${r.marginPercent}%`,
+      ]),
+    ];
+  }, [profitAnalytics, profitDimension, isAr, t]);
+
+  const ledgerRows: string[][] = useMemo(
+    () => [
+      [t.date, isAr ? 'المرجع' : 'Ref', t.reason, t.debit, t.credit, isAr ? 'الرصيد' : 'Balance'],
+      ...glData.rows.map((r) => [
+        r.date.slice(0, 10),
+        r.journalId,
+        r.description,
+        r.debit.toFixed(2),
+        r.credit.toFixed(2),
+        r.runningBalance.toFixed(2),
+      ]),
+    ],
+    [glData.rows, isAr, t],
+  );
+
+  const customerStmtRows: string[][] = useMemo(() => {
+    const cust = state.customers.find((c) => c.id === selectedCustomerId) ?? state.customers[0];
+    if (!cust) return [[t.date, t.reason, t.debit, t.credit]];
+    const invs = state.invoices
+      .filter((i) => i.customerId === cust.id || i.customerName === cust.name)
+      .map((i) => [i.date.slice(0, 10), `${i.id} · ${i.description || t.invoices}`, i.total.toFixed(2), (i.paidAmount ?? 0).toFixed(2)]);
+    const vchs = state.vouchers
+      .filter((v) => v.type === 'receipt' && v.partyName === cust.name)
+      .map((v) => [v.date.slice(0, 10), `${v.id} · ${v.reason}`, '0.00', v.amount.toFixed(2)]);
+    return [
+      [t.date, t.reason, isAr ? 'مدين (فاتورة)' : 'Debit', isAr ? 'دائن (تحصيل)' : 'Credit'],
+      ...invs,
+      ...vchs,
+      [isAr ? 'الرصيد الحالي المستحق' : 'Current Balance Due', cust.name, cust.debt.toFixed(2), '—'],
+    ];
+  }, [state.customers, state.invoices, state.vouchers, selectedCustomerId, isAr, t]);
+
+  const supplierStmtRows: string[][] = useMemo(() => {
+    const sup = state.suppliers.find((s) => s.id === selectedSupplierId) ?? state.suppliers[0];
+    if (!sup) return [[t.date, t.reason, t.credit, t.debit]];
+    const pos = state.purchaseOrders
+      .filter((p) => p.supplierId === sup.id || p.supplierName === sup.name)
+      .map((p) => [p.date.slice(0, 10), `${p.id} · ${p.productName} ×${p.quantity}`, p.total.toFixed(2), (p.paidAmount ?? 0).toFixed(2)]);
+    const vchs = state.vouchers
+      .filter((v) => v.type === 'payment' && v.partyName === sup.name)
+      .map((v) => [v.date.slice(0, 10), `${v.id} · ${v.reason}`, '0.00', v.amount.toFixed(2)]);
+    return [
+      [t.date, t.reason, isAr ? 'لهم (توريد)' : 'Credit', isAr ? 'مدفوع (صرف)' : 'Debit'],
+      ...pos,
+      ...vchs,
+      [isAr ? 'الرصيد المستحق للمورد' : 'Supplier Payable Due', sup.name, sup.payable.toFixed(2), '—'],
+    ];
+  }, [state.suppliers, state.purchaseOrders, state.vouchers, selectedSupplierId, isAr, t]);
+
+  const vatRows: string[][] = [
+    [t.account, `${t.amount} (${cur})`],
+    [isAr ? 'ضريبة المخرجات (المبيعات)' : 'Output VAT (Sales)', vat.toFixed(2)],
+    [isAr ? 'ضريبة المدخلات (المشتريات المستلمة)' : 'Input VAT (Received Purchases)', inputVatTotal.toFixed(2)],
+    [isAr ? 'صافي الضريبة المستحقة للدفع' : 'Net VAT Payable', netVatPayable.toFixed(2)],
+  ];
+
+  const rows =
+    reportTab === 0
+      ? trialRows
+      : reportTab === 1
+      ? incomeRows
+      : reportTab === 2
+      ? balanceRows
+      : reportTab === 3
+      ? ledgerRows
+      : reportTab === 4
+      ? profitRows
+      : reportTab === 5
+      ? customerStmtRows
+      : reportTab === 6
+      ? supplierStmtRows
+      : vatRows;
 
   const revenueBarColor = isDark ? '#10B981' : '#0A3D2C';
   const expensesBarColor = '#C9A227';
@@ -402,14 +521,23 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
         </div>
       </div>
 
-      {/* Financial Statements Controls */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex p-1 bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-xl">
-          {[t.trialBalance, t.incomeStatement, t.balanceSheet].map((label, idx) => (
+      {/* Financial Statements & Detailed Reports Controls */}
+      <div className="space-y-3">
+        <div className="flex flex-wrap gap-1.5 p-1.5 bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-xl">
+          {[
+            t.trialBalance,
+            t.incomeStatement,
+            t.balanceSheet,
+            t.generalLedger,
+            isAr ? 'تحليل الأرباح' : 'Profitability',
+            t.customerStatement,
+            t.supplierStatement,
+            t.vatPayableReport,
+          ].map((label, idx) => (
             <button
               key={label}
-              onClick={() => setReportTab(idx as 0 | 1 | 2)}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
+              onClick={() => setReportTab(idx as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
                 reportTab === idx ? 'bg-[#0A3D2C] text-white' : 'text-slate-600 dark:text-slate-300'
               }`}
             >
@@ -417,6 +545,87 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
             </button>
           ))}
         </div>
+
+        {/* Sub-filters for Ledger, Profit Breakdown, Customer/Supplier Statements */}
+        {reportTab === 3 && (
+          <div className="flex flex-wrap items-center gap-2 bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-xl p-3">
+            <span className="text-xs font-bold text-slate-500">{t.account}:</span>
+            <select
+              value={selectedAccountCode}
+              onChange={(e) => setSelectedAccountCode(e.target.value)}
+              className="px-3 py-1.5 rounded-lg bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+            >
+              <option value="">{t.all}</option>
+              {state.chartOfAccounts.map((a) => (
+                <option key={a.id} value={a.code}>
+                  {a.code} - {isAr ? a.nameAr : a.nameEn}
+                </option>
+              ))}
+            </select>
+            <span className="text-xs font-mono text-[#0A3D2C] dark:text-[#C9A227] ms-auto">
+              {t.debit}: {glData.totalDebit.toLocaleString()} · {t.credit}: {glData.totalCredit.toLocaleString()}
+            </span>
+          </div>
+        )}
+
+        {reportTab === 4 && (
+          <div className="flex flex-wrap gap-2 bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-xl p-2.5">
+            {(
+              [
+                { id: 'invoice', label: t.profitByInvoice },
+                { id: 'product', label: t.profitByProduct },
+                { id: 'customer', label: t.profitByCustomer },
+                { id: 'branch', label: t.profitByBranch },
+              ] as const
+            ).map((d) => (
+              <button
+                key={d.id}
+                type="button"
+                onClick={() => setProfitDimension(d.id)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
+                  profitDimension === d.id ? 'bg-[#C9A227] text-slate-950' : 'bg-slate-100 dark:bg-[#0A120F]'
+                }`}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {reportTab === 5 && (
+          <div className="flex items-center gap-2 bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-xl p-3">
+            <span className="text-xs font-bold text-slate-500">{t.client}:</span>
+            <select
+              value={selectedCustomerId}
+              onChange={(e) => setSelectedCustomerId(e.target.value)}
+              className="px-3 py-1.5 rounded-lg bg-slate-50 dark:bg-[#0A120F] border text-xs font-bold"
+            >
+              {state.customers.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c.debt.toLocaleString()} {cur})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {reportTab === 6 && (
+          <div className="flex items-center gap-2 bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-xl p-3">
+            <span className="text-xs font-bold text-slate-500">{t.suppliers}:</span>
+            <select
+              value={selectedSupplierId}
+              onChange={(e) => setSelectedSupplierId(e.target.value)}
+              className="px-3 py-1.5 rounded-lg bg-slate-50 dark:bg-[#0A120F] border text-xs font-bold"
+            >
+              {state.suppliers.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.payable.toLocaleString()} {cur})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
         <div className="no-print flex flex-wrap gap-2">
           <button
             onClick={() => {
@@ -436,7 +645,7 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#C9A227] text-slate-950 text-xs font-extrabold cursor-pointer"
           >
             <Printer className="w-4 h-4" />
-            <span>{t.printAllReports}</span>
+            <span>{t.printAllWithLogo}</span>
           </button>
           <button
             onClick={() => downloadTextFile(`ostora_report_${reportTab + 1}.csv`, rows.map((r) => r.join(',')).join('\n'))}
@@ -451,14 +660,26 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
                 { name: 'Trial Balance', rows: trialRows },
                 { name: 'Income Statement', rows: incomeRows },
                 { name: 'Balance Sheet', rows: balanceRows },
+                { name: 'Profit Analysis', rows: profitRows },
+                { name: 'VAT Summary', rows: vatRows },
               ]);
-              actions.notify(isAr ? 'تم تصدير القوائم المالية الثلاث إلى Excel' : 'All 3 statements exported to Excel');
+              actions.notify(isAr ? 'تم تصدير جميع التقارير والقوائم إلى Excel' : 'All reports exported to Excel');
             }}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-emerald-600/30 text-emerald-700 dark:text-emerald-400 bg-white dark:bg-[#121E19] text-xs font-bold cursor-pointer"
           >
             <FileSpreadsheet className="w-4 h-4" />
             <span>{t.exportAllExcel}</span>
           </button>
+          <a
+            href={`https://wa.me/?text=${encodeURIComponent(
+              `${state.settings.companyName}\n${t.revenueLabel}: ${revenue.toFixed(2)} ${cur}\n${t.expensesLabel}: ${expenses.toFixed(2)} ${cur}\n${t.netProfit}: ${netProfit.toFixed(2)} ${cur}\n${t.vatPayableReport}: ${netVatPayable.toFixed(2)} ${cur}`,
+            )}`}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold"
+          >
+            <span>{t.whatsapp}</span>
+          </a>
         </div>
       </div>
 
@@ -493,12 +714,21 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
       {printAllMode && (
         <div className="hidden print:block space-y-6 text-slate-900 bg-white">
           <div className="border-b-2 border-[#0A3D2C] pb-4 flex items-start justify-between gap-4">
-            <div className="space-y-1">
-              <h1 className="text-xl font-extrabold text-[#0A3D2C]">{state.settings.companyName}</h1>
-              <p className="text-sm font-bold text-slate-700">{t.allFinancialStatements}</p>
-              <p className="text-xs text-slate-500">
-                {state.settings.address} · {state.settings.phone}
-              </p>
+            <div className="flex items-center gap-3">
+              {state.settings.logoBase64 && (
+                <img
+                  src={state.settings.logoBase64}
+                  alt="Company Logo"
+                  className="w-14 h-14 rounded-xl object-cover border border-[#C9A227]"
+                />
+              )}
+              <div className="space-y-1">
+                <h1 className="text-xl font-extrabold text-[#0A3D2C]">{state.settings.companyName}</h1>
+                <p className="text-sm font-bold text-slate-700">{t.allFinancialStatements}</p>
+                <p className="text-xs text-slate-500">
+                  {state.settings.address} · {state.settings.phone}
+                </p>
+              </div>
             </div>
             <div className="text-end text-xs font-mono space-y-0.5 text-slate-600">
               <p>
@@ -549,6 +779,8 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
             { title: `1. ${t.trialBalance}`, data: trialRows, tabIndex: 0 },
             { title: `2. ${t.incomeStatement}`, data: incomeRows, tabIndex: 1 },
             { title: `3. ${t.balanceSheet}`, data: balanceRows, tabIndex: 2 },
+            { title: `4. ${t.vatPayableReport}`, data: vatRows, tabIndex: 7 },
+            { title: `5. ${t.profitByBranch}`, data: [profitRows[0], ...profitAnalytics.byBranch.map((r) => [r.label, r.revenue.toFixed(2), r.estimatedCost.toFixed(2), r.profit.toFixed(2), `${r.marginPercent}%`])], tabIndex: 4 },
           ].map((section) => (
             <div key={section.title} className="space-y-2 print-avoid-break">
               <h2 className="text-sm font-extrabold text-[#0A3D2C] border-b border-slate-300 pb-1">

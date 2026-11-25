@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { ArrowLeftRight, Edit2, Landmark, Plus, Trash2 } from 'lucide-react';
+import { ArrowLeftRight, CheckCircle2, Edit2, Landmark, Plus, Scale, Trash2 } from 'lucide-react';
 import { strings } from '../data/translations';
+import { computeBankReconciliationDiff } from '../domain/accounting';
 import { ScreenProps } from './types';
 
 const BANK_PRESETS = [
@@ -15,6 +16,7 @@ export const BanksScreen: React.FC<ScreenProps> = ({ store }) => {
   const isAr = state.settings.isArabic;
   const cur = state.settings.currency;
   const t = strings[isAr ? 'ar' : 'en'];
+  const canDelete = state.currentRole !== 'accountant';
 
   const [accountModal, setAccountModal] = useState<{ open: boolean; editId?: string }>({ open: false });
   const [accountForm, setAccountForm] = useState({
@@ -22,6 +24,12 @@ export const BanksScreen: React.FC<ScreenProps> = ({ store }) => {
     nameEn: '',
     accountNumber: '',
     balance: '0',
+  });
+
+  const [reconcileModal, setReconcileModal] = useState<{ open: boolean; bankId: string; statementBalance: string }>({
+    open: false,
+    bankId: '',
+    statementBalance: '',
   });
 
   const [transferModal, setTransferModal] = useState(false);
@@ -33,6 +41,15 @@ export const BanksScreen: React.FC<ScreenProps> = ({ store }) => {
   });
 
   const totalTreasury = state.banks.reduce((sum, b) => sum + b.balance, 0);
+  const reconcileTarget = state.banks.find((b) => b.id === reconcileModal.bankId);
+  const reconcilePreview = reconcileTarget
+    ? computeBankReconciliationDiff(
+        reconcileTarget,
+        Number.isFinite(parseFloat(reconcileModal.statementBalance))
+          ? parseFloat(reconcileModal.statementBalance)
+          : reconcileTarget.balance,
+      )
+    : null;
 
   return (
     <div className="space-y-4">
@@ -108,7 +125,7 @@ export const BanksScreen: React.FC<ScreenProps> = ({ store }) => {
                   >
                     <Edit2 className="w-4 h-4 text-[#C9A227]" />
                   </button>
-                  {!isCash && (
+                  {!isCash && canDelete && (
                     <button
                       onClick={() => {
                         actions.deleteBankAccount(b.id);
@@ -130,10 +147,118 @@ export const BanksScreen: React.FC<ScreenProps> = ({ store }) => {
               >
                 {b.balance.toLocaleString(undefined, { minimumFractionDigits: 2 })} {cur}
               </p>
+              <div className="pt-2 border-t border-black/10 dark:border-white/10 flex items-center justify-between gap-2">
+                <span className="text-[10px] font-mono opacity-80 flex items-center gap-1">
+                  {b.lastReconciledDate ? (
+                    <>
+                      <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                      {isAr ? `آخر تسوية: ${b.lastReconciledDate}` : `Reconciled ${b.lastReconciledDate}`}
+                    </>
+                  ) : isAr ? (
+                    'بانتظار التسوية'
+                  ) : (
+                    'Unreconciled'
+                  )}
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setReconcileModal({
+                      open: true,
+                      bankId: b.id,
+                      statementBalance: String(b.balance),
+                    })
+                  }
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                    isCash
+                      ? 'bg-[#0A3D2C] text-white'
+                      : 'bg-white/15 hover:bg-white/25 text-white'
+                  }`}
+                >
+                  <Scale className="w-3 h-3" />
+                  <span>{t.reconcileAccount}</span>
+                </button>
+              </div>
             </div>
           );
         })}
       </div>
+
+      {reconcileModal.open && reconcileTarget && reconcilePreview && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] max-w-md w-full p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <Scale className="w-5 h-5 text-[#0A3D2C] dark:text-[#C9A227]" />
+              <div>
+                <h3 className="text-base font-extrabold">{t.reconcileAccount}</h3>
+                <p className="text-xs text-slate-500">{isAr ? reconcileTarget.nameAr : reconcileTarget.nameEn}</p>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0A120F] flex items-center justify-between text-xs font-mono">
+              <span className="text-slate-500 font-sans font-bold">
+                {isAr ? 'الرصيد الدفتري في النظام:' : 'System Ledger Balance:'}
+              </span>
+              <span className="font-extrabold tabular-nums">
+                {reconcilePreview.systemBalance.toFixed(2)} {cur}
+              </span>
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-slate-500 block mb-1">
+                {t.statementBalance} ({cur})
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                value={reconcileModal.statementBalance}
+                onChange={(e) => setReconcileModal({ ...reconcileModal, statementBalance: e.target.value })}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm font-mono tabular-nums"
+              />
+            </div>
+
+            <div
+              className={`p-3 rounded-xl text-xs font-bold flex items-center justify-between ${
+                reconcilePreview.isMatched
+                  ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300'
+                  : 'bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300'
+              }`}
+            >
+              <span>{t.autoPostVariance}</span>
+              <span className="font-mono tabular-nums">
+                {reconcilePreview.variance >= 0 ? `+${reconcilePreview.variance.toFixed(2)}` : reconcilePreview.variance.toFixed(2)} {cur}
+              </span>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setReconcileModal({ open: false, bankId: '', statementBalance: '' })}
+                className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-[#1F332B] text-sm font-bold cursor-pointer"
+              >
+                {t.cancel}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const val = parseFloat(reconcileModal.statementBalance);
+                  if (!Number.isFinite(val)) return;
+                  const ok = actions.reconcileBankAccount(reconcileTarget.id, val);
+                  if (ok) {
+                    setReconcileModal({ open: false, bankId: '', statementBalance: '' });
+                    actions.notify(
+                      isAr ? 'تمت تسوية الحساب وترحيل قيد الفروقات تلقائياً' : 'Account reconciled & variance posted',
+                    );
+                  }
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-[#0A3D2C] text-white text-sm font-bold cursor-pointer"
+              >
+                {t.save}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {accountModal.open && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">

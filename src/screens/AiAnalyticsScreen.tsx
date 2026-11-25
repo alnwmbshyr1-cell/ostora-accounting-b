@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useMemo } from 'react';
+import { AlertTriangle, Building2, Package, TrendingUp, Users } from 'lucide-react';
 import { HealthScoreRing } from '../components/QrMatrix';
 import { strings } from '../data/translations';
+import { computeAdvancedInsights } from '../domain/analytics';
 import { ScreenProps } from './types';
 
 export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) => {
@@ -8,6 +10,8 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
   const isAr = state.settings.isArabic;
   const cur = state.settings.currency;
   const t = strings[isAr ? 'ar' : 'en'];
+
+  const adv = useMemo(() => computeAdvancedInsights(state), [state]);
 
   const now = new Date();
   const curMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -27,10 +31,10 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
     metrics.totalSales > 0
       ? Math.max(0, Math.round(((metrics.totalSales - metrics.customerDebt) / metrics.totalSales) * 100))
       : 100;
-  const forecastBase = baseSales > 0 ? baseSales : 10000;
+  const forecastBase = adv.nextMonthForecast > 0 ? adv.nextMonthForecast : (baseSales > 0 ? baseSales : 10000);
   const points = Array.from({ length: 6 }, (_, i) => ({
     label: `M${i + 1}`,
-    value: Math.round(forecastBase * (1 + (i + 1) * 0.085)),
+    value: Math.round(forecastBase * (1 + i * 0.065)),
   }));
   const maxVal = Math.max(...points.map((p) => p.value), 1);
 
@@ -68,7 +72,21 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      {/* Next Month Forecast from Last 3 Months + Coverage + Collection */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/40 rounded-[20px] p-4 space-y-1">
+          <p className="text-xs font-bold text-slate-500 flex items-center gap-1.5">
+            <TrendingUp className="w-3.5 h-3.5 text-[#C9A227]" />
+            <span>{isAr ? 'توقع مبيعات الشهر القادم (من آخر 3 أشهر)' : 'Next Month Forecast (3-Mo Weighted)'}</span>
+          </p>
+          <p className="text-2xl font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227]">
+            {adv.nextMonthForecast.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+          </p>
+          <p className="text-[11px] font-mono text-slate-400">
+            {adv.last3MonthsRevenue.map((m) => `${m.monthKey.slice(5)}: ${(m.total / 1000).toFixed(1)}k`).join(' · ')}
+          </p>
+        </div>
+
         <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-1">
           <p className="text-xs font-bold text-slate-500">
             {isAr ? 'معدل كفاية السيولة للمصروفات' : 'Cash Expense Coverage'}
@@ -77,6 +95,7 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
             {cashRunwayMonths} {isAr ? 'شهر' : 'mo'}
           </p>
         </div>
+
         <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-1">
           <p className="text-xs font-bold text-slate-500">
             {isAr ? 'نسبة التحصيل من المبيعات' : 'Sales Collection Ratio'}
@@ -84,6 +103,107 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
           <p className="text-2xl font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227]">
             {collectionRatio}%
           </p>
+        </div>
+      </div>
+
+      {/* Predictive Risk Radar: Overdue Customers, Expiring Stock, Loss Branches */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-extrabold flex items-center gap-1.5 text-rose-600 dark:text-rose-400">
+              <Users className="w-4 h-4" />
+              <span>{isAr ? 'تنبيه عملاء متوقع تأخرهم' : 'Overdue-Risk Customers'}</span>
+            </h3>
+            <button onClick={() => onNavigate('customers')} className="text-[11px] font-bold text-[#0A3D2C] dark:text-[#C9A227] cursor-pointer">
+              {t.customers}
+            </button>
+          </div>
+          {adv.overdueRiskCustomers.length === 0 ? (
+            <p className="text-xs text-slate-400 py-3">{isAr ? 'لا توجد مخاطر تأخير عملاء حالياً' : 'No customer delay risks detected'}</p>
+          ) : (
+            <div className="space-y-2">
+              {adv.overdueRiskCustomers.map((c) => (
+                <div key={c.customerId} className="p-2.5 rounded-xl bg-rose-500/5 border border-rose-500/20 text-xs flex justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-bold truncate">{c.name}</p>
+                    <p className="text-[11px] text-slate-500">
+                      {isAr ? `فواتير متأخرة: ${c.overdueInvoicesCount}` : `Overdue: ${c.overdueInvoicesCount}`}
+                      {c.creditLimit ? ` · ${c.utilizationPct}% ${t.creditLimit}` : ''}
+                    </p>
+                  </div>
+                  <span className="font-mono font-extrabold text-rose-600 shrink-0">
+                    {c.debt.toLocaleString()} {cur}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-extrabold flex items-center gap-1.5 text-amber-600 dark:text-amber-400">
+              <Package className="w-4 h-4" />
+              <span>{isAr ? 'أصناف ستنتهي أو قريبة الانتهاء' : 'Low-Stock & Expiring Items'}</span>
+            </h3>
+            <button onClick={() => onNavigate('inventory')} className="text-[11px] font-bold text-[#0A3D2C] dark:text-[#C9A227] cursor-pointer">
+              {t.inventory}
+            </button>
+          </div>
+          {adv.stockAndExpiryAlerts.length === 0 ? (
+            <p className="text-xs text-slate-400 py-3">{isAr ? 'المخزون والصلاحيات مستقرة' : 'Stock and expiry healthy'}</p>
+          ) : (
+            <div className="space-y-2">
+              {adv.stockAndExpiryAlerts.slice(0, 4).map((p) => (
+                <div key={p.productId} className="p-2.5 rounded-xl bg-amber-500/5 border border-amber-500/20 text-xs flex justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-bold truncate">{p.name}</p>
+                    <p className="text-[11px] text-slate-500">
+                      {p.reason === 'expired'
+                        ? isAr ? `منتهي (${p.expiryDate})` : `Expired (${p.expiryDate})`
+                        : p.reason === 'expiring_soon'
+                        ? isAr ? `ينتهي قريباً (${p.expiryDate})` : `Expiring (${p.expiryDate})`
+                        : isAr ? `رصيد منخفض (${p.qty})` : `Low qty (${p.qty})`}
+                    </p>
+                  </div>
+                  <span className="font-mono font-bold text-amber-700 dark:text-[#C9A227] shrink-0">{p.qty}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-extrabold flex items-center gap-1.5 text-[#0A3D2C] dark:text-[#C9A227]">
+              <Building2 className="w-4 h-4" />
+              <span>{isAr ? 'مراقبة ربحية الفروع (فروع خاسرة)' : 'Loss-Making Branches Alert'}</span>
+            </h3>
+            <button onClick={() => onNavigate('reports')} className="text-[11px] font-bold text-[#0A3D2C] dark:text-[#C9A227] cursor-pointer">
+              {t.reports}
+            </button>
+          </div>
+          {adv.lossMakingBranches.length === 0 ? (
+            <p className="text-xs text-emerald-600 dark:text-emerald-400 py-3 font-bold">
+              {isAr ? 'جميع الفروع تحقق أرباحاً أو متوازنة ✓' : 'All active branches are profitable ✓'}
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {adv.lossMakingBranches.map((b) => (
+                <div key={b.branchId} className="p-2.5 rounded-xl bg-rose-500/5 border border-rose-500/20 text-xs flex justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-bold truncate">{b.name}</p>
+                    <p className="text-[11px] text-slate-500">
+                      {t.revenueLabel}: {b.revenue.toLocaleString()} · {t.expensesLabel}: {b.expenses.toLocaleString()}
+                    </p>
+                  </div>
+                  <span className="font-mono font-extrabold text-rose-600 shrink-0">
+                    {b.netResult.toLocaleString()} {cur}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -109,7 +229,10 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
       </div>
 
       <div className="space-y-3">
-        <h3 className="text-base font-extrabold">{t.smartAlerts}</h3>
+        <h3 className="text-base font-extrabold flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 text-[#C9A227]" />
+          <span>{t.smartAlerts}</span>
+        </h3>
         {metrics.smartAlerts.length === 0 ? (
           <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-6 text-center text-sm text-slate-500">
             {t.noData}

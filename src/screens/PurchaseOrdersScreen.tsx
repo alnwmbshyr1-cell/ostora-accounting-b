@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Check, Lock, MessageCircle, Plus, Printer, Search, Trash2 } from 'lucide-react';
 import { DEFAULT_PRODUCT_IMAGE } from '../constants/permissions';
 import { strings } from '../data/translations';
+import { PaymentMethodType } from '../types/erp';
 import { buildWhatsAppLink } from '../utils/messaging';
 import { ScreenProps } from './types';
 
@@ -10,6 +11,7 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
   const isAr = state.settings.isArabic;
   const cur = state.settings.currency;
   const t = strings[isAr ? 'ar' : 'en'];
+  const canDelete = state.currentRole !== 'accountant';
 
   const defaultPurchaseTaxRate = state.settings.defaultPurchaseTaxRate ?? 15;
   const [poSearch, setPoSearch] = useState('');
@@ -24,6 +26,11 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
     quantity: '10',
     unitCost: '200',
     taxRate: String(defaultPurchaseTaxRate),
+    branchId: state.branches[0]?.id ?? '',
+    warehouseId: state.warehouses[0]?.id ?? '',
+    paymentMethod: 'credit' as PaymentMethodType,
+    paidAmount: '0',
+    notes: '',
   });
 
   const poQtyNum = Math.max(0, parseInt(poForm.quantity, 10) || 0);
@@ -86,6 +93,11 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
               quantity: '10',
               unitCost: String(pr?.cost ?? 200),
               taxRate: String(defaultPurchaseTaxRate),
+              branchId: state.branches[0]?.id ?? '',
+              warehouseId: state.warehouses[0]?.id ?? '',
+              paymentMethod: 'credit',
+              paidAmount: '0',
+              notes: '',
             });
             setPoModal(true);
           }}
@@ -159,16 +171,18 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
                   <MessageCircle className="w-3.5 h-3.5" />
                   <span>{t.whatsapp}</span>
                 </a>
-                <button
-                  onClick={() => {
-                    actions.deletePurchaseOrder(po.id);
-                    actions.notify(isAr ? 'تم حذف أمر الشراء' : 'Purchase Order deleted');
-                  }}
-                  className="ms-auto p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
-                  aria-label={t.delete}
-                >
-                  <Trash2 className="w-4 h-4 text-red-600" />
-                </button>
+                {canDelete && (
+                  <button
+                    onClick={() => {
+                      actions.deletePurchaseOrder(po.id);
+                      actions.notify(isAr ? 'تم حذف أمر الشراء' : 'Purchase Order deleted');
+                    }}
+                    className="ms-auto p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
+                    aria-label={t.delete}
+                  >
+                    <Trash2 className="w-4 h-4 text-red-600" />
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -270,6 +284,52 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
                 <span className="absolute top-1/2 -translate-y-1/2 end-2.5 text-xs font-bold text-slate-400">%</span>
               </div>
             </div>
+            <div className="grid grid-cols-2 gap-2">
+              <select
+                value={poForm.branchId}
+                onChange={(e) => setPoForm({ ...poForm, branchId: e.target.value })}
+                className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs"
+              >
+                {state.branches.map((b) => (
+                  <option key={b.id} value={b.id}>{isAr ? b.nameAr : b.nameEn}</option>
+                ))}
+              </select>
+              <select
+                value={poForm.warehouseId}
+                onChange={(e) => setPoForm({ ...poForm, warehouseId: e.target.value })}
+                className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs"
+              >
+                {state.warehouses.map((w) => (
+                  <option key={w.id} value={w.id}>{isAr ? w.nameAr : w.nameEn}</option>
+                ))}
+              </select>
+              <select
+                value={poForm.paymentMethod}
+                onChange={(e) => setPoForm({ ...poForm, paymentMethod: e.target.value as PaymentMethodType })}
+                className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs"
+              >
+                <option value="credit">{t.payCredit}</option>
+                <option value="cash">{t.payCash}</option>
+                <option value="transfer">{t.payTransfer}</option>
+                <option value="cheque">{t.payCheque}</option>
+              </select>
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={poForm.paidAmount}
+                onChange={(e) => setPoForm({ ...poForm, paidAmount: e.target.value })}
+                placeholder={isAr ? 'المدفوع مقدماً' : 'Paid Upfront'}
+                className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono"
+              />
+            </div>
+            <input
+              value={poForm.notes}
+              onChange={(e) => setPoForm({ ...poForm, notes: e.target.value })}
+              placeholder={t.notes}
+              className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs"
+            />
+
             <div className="p-3 rounded-xl bg-slate-100 dark:bg-[#0A120F] flex justify-between text-xs font-bold tabular-nums">
               <span>{t.vat} ({poTaxRate}%): {poVat.toFixed(2)} {cur}</span>
               <span className="text-[#0A3D2C] dark:text-[#C9A227]">{t.total}: {poTotal.toFixed(2)} {cur}</span>
@@ -288,6 +348,11 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
                     quantity: poQtyNum,
                     unitCost: poCostNum,
                     taxRate: poTaxRate,
+                    branchId: poForm.branchId || undefined,
+                    warehouseId: poForm.warehouseId || undefined,
+                    paymentMethod: poForm.paymentMethod,
+                    paidAmount: Math.max(0, parseFloat(poForm.paidAmount) || 0),
+                    notes: poForm.notes.trim() || undefined,
                   });
                   setPoModal(false);
                   actions.notify(isAr ? 'تم إنشاء أمر الشراء' : 'Purchase Order created');

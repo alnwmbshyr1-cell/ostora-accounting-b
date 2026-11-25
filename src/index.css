@@ -74,4 +74,38 @@
     break-inside: avoid;
     page-break-inside: avoid;
   }
+
+  .print-modal-root {
+    position: static !important;
+    inset: auto !important;
+    overflow: visible !important;
+    height: auto !important;
+    padding: 0 !important;
+    background: transparent !important;
+    display: block !important;
+  }
+
+  .print-modal-card {
+    max-width: none !important;
+    width: 100% !important;
+    box-shadow: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    margin: 0 !important;
+  }
+
+  .batch-print-sheet {
+    break-after: page;
+    page-break-after: always;
+    box-shadow: none !important;
+    border: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .batch-print-sheet:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
 }

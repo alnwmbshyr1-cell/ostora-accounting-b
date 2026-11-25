@@ -29,9 +29,12 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
     salary: '',
   });
 
+  const canDelete = state.currentRole !== 'accountant';
+
   const roleLabels: Record<RoleId, string> = {
     owner: t.roleOwner,
     accountant: t.roleAccountant,
+    cashier: t.roleCashier,
     salesman: t.roleSalesman,
     warehouse: t.roleWarehouse,
   };
@@ -115,9 +118,11 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
                 >
                   <Edit2 className="w-4 h-4 text-slate-500" />
                 </button>
-                <button onClick={() => actions.deleteEmployee(e.id)} className="p-1.5 rounded-lg hover:bg-red-50 cursor-pointer">
-                  <Trash2 className="w-4 h-4 text-red-600" />
-                </button>
+                {canDelete && (
+                  <button onClick={() => actions.deleteEmployee(e.id)} className="p-1.5 rounded-lg hover:bg-red-50 cursor-pointer">
+                    <Trash2 className="w-4 h-4 text-red-600" />
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -151,6 +156,7 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
               >
                 <option value="owner">{t.roleOwner}</option>
                 <option value="accountant">{t.roleAccountant}</option>
+                <option value="cashier">{t.roleCashier}</option>
                 <option value="salesman">{t.roleSalesman}</option>
                 <option value="warehouse">{t.roleWarehouse}</option>
               </select>

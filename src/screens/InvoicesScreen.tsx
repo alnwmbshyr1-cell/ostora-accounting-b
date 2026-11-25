@@ -1,33 +1,47 @@
 import React, { useState } from 'react';
+import QRCode from 'qrcode';
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
+  CheckSquare,
+  Copy,
+  Download,
   Edit2,
+  Layers,
   Lock,
   Mail,
   MessageCircle,
   Plus,
   Printer,
+  QrCode,
   RefreshCw,
   Search,
+  ShieldCheck,
+  Square,
   Trash2,
   X,
 } from 'lucide-react';
+import { QrMatrix } from '../components/QrMatrix';
 import { DEFAULT_PRODUCT_IMAGE } from '../constants/permissions';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { strings } from '../data/translations';
-import { CurrencyCode, Invoice, InvoiceStatus, LineItem } from '../types/erp';
+import { computeInvoiceTotalsHalala } from '../domain/accounting';
+import { CurrencyCode, Invoice, InvoiceDocType, InvoiceStatus, LineItem, PaymentMethodType, UnitOfMeasure } from '../types/erp';
 import { DEFAULT_ENABLED_CURRENCIES, getCurrencyMeta } from '../utils/currencies';
 import { buildWhatsAppLink } from '../utils/messaging';
+import { buildZatcaTlvBase64, validateZatcaPhase1 } from '../utils/zatca';
 import { ScreenProps } from './types';
 
-export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice }) => {
+export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, onOpenBatchPrint }) => {
   const { user } = useFirebase();
   const isAdmin = user?.email === 'alnwmbshyr1@gmail.com';
   const { state, actions } = store;
   const isAr = state.settings.isArabic;
   const cur = state.settings.currency;
   const t = strings[isAr ? 'ar' : 'en'];
+  const canDelete = state.currentRole !== 'accountant';
+  const isSalesman = state.currentRole === 'salesman';
 
   const enabledCurrencies = Array.from(
     new Set<CurrencyCode>([
@@ -40,6 +54,10 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
   const defaultSalesTaxRate = state.settings.defaultSalesTaxRate ?? 15;
   const [invSearch, setInvSearch] = useState('');
   const [invFilter, setInvFilter] = useState<'all' | InvoiceStatus>('all');
+  const [showCostMargin, setShowCostMargin] = useState(false);
+  const [payModalInv, setPayModalInv] = useState<Invoice | null>(null);
+  const [payAmountInput, setPayAmountInput] = useState('');
+  const [payBankId, setPayBankId] = useState(state.banks[0]?.id ?? 'cash');
   const [invModal, setInvModal] = useState<{ open: boolean; edit?: Invoice }>({ open: false });
   const [invForm, setInvForm] = useState({
     customerId: '',
@@ -51,14 +69,41 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
     currency: cur as CurrencyCode,
     exchangeRate: '1',
     status: 'pending' as InvoiceStatus,
+    invoiceType: 'sales' as InvoiceDocType,
+    dueDate: '',
+    branchId: state.settings.defaultBranchId ?? state.branches[0]?.id ?? '',
+    warehouseId: state.settings.defaultWarehouseId ?? state.warehouses[0]?.id ?? '',
+    salespersonName: state.currentRole as string,
+    shiftName: isAr ? 'الصباحية' : 'Morning',
+    paymentMethod: 'cash' as PaymentMethodType,
+    discountTotal: '0',
+    shippingFee: '0',
+    extraFee: '0',
+    paidAmount: '0',
+    notes: '',
+    terms: '',
+    installmentsCount: '0',
     items: [] as LineItem[],
   });
   const [invProdId, setInvProdId] = useState(state.products[0]?.id ?? '');
   const [invProdQty, setInvProdQty] = useState('1');
+  const [invProdUnit, setInvProdUnit] = useState<UnitOfMeasure>('piece');
   const [refreshingFx, setRefreshingFx] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<{ type: 'one' | 'all'; id?: string } | null>(null);
+  const [qrInvoice, setQrInvoice] = useState<Invoice | null>(null);
+  const [copiedQrTlv, setCopiedQrTlv] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  const salesmanCustomerNames = new Set(
+    state.customers
+      .filter((c) => !c.salesRep || c.salesRep === state.currentRole || c.salesRep === user?.email)
+      .map((c) => c.name),
+  );
 
   const filtered = state.invoices.filter((inv) => {
+    if (isSalesman && inv.createdByRole !== 'salesman' && !salesmanCustomerNames.has(inv.customerName)) {
+      return false;
+    }
     const okFilter = invFilter === 'all' || inv.status === invFilter;
     const q = invSearch.toLowerCase();
     const okSearch = !q || inv.customerName.toLowerCase().includes(q) || inv.id.toLowerCase().includes(q);
@@ -68,18 +113,29 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
   const subNum = parseFloat(invForm.subtotal) || 0;
   const parsedRate = parseFloat(invForm.taxRate);
   const activeTaxRate = Number.isFinite(parsedRate) ? Math.max(0, Math.min(100, parsedRate)) : defaultSalesTaxRate;
-  const vatNum = Number(((subNum * activeTaxRate) / 100).toFixed(2));
-  const totalNum = Number((subNum + vatNum).toFixed(2));
   const parsedFx = parseFloat(invForm.exchangeRate);
   const activeFxRate =
     invForm.currency === cur ? 1 : Number.isFinite(parsedFx) && parsedFx > 0 ? parsedFx : ratesMap[invForm.currency] ?? 1;
-  const convertedBaseTotal = Number((totalNum * activeFxRate).toFixed(2));
+  const calc = computeInvoiceTotalsHalala({
+    subtotal: subNum,
+    discountTotal: parseFloat(invForm.discountTotal) || 0,
+    shippingFee: parseFloat(invForm.shippingFee) || 0,
+    extraFee: parseFloat(invForm.extraFee) || 0,
+    taxRate: activeTaxRate,
+    fxRate: activeFxRate,
+    paidAmount: parseFloat(invForm.paidAmount) || 0,
+    status: invForm.status,
+  });
+  const vatNum = calc.vat;
+  const totalNum = calc.total;
+  const convertedBaseTotal = calc.baseTotal;
   const creditCheck = actions.checkCustomerCreditLimit(
     invForm.customerName,
     invForm.customerId,
     convertedBaseTotal,
     invForm.status,
     invModal.edit?.id,
+    calc.paidAmount,
   );
 
   return (
@@ -109,6 +165,20 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
               currency: cur,
               exchangeRate: '1',
               status: 'pending',
+              invoiceType: 'sales',
+              dueDate: '',
+              branchId: state.settings.defaultBranchId ?? state.branches[0]?.id ?? '',
+              warehouseId: state.settings.defaultWarehouseId ?? state.warehouses[0]?.id ?? '',
+              salespersonName: state.currentRole,
+              shiftName: isAr ? 'الصباحية' : 'Morning',
+              paymentMethod: 'cash',
+              discountTotal: '0',
+              shippingFee: '0',
+              extraFee: '0',
+              paidAmount: '0',
+              notes: '',
+              terms: '',
+              installmentsCount: '0',
               items: [],
             });
             setInvModal({ open: true });
@@ -118,7 +188,27 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
           <Plus className="w-4 h-4" />
           <span>{t.addInvoice}</span>
         </button>
-        {state.invoices.length > 0 && (
+        {filtered.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              const items =
+                selectedIds.length > 0
+                  ? filtered.filter((i) => selectedIds.includes(i.id))
+                  : filtered;
+              onOpenBatchPrint?.(items.map((inv) => ({ kind: 'invoice', data: inv })));
+            }}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-[#C9A227] text-slate-950 font-extrabold text-xs hover:opacity-90 cursor-pointer"
+          >
+            <Layers className="w-4 h-4" />
+            <span>
+              {selectedIds.length > 0
+                ? `${t.batchPrintSelected} (${filtered.filter((i) => selectedIds.includes(i.id)).length})`
+                : `${t.batchPrint} (${filtered.length})`}
+            </span>
+          </button>
+        )}
+        {state.invoices.length > 0 && canDelete && (
           <button
             onClick={() => setConfirmDelete({ type: 'all' })}
             className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-red-200 dark:border-red-900/40 text-red-600 dark:text-red-400 font-bold text-xs hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
@@ -129,20 +219,46 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
         )}
       </div>
 
-      <div className="flex items-center gap-1.5 p-1 bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-xl w-fit">
-        {(['all', 'paid', 'pending', 'overdue'] as const).map((st) => (
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1.5 p-1 bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-xl w-fit">
+          {(['all', 'paid', 'partial', 'pending', 'overdue', 'cancelled'] as const).map((st) => (
+            <button
+              key={st}
+              onClick={() => setInvFilter(st)}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                invFilter === st
+                  ? 'bg-[#0A3D2C] text-white'
+                  : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#1A2C24]'
+              }`}
+            >
+              {t[st]}
+            </button>
+          ))}
+        </div>
+
+        {filtered.length > 0 && (
           <button
-            key={st}
-            onClick={() => setInvFilter(st)}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
-              invFilter === st
-                ? 'bg-[#0A3D2C] text-white'
-                : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#1A2C24]'
-            }`}
+            type="button"
+            onClick={() => {
+              const allIds = filtered.map((i) => i.id);
+              const allSelected = allIds.every((id) => selectedIds.includes(id));
+              setSelectedIds(allSelected ? [] : allIds);
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-[#1F332B] bg-white dark:bg-[#121E19] text-xs font-bold cursor-pointer"
           >
-            {t[st]}
+            {filtered.every((i) => selectedIds.includes(i.id)) ? (
+              <>
+                <CheckSquare className="w-3.5 h-3.5 text-[#0A3D2C] dark:text-[#C9A227]" />
+                <span>{t.clearSelection}</span>
+              </>
+            ) : (
+              <>
+                <Square className="w-3.5 h-3.5" />
+                <span>{t.selectAll}</span>
+              </>
+            )}
           </button>
-        ))}
+        )}
       </div>
 
       {filtered.length === 0 ? (
@@ -151,13 +267,33 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {filtered.map((inv) => (
+          {filtered.map((inv) => {
+            const isSelected = selectedIds.includes(inv.id);
+            return (
             <div
               key={inv.id}
-              className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-3"
+              className={`bg-white dark:bg-[#121E19] border rounded-[20px] p-5 space-y-3 transition-colors ${
+                isSelected
+                  ? 'border-[#C9A227] ring-1 ring-[#C9A227]/40'
+                  : 'border-slate-200 dark:border-[#1F332B]'
+              }`}
             >
               <div className="flex items-center justify-between text-xs">
-                <span className="font-mono font-bold text-slate-500">{inv.id}</span>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() =>
+                      setSelectedIds((prev) =>
+                        prev.includes(inv.id)
+                          ? prev.filter((x) => x !== inv.id)
+                          : [...prev, inv.id],
+                      )
+                    }
+                    className="w-4 h-4 rounded accent-[#0A3D2C] cursor-pointer"
+                  />
+                  <span className="font-mono font-bold text-slate-500">{inv.id}</span>
+                </label>
                 <span
                   className={`font-bold ${
                     inv.status === 'paid'
@@ -192,21 +328,32 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
                 </div>
               </div>
               <div className="pt-3 border-t border-slate-100 dark:border-[#1F332B] flex flex-wrap items-center gap-2">
-                {inv.status !== 'paid' && (
-                  <button
-                    onClick={() => {
-                      actions.markInvoicePaid(inv.id);
-                      actions.notify(
-                        isAr
-                          ? `تم تحصيل الفاتورة ${inv.id} وإصدار سند قبض وقيد مزدوج`
-                          : `Invoice ${inv.id} marked paid with auto receipt & journal`,
-                      );
-                    }}
-                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#C9A227] text-slate-950 text-xs font-extrabold cursor-pointer"
-                  >
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>{isAr ? 'تحصيل' : 'Mark Paid'}</span>
-                  </button>
+                {inv.status !== 'paid' && inv.status !== 'cancelled' && (
+                  <>
+                    <button
+                      onClick={() => {
+                        actions.markInvoicePaid(inv.id);
+                        actions.notify(
+                          isAr
+                            ? `تم تحصيل الفاتورة ${inv.id} وإصدار سند قبض وقيد مزدوج`
+                            : `Invoice ${inv.id} marked paid with auto receipt & journal`,
+                        );
+                      }}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#C9A227] text-slate-950 text-xs font-extrabold cursor-pointer"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>{isAr ? 'تحصيل كامل' : 'Mark Paid'}</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setPayModalInv(inv);
+                        setPayAmountInput(String(inv.remainingAmount ?? inv.total));
+                      }}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#C9A227] text-[#0A3D2C] dark:text-[#C9A227] text-xs font-bold cursor-pointer"
+                    >
+                      <span>{isAr ? 'دفعة جزئية' : 'Partial Pay'}</span>
+                    </button>
+                  </>
                 )}
                 <button
                   onClick={() => onPrintInvoice?.(inv)}
@@ -214,6 +361,16 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
                 >
                   <Printer className="w-3.5 h-3.5" />
                   <span>{t.printPdf}</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setCopiedQrTlv(false);
+                    setQrInvoice(inv);
+                  }}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-[#1F332B] hover:border-[#0A3D2C] dark:hover:border-[#C9A227] text-xs font-bold cursor-pointer"
+                >
+                  <QrCode className="w-3.5 h-3.5 text-[#0A3D2C] dark:text-[#C9A227]" />
+                  <span>{t.quickScanQr}</span>
                 </button>
                 <a
                   href={buildWhatsAppLink(
@@ -264,6 +421,20 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
                           currency: invCur,
                           exchangeRate: String(invCur === cur ? 1 : inv.exchangeRate ?? ratesMap[invCur] ?? 1),
                           status: inv.status,
+                          invoiceType: inv.invoiceType ?? 'sales',
+                          dueDate: inv.dueDate ?? '',
+                          branchId: inv.branchId ?? state.branches[0]?.id ?? '',
+                          warehouseId: inv.warehouseId ?? state.warehouses[0]?.id ?? '',
+                          salespersonName: inv.salespersonName ?? state.currentRole,
+                          shiftName: inv.shiftName ?? '',
+                          paymentMethod: inv.paymentMethod ?? 'cash',
+                          discountTotal: String(inv.discountTotal ?? 0),
+                          shippingFee: String(inv.shippingFee ?? 0),
+                          extraFee: String(inv.extraFee ?? 0),
+                          paidAmount: String(inv.paidAmount ?? 0),
+                          notes: inv.notes ?? '',
+                          terms: inv.terms ?? '',
+                          installmentsCount: String(inv.installments?.length ?? 0),
                           items: inv.items ?? [],
                         });
                         setInvModal({ open: true, edit: inv });
@@ -274,17 +445,20 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
                       <Edit2 className="w-4 h-4 text-slate-500" />
                     </button>
                   )}
-                  <button
-                    onClick={() => setConfirmDelete({ type: 'one', id: inv.id })}
-                    className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
-                    aria-label={t.delete}
-                  >
-                    <Trash2 className="w-4 h-4 text-red-600" />
-                  </button>
+                  {canDelete && (
+                    <button
+                      onClick={() => setConfirmDelete({ type: 'one', id: inv.id })}
+                      className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
+                      aria-label={t.delete}
+                    >
+                      <Trash2 className="w-4 h-4 text-red-600" />
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -345,17 +519,33 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
                   </button>
                 ))}
               </div>
-              <div className="flex gap-2">
-                <input type="number" min={1} value={invProdQty} onChange={(e) => setInvProdQty(e.target.value)} className="w-20 px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs" />
+              <div className="flex gap-2 items-center">
+                <input type="number" min={1} value={invProdQty} onChange={(e) => setInvProdQty(e.target.value)} className="w-16 px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs" />
+                <select value={invProdUnit} onChange={(e) => setInvProdUnit(e.target.value as UnitOfMeasure)} className="px-2 py-1.5 rounded-lg bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs">
+                  <option value="piece">{t.unitPiece}</option>
+                  <option value="carton">{t.unitCarton}</option>
+                  <option value="kg">{t.unitKg}</option>
+                  <option value="meter">{t.unitMeter}</option>
+                </select>
                 <button
                   type="button"
                   onClick={() => {
                     const pr = state.products.find((p) => p.id === invProdId);
                     const qty = parseInt(invProdQty, 10) || 1;
                     if (!pr) return;
-                    const nextItems = [
+                    const nextItems: LineItem[] = [
                       ...invForm.items,
-                      { productId: pr.id, productName: pr.name, qty, unitPrice: pr.price, total: Number((qty * pr.price).toFixed(2)) },
+                      {
+                        productId: pr.id,
+                        productName: pr.name,
+                        qty,
+                        unit: invProdUnit,
+                        unitPrice: pr.price,
+                        costPrice: pr.cost,
+                        wholesalePrice: pr.wholesalePrice,
+                        barcode: pr.barcode,
+                        total: Number((qty * pr.price).toFixed(2)),
+                      },
                     ];
                     const nextSub = nextItems.reduce((s, it) => s + it.total, 0);
                     setInvForm({
@@ -370,11 +560,25 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
                   + {t.addItem}
                 </button>
               </div>
+              <div className="flex items-center justify-between pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowCostMargin((v) => !v)}
+                  className="text-[11px] font-bold text-[#0A3D2C] dark:text-[#C9A227] underline cursor-pointer"
+                >
+                  {showCostMargin
+                    ? (isAr ? 'إخفاء سعر الشراء والربح' : 'Hide Cost & Margin')
+                    : (isAr ? 'إظهار سعر الشراء والهامش المخفي' : 'Show Hidden Cost & Margin')}
+                </button>
+              </div>
               {invForm.items.length > 0 && (
                 <div className="pt-1.5 border-t border-slate-100 dark:border-[#1F332B] space-y-1 max-h-24 overflow-y-auto">
                   {invForm.items.map((it, idx) => (
                     <div key={idx} className="flex items-center justify-between text-xs">
-                      <span className="truncate">{it.productName} ×{it.qty}</span>
+                      <span className="truncate">
+                        {it.productName} ×{it.qty}
+                        {showCostMargin && it.costPrice !== undefined ? ` (${t.cost}: ${it.costPrice})` : ''}
+                      </span>
                       <div className="flex items-center gap-2 shrink-0">
                         <span className="font-mono font-bold tabular-nums">{it.total.toFixed(2)} {cur}</span>
                         <button
@@ -399,6 +603,102 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
                   ))}
                 </div>
               )}
+            </div>
+
+            {/* Extended Enterprise Metadata */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              <select
+                value={invForm.invoiceType}
+                onChange={(e) => setInvForm({ ...invForm, invoiceType: e.target.value as InvoiceDocType })}
+                className="px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+              >
+                <option value="sales">{isAr ? 'فاتورة مبيعات' : 'Sales Invoice'}</option>
+                <option value="return">{isAr ? 'مرتجع مبيعات' : 'Sales Return'}</option>
+                <option value="quotation">{isAr ? 'عرض سعر' : 'Quotation'}</option>
+              </select>
+              <select
+                value={invForm.paymentMethod}
+                onChange={(e) => setInvForm({ ...invForm, paymentMethod: e.target.value as PaymentMethodType })}
+                className="px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+              >
+                <option value="cash">{t.payCash}</option>
+                <option value="credit">{t.payCredit}</option>
+                <option value="pos_card">{t.payCard}</option>
+                <option value="transfer">{t.payTransfer}</option>
+                <option value="cheque">{t.payCheque}</option>
+                <option value="installment">{t.payInstallment}</option>
+              </select>
+              <input
+                type="date"
+                value={invForm.dueDate}
+                onChange={(e) => setInvForm({ ...invForm, dueDate: e.target.value })}
+                aria-label={isAr ? 'تاريخ الاستحقاق' : 'Due Date'}
+                className="px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+              />
+              <select
+                value={invForm.branchId}
+                onChange={(e) => setInvForm({ ...invForm, branchId: e.target.value })}
+                className="px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+              >
+                {state.branches.map((b) => (
+                  <option key={b.id} value={b.id}>{isAr ? b.nameAr : b.nameEn}</option>
+                ))}
+              </select>
+              <select
+                value={invForm.warehouseId}
+                onChange={(e) => setInvForm({ ...invForm, warehouseId: e.target.value })}
+                className="px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+              >
+                {state.warehouses.map((w) => (
+                  <option key={w.id} value={w.id}>{isAr ? w.nameAr : w.nameEn}</option>
+                ))}
+              </select>
+              <input
+                type="text"
+                value={invForm.shiftName}
+                onChange={(e) => setInvForm({ ...invForm, shiftName: e.target.value })}
+                placeholder={isAr ? 'الوردية' : 'Shift'}
+                className="px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+              />
+            </div>
+
+            <div className="grid grid-cols-4 gap-2">
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={invForm.discountTotal}
+                onChange={(e) => setInvForm({ ...invForm, discountTotal: e.target.value })}
+                placeholder={isAr ? 'خصم' : 'Disc'}
+                className="px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono"
+              />
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={invForm.shippingFee}
+                onChange={(e) => setInvForm({ ...invForm, shippingFee: e.target.value })}
+                placeholder={isAr ? 'شحن' : 'Ship'}
+                className="px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono"
+              />
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={invForm.extraFee}
+                onChange={(e) => setInvForm({ ...invForm, extraFee: e.target.value })}
+                placeholder={isAr ? 'إضافي' : 'Extra'}
+                className="px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono"
+              />
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={invForm.paidAmount}
+                onChange={(e) => setInvForm({ ...invForm, paidAmount: e.target.value })}
+                placeholder={isAr ? 'مدفوع' : 'Paid'}
+                className="px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono"
+              />
             </div>
 
             <input
@@ -505,8 +805,10 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
                 className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
               >
                 <option value="paid">{t.paid}</option>
+                <option value="partial">{t.partial}</option>
                 <option value="pending">{t.pending}</option>
                 <option value="overdue">{t.overdue}</option>
+                <option value="cancelled">{t.cancelled}</option>
               </select>
             </div>
             <div className="p-3 rounded-xl bg-slate-100 dark:bg-[#0A120F] space-y-1 text-xs font-bold tabular-nums">
@@ -579,6 +881,8 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
                     );
                     return;
                   }
+                  const br = state.branches.find((b) => b.id === invForm.branchId);
+                  const wh = state.warehouses.find((w) => w.id === invForm.warehouseId);
                   const result = actions.saveInvoice(
                     {
                       customerId: creditCheck.customer?.id ?? invForm.customerId ?? invModal.edit?.customerId ?? '',
@@ -587,23 +891,82 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
                       description: invForm.description.trim(),
                       items: invForm.items,
                       subtotal: subNum,
+                      discountTotal: parseFloat(invForm.discountTotal) || 0,
+                      shippingFee: parseFloat(invForm.shippingFee) || 0,
+                      extraFee: parseFloat(invForm.extraFee) || 0,
+                      paidAmount: calc.paidAmount,
+                      remainingAmount: calc.remainingAmount,
                       taxRate: activeTaxRate,
                       currency: invForm.currency,
                       exchangeRate: activeFxRate,
                       baseTotal: convertedBaseTotal,
                       status: invForm.status,
+                      invoiceType: invForm.invoiceType,
+                      dueDate: invForm.dueDate || undefined,
+                      branchId: br?.id,
+                      branchName: br ? (isAr ? br.nameAr : br.nameEn) : undefined,
+                      warehouseId: wh?.id,
+                      warehouseName: wh ? (isAr ? wh.nameAr : wh.nameEn) : undefined,
+                      salespersonName: invForm.salespersonName || state.currentRole,
+                      shiftName: invForm.shiftName || undefined,
+                      paymentMethod: invForm.paymentMethod,
+                      notes: invForm.notes || undefined,
+                      terms: invForm.terms || undefined,
                       date: invModal.edit?.date ?? new Date().toISOString(),
                     },
                     invModal.edit?.id,
                   );
                   if (!result.ok) {
-                    actions.notify(t.creditLimitExceeded);
+                    actions.notify(result.fiscalLocked ? t.fiscalLockBlocked : t.creditLimitExceeded);
                     return;
                   }
                   setInvModal({ open: false });
-                  actions.notify(isAr ? 'تم حفظ الفاتورة بنجاح' : 'Invoice saved');
+                  actions.notify(isAr ? 'تم حفظ الفاتورة والقيد والمخزون' : 'Invoice, journal & stock updated');
                 }}
                 className="flex-1 py-2.5 rounded-xl bg-[#0A3D2C] text-white font-bold text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {t.save}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {payModalInv && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] max-w-sm w-full p-6 space-y-3">
+            <h3 className="text-base font-extrabold">{isAr ? `تحصيل دفعة · ${payModalInv.id}` : `Record Payment · ${payModalInv.id}`}</h3>
+            <p className="text-xs text-slate-500">
+              {payModalInv.customerName} · {isAr ? 'المتبقي:' : 'Remaining:'} {(payModalInv.remainingAmount ?? payModalInv.total).toLocaleString()} {cur}
+            </p>
+            <input
+              type="number"
+              min={0.01}
+              step="0.01"
+              value={payAmountInput}
+              onChange={(e) => setPayAmountInput(e.target.value)}
+              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm font-mono"
+            />
+            <select
+              value={payBankId}
+              onChange={(e) => setPayBankId(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-bold"
+            >
+              {state.banks.map((b) => (
+                <option key={b.id} value={b.id}>{isAr ? b.nameAr : b.nameEn}</option>
+              ))}
+            </select>
+            <div className="flex gap-2 pt-2">
+              <button onClick={() => setPayModalInv(null)} className="flex-1 py-2.5 rounded-xl border text-xs font-bold cursor-pointer">{t.cancel}</button>
+              <button
+                onClick={() => {
+                  const ok = actions.recordInvoicePayment(payModalInv.id, parseFloat(payAmountInput) || 0, payBankId);
+                  if (ok) {
+                    setPayModalInv(null);
+                    actions.notify(isAr ? 'تم تسجيل الدفعة وإصدار القيد والسند' : 'Partial payment recorded');
+                  }
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer"
               >
                 {t.save}
               </button>
@@ -633,6 +996,107 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
           </div>
         </div>
       )}
+      {qrInvoice && (() => {
+        const tlvBase64 = buildZatcaTlvBase64(
+          state.settings.companyName,
+          state.settings.taxNumber,
+          qrInvoice.date,
+          qrInvoice.total.toFixed(2),
+          qrInvoice.vat.toFixed(2),
+        );
+        const zatcaCheck = validateZatcaPhase1(state.settings.companyName, state.settings.taxNumber);
+
+        return (
+          <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] max-w-sm w-full p-6 space-y-4 shadow-2xl">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <h3 className="text-base font-extrabold truncate">{t.zatcaQrTitle}</h3>
+                  <p className="text-xs text-slate-500 font-mono truncate">
+                    {qrInvoice.id} · {qrInvoice.customerName}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setQrInvoice(null)}
+                  aria-label={t.cancel}
+                  className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-[#1A2C24] cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="flex flex-col items-center gap-2.5 py-2">
+                <QrMatrix data={tlvBase64} size={200} />
+                <div className="text-center space-y-0.5">
+                  <p className="text-base font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227]">
+                    {qrInvoice.total.toFixed(2)} {qrInvoice.currency ?? cur}
+                  </p>
+                  <p className="text-[11px] text-slate-500 font-mono tabular-nums">
+                    {t.vat}: {qrInvoice.vat.toFixed(2)} {qrInvoice.currency ?? cur}
+                  </p>
+                </div>
+                <div className={`flex items-center gap-1.5 text-xs font-bold ${zatcaCheck.isCompliant ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}`}>
+                  {zatcaCheck.isCompliant ? <ShieldCheck className="w-4 h-4 shrink-0" /> : <AlertTriangle className="w-4 h-4 shrink-0" />}
+                  <span>
+                    {zatcaCheck.isCompliant
+                      ? isAr ? 'متوافق مع المرحلة الأولى ZATCA' : 'ZATCA Phase-1 Compliant'
+                      : isAr ? zatcaCheck.warningsAr[0] : zatcaCheck.warningsEn[0]}
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!navigator.clipboard) return;
+                    await navigator.clipboard.writeText(tlvBase64);
+                    setCopiedQrTlv(true);
+                    setTimeout(() => setCopiedQrTlv(false), 2000);
+                  }}
+                  className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 dark:border-[#1F332B] text-xs font-bold cursor-pointer"
+                >
+                  {copiedQrTlv ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedQrTlv ? (isAr ? 'تم النسخ' : 'Copied') : t.copyTlvBase64}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const dataUrl = await QRCode.toDataURL(tlvBase64, {
+                      errorCorrectionLevel: 'M',
+                      margin: 4,
+                      width: 360,
+                      color: { dark: '#000000', light: '#FFFFFF' },
+                    });
+                    const a = document.createElement('a');
+                    a.href = dataUrl;
+                    a.download = `zatca_qr_${qrInvoice.id}.png`;
+                    a.click();
+                  }}
+                  className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 dark:border-[#1F332B] text-xs font-bold cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>{t.downloadQrPng}</span>
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const inv = qrInvoice;
+                  setQrInvoice(null);
+                  onPrintInvoice?.(inv);
+                }}
+                className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer"
+              >
+                <Printer className="w-4 h-4" />
+                <span>{t.openPrintPreview}</span>
+              </button>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

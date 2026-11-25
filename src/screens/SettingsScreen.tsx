@@ -1,8 +1,29 @@
 import React, { useRef, useState } from 'react';
-import { Cloud, CloudOff, CloudUpload, Coins, Database, Download, FileSpreadsheet, LogOut, Percent, RefreshCw, RotateCcw, Shield, Trash2, Upload } from 'lucide-react';
+import {
+  Building2,
+  Cloud,
+  CloudOff,
+  CloudUpload,
+  Coins,
+  Database,
+  Download,
+  FileSpreadsheet,
+  ImagePlus,
+  Lock,
+  LogOut,
+  Percent,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Shield,
+  Trash2,
+  Upload,
+} from 'lucide-react';
+import { DataImportModal } from '../components/DataImportModal';
 import { ALL_ROUTES } from '../constants/permissions';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { strings } from '../data/translations';
+import { uploadAssetWithOfflineFallback } from '../services/firebaseExtras';
 import { CurrencyCode, RoleId } from '../types/erp';
 import {
   buildDefaultRatesForBase,
@@ -10,82 +31,272 @@ import {
   SUPPORTED_CURRENCIES,
 } from '../utils/currencies';
 import { downloadTextFile, exportMultiSheetExcel } from '../utils/export';
+import { compressImageToBase64 } from '../utils/image';
 import { ScreenProps } from './types';
 
 export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
-  const { state, metrics, actions, idbSnapshots } = store;
+  const { state, metrics, actions, idbSnapshots, cloudBackups } = store;
   const { user, signingIn, syncStatus, lastCloudSyncAt, authError, signInWithGoogle, signOutFirebase } = useFirebase();
   const isAr = state.settings.isArabic;
   const t = strings[isAr ? 'ar' : 'en'];
+  const canDelete = state.currentRole !== 'accountant';
 
   const [importConfirmRaw, setImportConfirmRaw] = useState<string | null>(null);
+  const [restoreSnapshotKey, setRestoreSnapshotKey] = useState<string | null>(null);
   const [dangerConfirm, setDangerConfirm] = useState<'deleteAll' | 'restoreDemo' | null>(null);
   const [downloadingBackup, setDownloadingBackup] = useState(false);
   const [syncingNow, setSyncingNow] = useState(false);
   const [updatingRates, setUpdatingRates] = useState(false);
+  const [bulkImportOpen, setBulkImportOpen] = useState(false);
+  const [savingCloudBackup, setSavingCloudBackup] = useState(false);
+  const [branchModal, setBranchModal] = useState<{ open: boolean; editId?: string }>({ open: false });
+  const [branchForm, setBranchForm] = useState({
+    nameAr: '',
+    nameEn: '',
+    city: '',
+    phone: '',
+    managerName: '',
+    isMain: false,
+    active: true,
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
 
-  const roles: RoleId[] = ['owner', 'accountant', 'salesman', 'warehouse'];
+  const roles: RoleId[] = ['owner', 'accountant', 'cashier', 'salesman', 'warehouse'];
   const todayStr = new Date().toISOString().slice(0, 10);
   const latestSnapshot = idbSnapshots[0];
 
   return (
     <div className="space-y-5 max-w-4xl">
-      {/* Company Profile */}
-      <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div>
-          <label className="text-xs font-bold text-slate-500">{t.companyName}</label>
-          <input
-            maxLength={160}
-            value={state.settings.companyName}
-            onChange={(e) => actions.updateSettings({ companyName: e.target.value })}
-            className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
-          />
+      {/* Company Profile & Logo */}
+      <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-[#1F332B]">
+          <div className="flex items-center gap-3">
+            {state.settings.logoBase64 ? (
+              <img
+                src={state.settings.logoBase64}
+                alt={state.settings.companyName}
+                className="w-14 h-14 rounded-2xl object-contain bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] p-1"
+              />
+            ) : (
+              <div className="w-14 h-14 rounded-2xl bg-[#0A3D2C] text-[#C9A227] flex items-center justify-center font-extrabold text-xl">
+                {state.settings.companyName.slice(0, 1)}
+              </div>
+            )}
+            <div>
+              <p className="text-sm font-extrabold">{t.companyLogo}</p>
+              <p className="text-xs text-slate-500">
+                {isAr ? 'يظهر في الشريط الجانبي والفواتير وتقارير PDF' : 'Shown in sidebar, invoices, and PDF reports'}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => logoInputRef.current?.click()}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer"
+            >
+              <ImagePlus className="w-4 h-4 text-[#C9A227]" />
+              <span>{t.uploadImage}</span>
+            </button>
+            {state.settings.logoBase64 && (
+              <button
+                type="button"
+                onClick={() => {
+                  actions.updateSettings({ logoBase64: undefined });
+                  actions.notify(isAr ? 'تمت إزالة الشعار' : 'Logo removed');
+                }}
+                className="px-3 py-2 rounded-xl border border-slate-200 dark:border-[#1F332B] text-xs font-bold text-red-600 cursor-pointer"
+              >
+                {t.delete}
+              </button>
+            )}
+            <input
+              ref={logoInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const compressed = await compressImageToBase64(file);
+                const uploaded = await uploadAssetWithOfflineFallback(user?.uid, 'logos', file.name, compressed);
+                actions.updateSettings({ logoBase64: uploaded.url });
+                actions.notify(isAr ? 'تم حفظ شعار الشركة بنجاح' : 'Company logo saved');
+                e.target.value = '';
+              }}
+            />
+          </div>
         </div>
-        <div>
-          <label className="text-xs font-bold text-slate-500">{t.taxNumber}</label>
-          <input
-            maxLength={64}
-            value={state.settings.taxNumber}
-            onChange={(e) => actions.updateSettings({ taxNumber: e.target.value })}
-            className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
-          />
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-bold text-slate-500">{t.companyName}</label>
+            <input
+              maxLength={160}
+              value={state.settings.companyName}
+              onChange={(e) => actions.updateSettings({ companyName: e.target.value })}
+              className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-bold text-slate-500">{t.taxNumber}</label>
+            <input
+              maxLength={64}
+              value={state.settings.taxNumber}
+              onChange={(e) => actions.updateSettings({ taxNumber: e.target.value })}
+              className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-bold text-slate-500">{t.crNumber}</label>
+            <input
+              maxLength={64}
+              value={state.settings.crNumber}
+              onChange={(e) => actions.updateSettings({ crNumber: e.target.value })}
+              className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-bold text-slate-500">{t.phone}</label>
+            <input
+              maxLength={40}
+              value={state.settings.phone}
+              onChange={(e) => actions.updateSettings({ phone: e.target.value })}
+              className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-bold text-slate-500">{t.email}</label>
+            <input
+              maxLength={160}
+              value={state.settings.email}
+              onChange={(e) => actions.updateSettings({ email: e.target.value })}
+              className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-bold text-slate-500">{t.address}</label>
+            <input
+              maxLength={300}
+              value={state.settings.address}
+              onChange={(e) => actions.updateSettings({ address: e.target.value })}
+              className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
+            />
+          </div>
         </div>
-        <div>
-          <label className="text-xs font-bold text-slate-500">{t.crNumber}</label>
-          <input
-            maxLength={64}
-            value={state.settings.crNumber}
-            onChange={(e) => actions.updateSettings({ crNumber: e.target.value })}
-            className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
-          />
+      </div>
+
+      {/* Branches Management & Fiscal Period Lock */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Building2 className="w-5 h-5 text-[#0A3D2C] dark:text-[#C9A227]" />
+              <h3 className="text-base font-extrabold">{t.branchesManagement}</h3>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setBranchForm({
+                  nameAr: '',
+                  nameEn: '',
+                  city: '',
+                  phone: '',
+                  managerName: '',
+                  isMain: false,
+                  active: true,
+                });
+                setBranchModal({ open: true });
+              }}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>{t.addBranch}</span>
+            </button>
+          </div>
+          <div className="divide-y divide-slate-100 dark:divide-[#1F332B] max-h-48 overflow-y-auto">
+            {state.branches.map((br) => (
+              <div key={br.id} className="py-2 flex items-center justify-between gap-2 text-xs">
+                <div className="min-w-0">
+                  <p className="font-bold truncate">
+                    {isAr ? br.nameAr : br.nameEn} {br.isMain ? '★' : ''}
+                  </p>
+                  <p className="text-[11px] text-slate-500 truncate">
+                    {br.city} {br.managerName ? `· ${br.managerName}` : ''}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBranchForm({
+                        nameAr: br.nameAr,
+                        nameEn: br.nameEn,
+                        city: br.city,
+                        phone: br.phone,
+                        managerName: br.managerName,
+                        isMain: Boolean(br.isMain),
+                        active: br.active,
+                      });
+                      setBranchModal({ open: true, editId: br.id });
+                    }}
+                    className="px-2 py-1 rounded-lg border border-slate-200 dark:border-[#1F332B] font-bold cursor-pointer"
+                  >
+                    {t.edit}
+                  </button>
+                  {canDelete && state.branches.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => actions.deleteBranch(br.id)}
+                      className="p-1 text-red-600 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
-        <div>
-          <label className="text-xs font-bold text-slate-500">{t.phone}</label>
-          <input
-            maxLength={40}
-            value={state.settings.phone}
-            onChange={(e) => actions.updateSettings({ phone: e.target.value })}
-            className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
-          />
-        </div>
-        <div>
-          <label className="text-xs font-bold text-slate-500">{t.email}</label>
-          <input
-            maxLength={160}
-            value={state.settings.email}
-            onChange={(e) => actions.updateSettings({ email: e.target.value })}
-            className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
-          />
-        </div>
-        <div>
-          <label className="text-xs font-bold text-slate-500">{t.address}</label>
-          <input
-            maxLength={300}
-            value={state.settings.address}
-            onChange={(e) => actions.updateSettings({ address: e.target.value })}
-            className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
-          />
+
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-3">
+          <div className="flex items-center gap-2">
+            <Lock className="w-5 h-5 text-[#0A3D2C] dark:text-[#C9A227]" />
+            <h3 className="text-base font-extrabold">{t.fiscalLockTitle}</h3>
+          </div>
+          <p className="text-xs text-slate-500">{t.fiscalLockHint}</p>
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={state.settings.fiscalLockDate ?? ''}
+              onChange={(e) => {
+                actions.setFiscalLockDate(e.target.value);
+                actions.notify(
+                  e.target.value
+                    ? isAr
+                      ? `تم قفل الفترة المالية حتى ${e.target.value}`
+                      : `Fiscal lock set to ${e.target.value}`
+                    : isAr
+                    ? 'تم فتح الفترة المالية'
+                    : 'Fiscal lock cleared',
+                );
+              }}
+              className="flex-1 px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+            />
+            {state.settings.fiscalLockDate && (
+              <button
+                type="button"
+                onClick={() => {
+                  actions.setFiscalLockDate('');
+                  actions.notify(isAr ? 'تم إلغاء قفل الفترة المالية' : 'Fiscal period unlocked');
+                }}
+                className="px-3 py-2 rounded-xl border border-slate-200 dark:border-[#1F332B] text-xs font-bold cursor-pointer"
+              >
+                {isAr ? 'فتح' : 'Unlock'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -336,12 +547,13 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
           <Shield className="w-5 h-5 text-[#0A3D2C] dark:text-[#C9A227]" />
           <h3 className="text-base font-extrabold">{t.permissionsMatrix}</h3>
         </div>
-        <table className="w-full text-xs min-w-[520px]">
+        <table className="w-full text-xs min-w-[600px]">
           <thead>
             <tr className="border-b border-slate-200 dark:border-[#1F332B]">
               <th className="p-2.5 text-start">{isAr ? 'الصفحة' : 'Page'}</th>
               <th className="p-2.5 text-center">{t.roleOwner}</th>
               <th className="p-2.5 text-center">{t.roleAccountant}</th>
+              <th className="p-2.5 text-center">{t.roleCashier}</th>
               <th className="p-2.5 text-center">{t.roleSalesman}</th>
               <th className="p-2.5 text-center">{t.roleWarehouse}</th>
             </tr>
@@ -719,19 +931,154 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
             <span>{t.exportAllExcel}</span>
           </button>
           <button
+            onClick={() => setBulkImportOpen(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#0A3D2C] dark:border-[#C9A227] text-[#0A3D2C] dark:text-[#C9A227] text-xs font-bold cursor-pointer"
+          >
+            <Upload className="w-4 h-4" />
+            <span>{t.importDataBtn}</span>
+          </button>
+          <button
             onClick={() => setDangerConfirm('restoreDemo')}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#C9A227]/20 text-[#0A3D2C] dark:text-[#C9A227] text-xs font-bold cursor-pointer"
           >
             <RotateCcw className="w-4 h-4" />
             <span>{t.restoreDemo}</span>
           </button>
-          <button
-            onClick={() => setDangerConfirm('deleteAll')}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-red-600/10 text-red-600 text-xs font-bold cursor-pointer"
-          >
-            <Trash2 className="w-4 h-4" />
-            <span>{t.deleteAll}</span>
-          </button>
+          {canDelete && (
+            <button
+              onClick={() => setDangerConfirm('deleteAll')}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-red-600/10 text-red-600 text-xs font-bold cursor-pointer"
+            >
+              <Trash2 className="w-4 h-4" />
+              <span>{t.deleteAll}</span>
+            </button>
+          )}
+        </div>
+
+        {/* Firebase Cloud Daily Backups */}
+        <div className="pt-3 border-t border-slate-100 dark:border-[#1F332B] space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="text-xs font-extrabold text-slate-500">{t.cloudDailyBackup}</h4>
+            <button
+              type="button"
+              disabled={!user || savingCloudBackup}
+              onClick={async () => {
+                setSavingCloudBackup(true);
+                try {
+                  const meta = await actions.saveCloudBackupNow();
+                  actions.notify(
+                    meta
+                      ? isAr
+                        ? `تم حفظ نسخة Firebase السحابية (${meta.dateKey})`
+                        : `Saved Firebase cloud backup (${meta.dateKey})`
+                      : isAr
+                      ? 'سجل الدخول بحساب Google لحفظ نسخة سحابية'
+                      : 'Sign in with Google to save cloud backups',
+                  );
+                } finally {
+                  setSavingCloudBackup(false);
+                }
+              }}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer disabled:opacity-50"
+            >
+              <CloudUpload className="w-3.5 h-3.5" />
+              <span>{t.backupNow}</span>
+            </button>
+          </div>
+          {cloudBackups.length === 0 ? (
+            <p className="text-xs text-slate-500">
+              {user
+                ? isAr
+                  ? 'لا توجد نسخ سحابية يومية في Firebase بعد'
+                  : 'No Firebase daily cloud backups saved yet'
+                : t.cloudOfflineMode}
+            </p>
+          ) : (
+            <div className="divide-y divide-slate-100 dark:divide-[#1F332B] border border-slate-200 dark:border-[#1F332B] rounded-xl overflow-hidden max-h-44 overflow-y-auto">
+              {cloudBackups.slice(0, 10).map((cb) => (
+                <div
+                  key={cb.id}
+                  className="px-3.5 py-2 flex items-center justify-between gap-2 bg-slate-50/70 dark:bg-[#0A120F]/60 text-xs"
+                >
+                  <div className="font-mono tabular-nums">
+                    <span className="font-bold">{cb.dateKey}</span>
+                    <span className="text-slate-500 ms-2">
+                      · {(cb.sizeBytes / 1024).toFixed(1)} KB · {cb.recordCount} {isAr ? 'سجل' : 'records'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const ok = await actions.restoreCloudBackupById(cb.id);
+                      actions.notify(
+                        ok
+                          ? isAr
+                            ? `تمت استعادة النسخة السحابية ${cb.dateKey}`
+                            : `Restored cloud backup ${cb.dateKey}`
+                          : isAr
+                          ? 'تعذر استعادة النسخة السحابية'
+                          : 'Could not restore cloud backup',
+                      );
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#0A3D2C] text-white font-bold cursor-pointer"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>{t.restoreSnapshot}</span>
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Daily IndexedDB Snapshot History */}
+        <div className="pt-3 border-t border-slate-100 dark:border-[#1F332B] space-y-2">
+          <h4 className="text-xs font-extrabold text-slate-500">{t.dailySnapshotsTitle}</h4>
+          {idbSnapshots.length === 0 ? (
+            <p className="text-xs text-slate-500">{t.snapshotEmpty}</p>
+          ) : (
+            <div className="divide-y divide-slate-100 dark:divide-[#1F332B] border border-slate-200 dark:border-[#1F332B] rounded-xl overflow-hidden max-h-52 overflow-y-auto">
+              {idbSnapshots.slice(0, 10).map((snap) => (
+                <div
+                  key={snap.dateKey}
+                  className="px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 bg-slate-50/70 dark:bg-[#0A120F]/60 text-xs"
+                >
+                  <div className="font-mono tabular-nums">
+                    <span className="font-bold text-slate-800 dark:text-slate-100">{snap.dateKey}</span>
+                    <span className="text-slate-500 ms-2">
+                      · {(snap.sizeBytes / 1024).toFixed(1)} KB · {snap.createdAt.slice(11, 16)}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const rec = await actions.getDailySnapshotByDate(snap.dateKey);
+                        if (rec) {
+                          downloadTextFile(`ostora_backup_${rec.dateKey}.json`, rec.json, 'application/json');
+                          actions.notify(
+                            isAr ? `تم تنزيل نسخة ${rec.dateKey}` : `Downloaded ${rec.dateKey} snapshot`,
+                          );
+                        }
+                      }}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-200 dark:border-[#1F332B] bg-white dark:bg-[#121E19] font-bold cursor-pointer"
+                    >
+                      <Download className="w-3 h-3" />
+                      <span>{t.downloadSnapshot}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRestoreSnapshotKey(snap.dateKey)}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#0A3D2C] text-white font-bold cursor-pointer"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>{t.restoreSnapshot}</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -805,6 +1152,124 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
           </div>
         </div>
       )}
+      {/* Confirm Daily Snapshot Restore Modal */}
+      {restoreSnapshotKey && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#121E19] rounded-[20px] max-w-sm w-full p-6 space-y-4">
+            <h3 className="text-base font-extrabold">{t.restoreSnapshot} · {restoreSnapshotKey}</h3>
+            <p className="text-sm text-slate-600 dark:text-slate-300">{t.confirmRestoreSnapshotMsg}</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setRestoreSnapshotKey(null)}
+                className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-[#1F332B] text-sm font-bold cursor-pointer"
+              >
+                {t.cancel}
+              </button>
+              <button
+                onClick={async () => {
+                  const key = restoreSnapshotKey;
+                  setRestoreSnapshotKey(null);
+                  const ok = await actions.restoreDailySnapshotByDate(key);
+                  actions.notify(
+                    ok
+                      ? isAr
+                        ? `تمت استعادة لقطة ${key} بنجاح`
+                        : `Restored ${key} snapshot successfully`
+                      : isAr
+                      ? 'تعذر استعادة اللقطة المحددة'
+                      : 'Could not restore selected snapshot',
+                  );
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-[#0A3D2C] text-white text-sm font-bold cursor-pointer"
+              >
+                {t.restoreSnapshot}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {branchModal.open && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] max-w-md w-full p-6 space-y-3">
+            <h3 className="text-lg font-extrabold">{branchModal.editId ? t.edit : t.addBranch}</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <input
+                value={branchForm.nameAr}
+                onChange={(e) => setBranchForm({ ...branchForm, nameAr: e.target.value })}
+                placeholder={isAr ? 'اسم الفرع (عربي)' : 'Branch Name (AR)'}
+                className="px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
+              />
+              <input
+                value={branchForm.nameEn}
+                onChange={(e) => setBranchForm({ ...branchForm, nameEn: e.target.value })}
+                placeholder={isAr ? 'اسم الفرع (انجليزي)' : 'Branch Name (EN)'}
+                className="px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
+              />
+              <input
+                value={branchForm.city}
+                onChange={(e) => setBranchForm({ ...branchForm, city: e.target.value })}
+                placeholder={isAr ? 'المدينة' : 'City'}
+                className="px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
+              />
+              <input
+                value={branchForm.phone}
+                onChange={(e) => setBranchForm({ ...branchForm, phone: e.target.value })}
+                placeholder={t.phone}
+                className="px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
+              />
+            </div>
+            <input
+              value={branchForm.managerName}
+              onChange={(e) => setBranchForm({ ...branchForm, managerName: e.target.value })}
+              placeholder={isAr ? 'مدير الفرع' : 'Branch Manager'}
+              className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
+            />
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setBranchModal({ open: false })}
+                className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-[#1F332B] text-sm font-bold cursor-pointer"
+              >
+                {t.cancel}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const nameAr = branchForm.nameAr.trim() || branchForm.nameEn.trim();
+                  const nameEn = branchForm.nameEn.trim() || branchForm.nameAr.trim();
+                  if (!nameAr || !nameEn) return;
+                  actions.saveBranch(
+                    {
+                      nameAr,
+                      nameEn,
+                      city: branchForm.city.trim(),
+                      phone: branchForm.phone.trim(),
+                      managerName: branchForm.managerName.trim(),
+                      isMain: branchForm.isMain,
+                      active: branchForm.active,
+                    },
+                    branchModal.editId,
+                  );
+                  setBranchModal({ open: false });
+                  actions.notify(isAr ? 'تم حفظ بيانات الفرع' : 'Branch saved');
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-[#0A3D2C] text-white text-sm font-bold cursor-pointer"
+              >
+                {t.save}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <DataImportModal
+        open={bulkImportOpen}
+        defaultEntity="customers"
+        allowEntitySwitch={true}
+        store={store}
+        onClose={() => setBulkImportOpen(false)}
+      />
     </div>
   );
 };

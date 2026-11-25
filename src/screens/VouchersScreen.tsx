@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
-import { Edit2, MessageCircle, Plus, Printer, Search, Trash2 } from 'lucide-react';
+import { Edit2, Layers, MessageCircle, Plus, Printer, Search, Trash2 } from 'lucide-react';
 import { strings } from '../data/translations';
 import { VoucherType } from '../types/erp';
 import { buildWhatsAppLink } from '../utils/messaging';
 import { ScreenProps } from './types';
 
-export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher }) => {
+export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, onOpenBatchPrint }) => {
   const { state, actions } = store;
   const isAr = state.settings.isArabic;
   const cur = state.settings.currency;
@@ -13,6 +13,7 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher })
 
   const [vchTab, setVchTab] = useState<VoucherType>('receipt');
   const [vchSearch, setVchSearch] = useState('');
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [vchModal, setVchModal] = useState<{ open: boolean; editId?: string }>({ open: false });
   const [vchForm, setVchForm] = useState({
     type: 'receipt' as VoucherType,
@@ -75,6 +76,27 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher })
           />
         </div>
 
+        {items.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              const targets =
+                selectedIds.length > 0
+                  ? items.filter((v) => selectedIds.includes(v.id))
+                  : items;
+              onOpenBatchPrint?.(targets.map((v) => ({ kind: 'voucher', data: v })));
+            }}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-[#C9A227] text-slate-950 font-extrabold text-xs cursor-pointer"
+          >
+            <Layers className="w-4 h-4" />
+            <span>
+              {selectedIds.length > 0
+                ? `${t.batchPrintSelected} (${items.filter((v) => selectedIds.includes(v.id)).length})`
+                : `${t.batchPrint} (${items.length})`}
+            </span>
+          </button>
+        )}
+
         <button
           onClick={() => {
             setVchForm({
@@ -103,9 +125,21 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher })
           {items.map((v) => (
             <div key={v.id} className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-2.5">
               <div className="flex justify-between items-center">
-                <span className="font-mono text-xs font-bold text-slate-500">
-                  {v.id} · {formatPaymentLabel(v.paymentMethod)}
-                </span>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.includes(v.id)}
+                    onChange={() =>
+                      setSelectedIds((prev) =>
+                        prev.includes(v.id) ? prev.filter((x) => x !== v.id) : [...prev, v.id],
+                      )
+                    }
+                    className="w-4 h-4 rounded accent-[#0A3D2C] cursor-pointer"
+                  />
+                  <span className="font-mono text-xs font-bold text-slate-500">
+                    {v.id} · {formatPaymentLabel(v.paymentMethod)}
+                  </span>
+                </label>
                 <span className={`font-mono text-lg font-extrabold tabular-nums ${v.type === 'receipt' ? 'text-emerald-600' : 'text-red-600'}`}>
                   {v.amount.toFixed(2)} {cur}
                 </span>

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Edit2, Lock, Mail, MessageCircle, Plus, Printer, Trash2 } from 'lucide-react';
+import { Edit2, Layers, Lock, Mail, MessageCircle, Plus, Printer, Trash2 } from 'lucide-react';
 import { DEFAULT_PRODUCT_IMAGE } from '../constants/permissions';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { strings } from '../data/translations';
@@ -7,13 +7,15 @@ import { LineItem, QuotationStatus } from '../types/erp';
 import { buildWhatsAppLink } from '../utils/messaging';
 import { ScreenProps } from './types';
 
-export const QuotationsScreen: React.FC<ScreenProps> = ({ store, onNavigate, onPrintQuotation }) => {
+export const QuotationsScreen: React.FC<ScreenProps> = ({ store, onNavigate, onPrintQuotation, onOpenBatchPrint }) => {
   const { user } = useFirebase();
   const isAdmin = user?.email === 'alnwmbshyr1@gmail.com';
   const { state, actions } = store;
   const isAr = state.settings.isArabic;
   const cur = state.settings.currency;
   const t = strings[isAr ? 'ar' : 'en'];
+
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const [qtModal, setQtModal] = useState<{ open: boolean; editId?: string }>({ open: false });
   const [qtForm, setQtForm] = useState({
@@ -48,6 +50,26 @@ export const QuotationsScreen: React.FC<ScreenProps> = ({ store, onNavigate, onP
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap justify-end gap-2">
+        {state.quotations.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              const targets =
+                selectedIds.length > 0
+                  ? state.quotations.filter((q) => selectedIds.includes(q.id))
+                  : state.quotations;
+              onOpenBatchPrint?.(targets.map((qt) => ({ kind: 'quotation', data: qt })));
+            }}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-[#C9A227] text-slate-950 font-extrabold text-xs cursor-pointer"
+          >
+            <Layers className="w-4 h-4" />
+            <span>
+              {selectedIds.length > 0
+                ? `${t.batchPrintSelected} (${selectedIds.length})`
+                : `${t.batchPrint} (${state.quotations.length})`}
+            </span>
+          </button>
+        )}
         {state.quotations.length > 0 && (
           <button
             onClick={() => setQtConfirmDelete({ type: 'all' })}
@@ -91,6 +113,19 @@ export const QuotationsScreen: React.FC<ScreenProps> = ({ store, onNavigate, onP
           <table className="w-full text-xs sm:text-sm min-w-[760px]">
             <thead className="bg-[#0A3D2C]/5 dark:bg-[#C9A227]/10 border-b border-slate-200 dark:border-[#1F332B]">
               <tr>
+                <th className="p-3 w-10 text-center">
+                  <input
+                    type="checkbox"
+                    checked={
+                      state.quotations.length > 0 &&
+                      state.quotations.every((q) => selectedIds.includes(q.id))
+                    }
+                    onChange={(e) =>
+                      setSelectedIds(e.target.checked ? state.quotations.map((q) => q.id) : [])
+                    }
+                    className="w-4 h-4 rounded accent-[#0A3D2C] cursor-pointer"
+                  />
+                </th>
                 <th className="p-3 text-start">ID</th>
                 <th className="p-3 text-start">{t.client}</th>
                 <th className="p-3 text-end">{t.total}</th>
@@ -102,6 +137,18 @@ export const QuotationsScreen: React.FC<ScreenProps> = ({ store, onNavigate, onP
             <tbody className="divide-y divide-slate-100 dark:divide-[#1F332B]">
               {state.quotations.map((q) => (
                 <tr key={q.id} className="hover:bg-slate-50/70 dark:hover:bg-[#182821]">
+                  <td className="p-3 text-center">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(q.id)}
+                      onChange={() =>
+                        setSelectedIds((prev) =>
+                          prev.includes(q.id) ? prev.filter((x) => x !== q.id) : [...prev, q.id],
+                        )
+                      }
+                      className="w-4 h-4 rounded accent-[#0A3D2C] cursor-pointer"
+                    />
+                  </td>
                   <td className="p-3 font-mono font-bold text-slate-500">{q.id}</td>
                   <td className="p-3 font-bold">{q.customerName}</td>
                   <td className="p-3 text-end font-mono font-extrabold text-[#0A3D2C] dark:text-[#C9A227] tabular-nums">
