@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowRight, Flashlight, Languages, ShieldCheck, Upload } from 'lucide-react';
+import { ArrowRight, Cloud, Flashlight, Languages, ShieldCheck, Upload } from 'lucide-react';
+import { useFirebase } from '../contexts/FirebaseContext';
 import { strings } from '../data/translations';
 import { RoleId } from '../types/erp';
 import appIconImg from '../assets/images/ostora_app_icon_1794578215972.jpg';
@@ -28,6 +29,7 @@ export const AuthOnboardingFlow: React.FC<AuthOnboardingFlowProps> = ({
   onRestoreAutosave,
 }) => {
   const t = strings[isAr ? 'ar' : 'en'];
+  const { signInWithGoogle, signingIn, authError } = useFirebase();
   const [showSplash, setShowSplash] = useState(true);
   const [slide, setSlide] = useState(0);
   const [isRegister, setIsRegister] = useState(false);
@@ -231,6 +233,25 @@ export const AuthOnboardingFlow: React.FC<AuthOnboardingFlowProps> = ({
             {isRegister ? t.register : t.login}
           </button>
         </form>
+
+        <button
+          type="button"
+          disabled={signingIn}
+          onClick={async () => {
+            const signedInUser = await signInWithGoogle();
+            if (signedInUser) {
+              onLoginSuccess();
+            }
+          }}
+          className="w-full py-3 rounded-xl bg-[#0A3D2C]/10 dark:bg-[#C9A227]/15 border border-[#0A3D2C]/30 dark:border-[#C9A227]/40 text-[#0A3D2C] dark:text-[#C9A227] font-bold text-sm flex items-center justify-center gap-2 hover:bg-[#0A3D2C]/15 cursor-pointer disabled:opacity-60"
+        >
+          <Cloud className="w-4 h-4" />
+          <span>{signingIn ? (isAr ? 'جاري الاتصال بـ Google...' : 'Signing in with Google...') : t.googleLogin}</span>
+        </button>
+
+        {authError && (
+          <p className="text-xs text-red-600 text-center font-semibold">{authError}</p>
+        )}
 
         <button
           onClick={onLoginSuccess}

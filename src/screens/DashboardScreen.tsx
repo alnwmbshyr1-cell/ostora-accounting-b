@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Calendar,
   Compass,
   FileText,
   Package,
@@ -31,6 +32,65 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
     { label: t.supplierDebt, value: metrics.supplierDebt, icon: Truck, target: 'suppliers' as RouteId },
     { label: t.stockValue, value: metrics.stockValue, icon: Package, target: 'inventory' as RouteId },
   ].filter((k) => hasPermission(k.target));
+
+  const monthlySummary = useMemo(() => {
+    const now = new Date();
+    const curMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const prevDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const prevMonthKey = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+
+    const toMonthKey = (isoDate: string): string | null => {
+      const d = new Date(isoDate);
+      if (Number.isNaN(d.getTime())) return null;
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    };
+
+    let monthRevenue = 0;
+    let monthSalesGross = 0;
+    let monthInvoicesCount = 0;
+    let prevMonthRevenue = 0;
+
+    for (const inv of state.invoices) {
+      const key = toMonthKey(inv.date);
+      const fx = inv.exchangeRate ?? 1;
+      const revBase = inv.subtotal * fx;
+      const grossBase = inv.baseTotal ?? inv.total * fx;
+      if (key === curMonthKey) {
+        monthRevenue += revBase;
+        monthSalesGross += grossBase;
+        monthInvoicesCount += 1;
+      } else if (key === prevMonthKey) {
+        prevMonthRevenue += revBase;
+      }
+    }
+
+    const monthExpenses = state.expenses.reduce((sum, exp) => {
+      return toMonthKey(exp.date) === curMonthKey ? sum + exp.amount : sum;
+    }, 0);
+
+    const monthNet = monthRevenue - monthExpenses;
+    const goal = Math.max(1, state.settings.monthlySalesGoal || 120000);
+    const goalPct = Math.min(100, Math.round((monthSalesGross / goal) * 100));
+    const momDeltaPct =
+      prevMonthRevenue > 0 ? Math.round(((monthRevenue - prevMonthRevenue) / prevMonthRevenue) * 100) : null;
+
+    const monthLabel = new Intl.DateTimeFormat(isAr ? 'ar-SA' : 'en-US', {
+      month: 'long',
+      year: 'numeric',
+    }).format(now);
+
+    return {
+      monthLabel,
+      monthRevenue,
+      monthSalesGross,
+      monthExpenses,
+      monthNet,
+      monthInvoicesCount,
+      goal,
+      goalPct,
+      momDeltaPct,
+    };
+  }, [state.invoices, state.expenses, state.settings.monthlySalesGoal, isAr]);
 
   const tourSteps = [
     {
@@ -171,6 +231,91 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
         })}
       </div>
 
+      {/* Monthly Summary Widget */}
+      <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-[#0A3D2C]/10 dark:bg-[#C9A227]/15 flex items-center justify-center shrink-0">
+              <Calendar className="w-4 h-4 text-[#0A3D2C] dark:text-[#C9A227]" />
+            </div>
+            <div>
+              <h3 className="text-sm sm:text-base font-extrabold">{t.monthlySummaryTitle}</h3>
+              <p className="text-xs text-slate-500">
+                {monthlySummary.monthLabel} · {monthlySummary.monthInvoicesCount} {t.thisMonthInvoices}
+              </p>
+            </div>
+          </div>
+          {hasPermission('reports') && (
+            <button
+              onClick={() => onNavigate('reports')}
+              className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-[#1F332B] hover:border-[#0A3D2C] dark:hover:border-[#C9A227] text-xs font-bold text-[#0A3D2C] dark:text-[#C9A227] cursor-pointer transition-colors"
+            >
+              {t.viewFullReports}
+            </button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B]">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-bold text-slate-500">{t.thisMonthRevenue}</span>
+              {monthlySummary.momDeltaPct !== null && (
+                <span
+                  className={`text-[11px] font-mono font-bold ${
+                    monthlySummary.momDeltaPct >= 0
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-red-600 dark:text-red-400'
+                  }`}
+                >
+                  {monthlySummary.momDeltaPct >= 0 ? '+' : ''}
+                  {monthlySummary.momDeltaPct}% {t.vsLastMonth}
+                </span>
+              )}
+            </div>
+            <p className="mt-1 text-base sm:text-lg font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-emerald-400">
+              {monthlySummary.monthRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+            </p>
+          </div>
+
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B]">
+            <span className="text-xs font-bold text-slate-500 block">{t.thisMonthExpenses}</span>
+            <p className="mt-1 text-base sm:text-lg font-extrabold font-mono tabular-nums text-amber-700 dark:text-[#C9A227]">
+              {monthlySummary.monthExpenses.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+            </p>
+          </div>
+
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B]">
+            <span className="text-xs font-bold text-slate-500 block">{t.thisMonthNet}</span>
+            <p
+              className={`mt-1 text-base sm:text-lg font-extrabold font-mono tabular-nums ${
+                monthlySummary.monthNet >= 0
+                  ? 'text-emerald-700 dark:text-emerald-400'
+                  : 'text-red-600 dark:text-red-400'
+              }`}
+            >
+              {monthlySummary.monthNet >= 0 ? '+' : ''}
+              {monthlySummary.monthNet.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-bold text-slate-600 dark:text-slate-300">{t.salesGoalProgress}</span>
+            <span className="font-mono font-extrabold tabular-nums text-[#0A3D2C] dark:text-[#C9A227]">
+              {monthlySummary.monthSalesGross.toLocaleString(undefined, { maximumFractionDigits: 0 })} /{' '}
+              {monthlySummary.goal.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur} ({monthlySummary.goalPct}%)
+            </span>
+          </div>
+          <div className="h-2.5 w-full rounded-full bg-slate-100 dark:bg-[#0A120F] overflow-hidden">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-[#0A3D2C] to-[#C9A227] transition-all duration-300"
+              style={{ width: `${monthlySummary.goalPct}%` }}
+            />
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-3">
           <h3 className="text-xs font-extrabold text-slate-500 uppercase tracking-wider">
@@ -285,7 +430,7 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                         : 'text-amber-600 dark:text-amber-400'
                     }`}
                   >
-                    {inv.total.toFixed(2)} {cur}
+                    {inv.total.toFixed(2)} {inv.currency ?? cur}
                   </span>
                 </div>
               ))}

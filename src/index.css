@@ -69,4 +69,9 @@
   .print-only {
     display: block !important;
   }
+
+  .print-avoid-break {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
 }

@@ -1,42 +1,61 @@
 import React, { useState } from 'react';
 import {
+  AlertTriangle,
   CheckCircle2,
   Edit2,
+  Lock,
   Mail,
   MessageCircle,
   Plus,
   Printer,
+  RefreshCw,
   Search,
   Trash2,
   X,
 } from 'lucide-react';
 import { DEFAULT_PRODUCT_IMAGE } from '../constants/permissions';
+import { useFirebase } from '../contexts/FirebaseContext';
 import { strings } from '../data/translations';
-import { Invoice, InvoiceStatus, LineItem } from '../types/erp';
+import { CurrencyCode, Invoice, InvoiceStatus, LineItem } from '../types/erp';
+import { DEFAULT_ENABLED_CURRENCIES, getCurrencyMeta } from '../utils/currencies';
 import { buildWhatsAppLink } from '../utils/messaging';
 import { ScreenProps } from './types';
 
 export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice }) => {
+  const { user } = useFirebase();
+  const isAdmin = user?.email === 'alnwmbshyr1@gmail.com';
   const { state, actions } = store;
   const isAr = state.settings.isArabic;
   const cur = state.settings.currency;
   const t = strings[isAr ? 'ar' : 'en'];
+
+  const enabledCurrencies = Array.from(
+    new Set<CurrencyCode>([
+      cur,
+      ...(state.settings.enabledCurrencies ?? DEFAULT_ENABLED_CURRENCIES),
+    ]),
+  );
+  const ratesMap = state.settings.exchangeRates ?? {};
 
   const defaultSalesTaxRate = state.settings.defaultSalesTaxRate ?? 15;
   const [invSearch, setInvSearch] = useState('');
   const [invFilter, setInvFilter] = useState<'all' | InvoiceStatus>('all');
   const [invModal, setInvModal] = useState<{ open: boolean; edit?: Invoice }>({ open: false });
   const [invForm, setInvForm] = useState({
+    customerId: '',
     customerName: '',
     customerPhone: '',
     description: '',
     subtotal: '',
     taxRate: String(defaultSalesTaxRate),
+    currency: cur as CurrencyCode,
+    exchangeRate: '1',
     status: 'pending' as InvoiceStatus,
     items: [] as LineItem[],
   });
   const [invProdId, setInvProdId] = useState(state.products[0]?.id ?? '');
   const [invProdQty, setInvProdQty] = useState('1');
+  const [refreshingFx, setRefreshingFx] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<{ type: 'one' | 'all'; id?: string } | null>(null);
 
   const filtered = state.invoices.filter((inv) => {
@@ -51,6 +70,17 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
   const activeTaxRate = Number.isFinite(parsedRate) ? Math.max(0, Math.min(100, parsedRate)) : defaultSalesTaxRate;
   const vatNum = Number(((subNum * activeTaxRate) / 100).toFixed(2));
   const totalNum = Number((subNum + vatNum).toFixed(2));
+  const parsedFx = parseFloat(invForm.exchangeRate);
+  const activeFxRate =
+    invForm.currency === cur ? 1 : Number.isFinite(parsedFx) && parsedFx > 0 ? parsedFx : ratesMap[invForm.currency] ?? 1;
+  const convertedBaseTotal = Number((totalNum * activeFxRate).toFixed(2));
+  const creditCheck = actions.checkCustomerCreditLimit(
+    invForm.customerName,
+    invForm.customerId,
+    convertedBaseTotal,
+    invForm.status,
+    invModal.edit?.id,
+  );
 
   return (
     <div className="space-y-4">
@@ -70,11 +100,14 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
             setInvProdId(state.products[0]?.id ?? '');
             setInvProdQty('1');
             setInvForm({
+              customerId: state.customers[0]?.id ?? '',
               customerName: state.customers[0]?.name ?? '',
               customerPhone: state.customers[0]?.phone ?? '',
               description: '',
               subtotal: '',
               taxRate: String(defaultSalesTaxRate),
+              currency: cur,
+              exchangeRate: '1',
               status: 'pending',
               items: [],
             });
@@ -147,9 +180,16 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
                   {inv.taxRate ?? (inv.subtotal > 0 ? Number(((inv.vat / inv.subtotal) * 100).toFixed(1)) : defaultSalesTaxRate)}
                   %): {inv.vat.toFixed(2)}
                 </span>
-                <span className="text-lg font-extrabold text-[#0A3D2C] dark:text-[#C9A227] font-mono tabular-nums">
-                  {inv.total.toFixed(2)} {cur}
-                </span>
+                <div className="text-end">
+                  <span className="text-lg font-extrabold text-[#0A3D2C] dark:text-[#C9A227] font-mono tabular-nums block">
+                    {inv.total.toFixed(2)} {inv.currency ?? cur}
+                  </span>
+                  {inv.currency && inv.currency !== cur && (
+                    <span className="text-[11px] font-mono text-slate-500 tabular-nums">
+                      ≈ {(inv.baseTotal ?? inv.total * (inv.exchangeRate ?? 1)).toFixed(2)} {cur}
+                    </span>
+                  )}
+                </div>
               </div>
               <div className="pt-3 border-t border-slate-100 dark:border-[#1F332B] flex flex-wrap items-center gap-2">
                 {inv.status !== 'paid' && (
@@ -179,8 +219,8 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
                   href={buildWhatsAppLink(
                     inv.customerPhone,
                     isAr
-                      ? `السلام عليكم ${inv.customerName}، الفاتورة الضريبية رقم ${inv.id} بإجمالي ${inv.total.toFixed(2)} ${cur} (شامل ${inv.taxRate ?? (inv.subtotal > 0 ? Number(((inv.vat / inv.subtotal) * 100).toFixed(1)) : defaultSalesTaxRate)}% ضريبة) من ${state.settings.companyName}.`
-                      : `Hello ${inv.customerName}, Tax Invoice ${inv.id} total ${inv.total.toFixed(2)} ${cur} from ${state.settings.companyName}.`,
+                      ? `السلام عليكم ${inv.customerName}، الفاتورة الضريبية رقم ${inv.id} بإجمالي ${inv.total.toFixed(2)} ${inv.currency ?? cur} (شامل ${inv.taxRate ?? (inv.subtotal > 0 ? Number(((inv.vat / inv.subtotal) * 100).toFixed(1)) : defaultSalesTaxRate)}% ضريبة) من ${state.settings.companyName}.`
+                      : `Hello ${inv.customerName}, Tax Invoice ${inv.id} total ${inv.total.toFixed(2)} ${inv.currency ?? cur} from ${state.settings.companyName}.`,
                   )}
                   target="_blank"
                   rel="noreferrer"
@@ -190,36 +230,50 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
                   <span>{t.whatsapp}</span>
                 </a>
                 <a
-                  href={`mailto:?subject=${encodeURIComponent(`Invoice ${inv.id}`)}&body=${encodeURIComponent(`Total: ${inv.total.toFixed(2)} ${cur}`)}`}
+                  href={`mailto:?subject=${encodeURIComponent(`Invoice ${inv.id}`)}&body=${encodeURIComponent(`Total: ${inv.total.toFixed(2)} ${inv.currency ?? cur}`)}`}
                   className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-[#1A2C24]"
                   title={t.emailShare}
                 >
                   <Mail className="w-4 h-4 text-slate-500" />
                 </a>
                 <div className="ms-auto flex items-center gap-1">
-                  <button
-                    onClick={() => {
-                      const existingRate =
-                        inv.taxRate ??
-                        (inv.subtotal > 0
-                          ? Number(((inv.vat / inv.subtotal) * 100).toFixed(1))
-                          : defaultSalesTaxRate);
-                      setInvForm({
-                        customerName: inv.customerName,
-                        customerPhone: inv.customerPhone,
-                        description: inv.description,
-                        subtotal: String(inv.subtotal),
-                        taxRate: String(existingRate),
-                        status: inv.status,
-                        items: inv.items ?? [],
-                      });
-                      setInvModal({ open: true, edit: inv });
-                    }}
-                    className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-[#1A2C24] cursor-pointer"
-                    aria-label={t.edit}
-                  >
-                    <Edit2 className="w-4 h-4 text-slate-500" />
-                  </button>
+                  {inv.status === 'paid' && !isAdmin ? (
+                    <span
+                      title={t.lockedRecordHint}
+                      aria-label={t.lockedRecordHint}
+                      className="p-1.5 rounded-lg text-slate-400 cursor-not-allowed"
+                    >
+                      <Lock className="w-4 h-4" />
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        const existingRate =
+                          inv.taxRate ??
+                          (inv.subtotal > 0
+                            ? Number(((inv.vat / inv.subtotal) * 100).toFixed(1))
+                            : defaultSalesTaxRate);
+                        const invCur = inv.currency ?? cur;
+                        setInvForm({
+                          customerId: inv.customerId,
+                          customerName: inv.customerName,
+                          customerPhone: inv.customerPhone,
+                          description: inv.description,
+                          subtotal: String(inv.subtotal),
+                          taxRate: String(existingRate),
+                          currency: invCur,
+                          exchangeRate: String(invCur === cur ? 1 : inv.exchangeRate ?? ratesMap[invCur] ?? 1),
+                          status: inv.status,
+                          items: inv.items ?? [],
+                        });
+                        setInvModal({ open: true, edit: inv });
+                      }}
+                      className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-[#1A2C24] cursor-pointer"
+                      aria-label={t.edit}
+                    >
+                      <Edit2 className="w-4 h-4 text-slate-500" />
+                    </button>
+                  )}
                   <button
                     onClick={() => setConfirmDelete({ type: 'one', id: inv.id })}
                     className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
@@ -240,6 +294,7 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
             <h3 className="text-lg font-extrabold">{invModal.edit ? t.editInvoice : t.addInvoice}</h3>
             <input
               type="text"
+              maxLength={160}
               list="ostora_invoice_customers"
               value={invForm.customerName}
               onChange={(e) => {
@@ -247,6 +302,7 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
                 const match = state.customers.find((c) => c.name === val);
                 setInvForm({
                   ...invForm,
+                  customerId: match ? match.id : '',
                   customerName: val,
                   customerPhone: match ? match.phone : invForm.customerPhone,
                 });
@@ -261,6 +317,7 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
             </datalist>
             <input
               type="tel"
+              maxLength={40}
               value={invForm.customerPhone}
               onChange={(e) => setInvForm({ ...invForm, customerPhone: e.target.value })}
               placeholder={t.phone}
@@ -346,18 +403,87 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
 
             <input
               type="text"
+              maxLength={500}
               value={invForm.description}
               onChange={(e) => setInvForm({ ...invForm, description: e.target.value })}
               placeholder={t.reason}
               className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
             />
+            <div className="grid grid-cols-2 gap-2.5">
+              <div>
+                <label className="text-[11px] font-bold text-slate-500 block mb-1">{t.invoiceCurrency}</label>
+                <select
+                  value={invForm.currency}
+                  onChange={(e) => {
+                    const nextCur = e.target.value as CurrencyCode;
+                    const nextFx = nextCur === cur ? 1 : ratesMap[nextCur] ?? 1;
+                    setInvForm({
+                      ...invForm,
+                      currency: nextCur,
+                      exchangeRate: String(nextFx),
+                    });
+                  }}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+                >
+                  {Array.from(new Set<CurrencyCode>([...enabledCurrencies, invForm.currency])).map((code) => {
+                    const meta = getCurrencyMeta(code);
+                    return (
+                      <option key={code} value={code}>
+                        {code} — {isAr ? meta.nameAr : meta.nameEn}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[11px] font-bold text-slate-500">
+                    {t.exchangeRate} (1 {invForm.currency} → {cur})
+                  </label>
+                  {invForm.currency !== cur && (
+                    <button
+                      type="button"
+                      disabled={refreshingFx}
+                      onClick={async () => {
+                        setRefreshingFx(true);
+                        try {
+                          const res = await actions.refreshLiveExchangeRates(cur);
+                          const liveRate = res.rates[invForm.currency];
+                          if (liveRate) {
+                            setInvForm((f) => ({ ...f, exchangeRate: String(liveRate) }));
+                          }
+                        } finally {
+                          setRefreshingFx(false);
+                        }
+                      }}
+                      className="text-[10px] font-bold text-[#0A3D2C] dark:text-[#C9A227] flex items-center gap-0.5 cursor-pointer"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${refreshingFx ? 'animate-spin' : ''}`} />
+                      <span>{isAr ? 'مباشر' : 'Live'}</span>
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="number"
+                  min={0.0001}
+                  step={0.0001}
+                  disabled={invForm.currency === cur}
+                  value={invForm.exchangeRate}
+                  onChange={(e) => setInvForm({ ...invForm, exchangeRate: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono tabular-nums disabled:opacity-60"
+                />
+              </div>
+            </div>
+
             <div className="grid grid-cols-3 gap-2.5">
               <input
                 type="number"
+                min={0}
+                step="0.01"
                 value={invForm.subtotal}
                 onChange={(e) => setInvForm({ ...invForm, subtotal: e.target.value })}
                 placeholder={t.subtotal}
-                className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
+                className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm font-mono tabular-nums"
               />
               <div className="relative">
                 <input
@@ -383,10 +509,57 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
                 <option value="overdue">{t.overdue}</option>
               </select>
             </div>
-            <div className="p-3 rounded-xl bg-slate-100 dark:bg-[#0A120F] flex justify-between text-xs font-bold tabular-nums">
-              <span>{t.vat} ({activeTaxRate}%): {vatNum.toFixed(2)} {cur}</span>
-              <span className="text-[#0A3D2C] dark:text-[#C9A227]">{t.total}: {totalNum.toFixed(2)} {cur}</span>
+            <div className="p-3 rounded-xl bg-slate-100 dark:bg-[#0A120F] space-y-1 text-xs font-bold tabular-nums">
+              <div className="flex justify-between">
+                <span>{t.vat} ({activeTaxRate}%): {vatNum.toFixed(2)} {invForm.currency}</span>
+                <span className="text-[#0A3D2C] dark:text-[#C9A227]">{t.total}: {totalNum.toFixed(2)} {invForm.currency}</span>
+              </div>
+              {invForm.currency !== cur && (
+                <div className="flex justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-200 dark:border-[#1F332B]">
+                  <span>{t.equivalentBase}</span>
+                  <span className="font-mono">{convertedBaseTotal.toFixed(2)} {cur} (×{activeFxRate})</span>
+                </div>
+              )}
             </div>
+            {creditCheck.customer && creditCheck.creditLimit !== undefined && (
+              <div
+                className={`p-3 rounded-xl border text-xs space-y-1 ${
+                  !creditCheck.allowed
+                    ? 'bg-red-50 dark:bg-red-950/30 border-red-300 dark:border-red-900 text-red-700 dark:text-red-300'
+                    : 'bg-emerald-50/70 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-900/50 text-emerald-800 dark:text-emerald-300'
+                }`}
+              >
+                <div className="flex items-center justify-between font-bold">
+                  <span className="flex items-center gap-1.5">
+                    {!creditCheck.allowed && <AlertTriangle className="w-4 h-4 shrink-0" />}
+                    <span>
+                      {t.creditLimit}: {creditCheck.creditLimit.toLocaleString()} {cur}
+                    </span>
+                  </span>
+                  <span className="font-mono tabular-nums">
+                    {t.debt}: {creditCheck.currentDebt.toLocaleString()} {cur}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between font-mono text-[11px] tabular-nums">
+                  <span>
+                    {t.projectedBalance}: {creditCheck.projectedDebt.toLocaleString()} {cur}
+                  </span>
+                  {!creditCheck.allowed && (
+                    <span className="font-extrabold">
+                      {t.exceededBy}: +{creditCheck.exceededBy.toLocaleString()} {cur}
+                    </span>
+                  )}
+                </div>
+                {!creditCheck.allowed && (
+                  <p className="font-bold pt-0.5">
+                    {isAr
+                      ? `${t.creditLimitExceeded} قم بسداد الفواتير السابقة أو اختر الحالة "مدفوعة" أو خفّض قيمة الفاتورة.`
+                      : `${t.creditLimitExceeded} Settle existing debt, mark invoice as Paid, or reduce the amount.`}
+                  </p>
+                )}
+              </div>
+            )}
+
             <div className="flex gap-2 pt-2">
               <button
                 onClick={() => setInvModal({ open: false })}
@@ -395,26 +568,42 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice })
                 {t.cancel}
               </button>
               <button
+                disabled={!creditCheck.allowed}
                 onClick={() => {
                   if (!invForm.customerName.trim() || subNum <= 0) return;
-                  actions.saveInvoice(
+                  if (!creditCheck.allowed) {
+                    actions.notify(
+                      isAr
+                        ? `${t.creditLimitExceeded} (${t.exceededBy}: ${creditCheck.exceededBy.toFixed(2)} ${cur})`
+                        : `${t.creditLimitExceeded} (${t.exceededBy}: ${creditCheck.exceededBy.toFixed(2)} ${cur})`,
+                    );
+                    return;
+                  }
+                  const result = actions.saveInvoice(
                     {
-                      customerId: invModal.edit?.customerId ?? '',
+                      customerId: creditCheck.customer?.id ?? invForm.customerId ?? invModal.edit?.customerId ?? '',
                       customerName: invForm.customerName.trim(),
                       customerPhone: invForm.customerPhone.trim(),
                       description: invForm.description.trim(),
                       items: invForm.items,
                       subtotal: subNum,
                       taxRate: activeTaxRate,
+                      currency: invForm.currency,
+                      exchangeRate: activeFxRate,
+                      baseTotal: convertedBaseTotal,
                       status: invForm.status,
                       date: invModal.edit?.date ?? new Date().toISOString(),
                     },
                     invModal.edit?.id,
                   );
+                  if (!result.ok) {
+                    actions.notify(t.creditLimitExceeded);
+                    return;
+                  }
                   setInvModal({ open: false });
                   actions.notify(isAr ? 'تم حفظ الفاتورة بنجاح' : 'Invoice saved');
                 }}
-                className="flex-1 py-2.5 rounded-xl bg-[#0A3D2C] text-white font-bold text-sm cursor-pointer"
+                className="flex-1 py-2.5 rounded-xl bg-[#0A3D2C] text-white font-bold text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {t.save}
               </button>

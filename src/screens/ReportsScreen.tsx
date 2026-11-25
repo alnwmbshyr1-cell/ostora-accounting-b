@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   BarChart3,
   Download,
@@ -112,6 +112,13 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
   const [reportTab, setReportTab] = useState<0 | 1 | 2>(0);
   const [monthRange, setMonthRange] = useState<6 | 12>(6);
   const [selectedMonthKey, setSelectedMonthKey] = useState<string | null>(null);
+  const [printAllMode, setPrintAllMode] = useState(false);
+
+  useEffect(() => {
+    const onAfterPrint = () => setPrintAllMode(false);
+    window.addEventListener('afterprint', onAfterPrint);
+    return () => window.removeEventListener('afterprint', onAfterPrint);
+  }, []);
 
   const cash = metrics.totalCashAndBanks;
   const receivables = metrics.customerDebt;
@@ -141,7 +148,7 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
     for (const inv of state.invoices) {
       const key = toMonthKey(inv.date);
       if (!key) continue;
-      revenueByMonth.set(key, (revenueByMonth.get(key) ?? 0) + inv.subtotal);
+      revenueByMonth.set(key, (revenueByMonth.get(key) ?? 0) + inv.subtotal * (inv.exchangeRate ?? 1));
     }
 
     for (const exp of state.expenses) {
@@ -232,6 +239,7 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
 
   return (
     <div className="space-y-5">
+      <div className={`space-y-5 ${printAllMode ? 'no-print' : ''}`}>
       {/* Visual Dashboard Summary KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
         <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 flex items-center justify-between gap-3">
@@ -411,11 +419,24 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
         </div>
         <div className="no-print flex flex-wrap gap-2">
           <button
-            onClick={() => window.print()}
+            onClick={() => {
+              setPrintAllMode(false);
+              setTimeout(() => window.print(), 40);
+            }}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer"
           >
             <Printer className="w-4 h-4" />
             <span>{t.printPdf}</span>
+          </button>
+          <button
+            onClick={() => {
+              setPrintAllMode(true);
+              setTimeout(() => window.print(), 80);
+            }}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#C9A227] text-slate-950 text-xs font-extrabold cursor-pointer"
+          >
+            <Printer className="w-4 h-4" />
+            <span>{t.printAllReports}</span>
           </button>
           <button
             onClick={() => downloadTextFile(`ostora_report_${reportTab + 1}.csv`, rows.map((r) => r.join(',')).join('\n'))}
@@ -466,6 +487,113 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
           );
         })}
       </div>
+      </div>
+
+      {/* Consolidated Print-Only Document for "Print All Reports" */}
+      {printAllMode && (
+        <div className="hidden print:block space-y-6 text-slate-900 bg-white">
+          <div className="border-b-2 border-[#0A3D2C] pb-4 flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <h1 className="text-xl font-extrabold text-[#0A3D2C]">{state.settings.companyName}</h1>
+              <p className="text-sm font-bold text-slate-700">{t.allFinancialStatements}</p>
+              <p className="text-xs text-slate-500">
+                {state.settings.address} · {state.settings.phone}
+              </p>
+            </div>
+            <div className="text-end text-xs font-mono space-y-0.5 text-slate-600">
+              <p>
+                {t.taxNumber}: {state.settings.taxNumber || '—'}
+              </p>
+              <p>
+                {t.crNumber}: {state.settings.crNumber || '—'}
+              </p>
+              <p>
+                {t.currency}: {cur}
+              </p>
+              <p>
+                {t.date}: {new Date().toISOString().slice(0, 10)}
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-4 gap-3 print-avoid-break">
+            <div className="p-3 rounded-xl border border-slate-300">
+              <p className="text-[11px] font-bold text-slate-500">{t.revenueLabel}</p>
+              <p className="text-sm font-extrabold font-mono mt-0.5">
+                {revenue.toLocaleString(undefined, { maximumFractionDigits: 2 })} {cur}
+              </p>
+            </div>
+            <div className="p-3 rounded-xl border border-slate-300">
+              <p className="text-[11px] font-bold text-slate-500">{t.expensesLabel}</p>
+              <p className="text-sm font-extrabold font-mono mt-0.5">
+                {expenses.toLocaleString(undefined, { maximumFractionDigits: 2 })} {cur}
+              </p>
+            </div>
+            <div className="p-3 rounded-xl border border-slate-300">
+              <p className="text-[11px] font-bold text-slate-500">
+                {t.netProfit} ({profitMarginPct}%)
+              </p>
+              <p className="text-sm font-extrabold font-mono mt-0.5">
+                {netProfit.toLocaleString(undefined, { maximumFractionDigits: 2 })} {cur}
+              </p>
+            </div>
+            <div className="p-3 rounded-xl border border-slate-300">
+              <p className="text-[11px] font-bold text-slate-500">{t.cashAndBanks}</p>
+              <p className="text-sm font-extrabold font-mono mt-0.5">
+                {cash.toLocaleString(undefined, { maximumFractionDigits: 2 })} {cur}
+              </p>
+            </div>
+          </div>
+
+          {[
+            { title: `1. ${t.trialBalance}`, data: trialRows, tabIndex: 0 },
+            { title: `2. ${t.incomeStatement}`, data: incomeRows, tabIndex: 1 },
+            { title: `3. ${t.balanceSheet}`, data: balanceRows, tabIndex: 2 },
+          ].map((section) => (
+            <div key={section.title} className="space-y-2 print-avoid-break">
+              <h2 className="text-sm font-extrabold text-[#0A3D2C] border-b border-slate-300 pb-1">
+                {section.title}
+              </h2>
+              <div className="border border-slate-300 rounded-xl overflow-hidden">
+                {section.data.map((cols, idx) => {
+                  const isTotalRow = idx === section.data.length - 1 || (section.tabIndex === 2 && idx === 4);
+                  return (
+                    <div
+                      key={idx}
+                      className={`grid gap-2 px-4 py-2 text-xs border-b border-slate-200 last:border-b-0 ${
+                        idx === 0
+                          ? 'bg-slate-100 font-extrabold'
+                          : isTotalRow
+                          ? 'bg-slate-50 font-extrabold text-[#0A3D2C]'
+                          : ''
+                      }`}
+                      style={{ gridTemplateColumns: `2fr ${'1fr '.repeat(cols.length - 1)}` }}
+                    >
+                      {cols.map((c, ci) => (
+                        <span key={ci} className={ci === 0 ? 'text-start' : 'text-end font-mono tabular-nums font-bold'}>
+                          {c}
+                        </span>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+
+          <div className="pt-6 grid grid-cols-3 gap-6 text-center text-xs text-slate-600 print-avoid-break">
+            <div className="border-t border-slate-300 pt-2 font-bold">
+              {isAr ? 'المحاسب المالي' : 'Financial Accountant'}
+            </div>
+            <div className="border-t border-slate-300 pt-2 font-bold">
+              {isAr ? 'المدير المالي' : 'Financial Manager'}
+            </div>
+            <div className="border-t border-slate-300 pt-2 font-bold">
+              {isAr ? 'الختم الرسمي' : 'Official Stamp'}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

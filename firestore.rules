@@ -1,0 +1,844 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny Catch-All)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Reusable Hardened Global Primitives
+    // =========================================================================
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isSignedIn() &&
+        request.auth.token.email_verified == true && (
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+          request.auth.token.email == 'alnwmbshyr1@gmail.com'
+        );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isWorkspaceOwner(workspaceId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
+        get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid;
+    }
+
+    function isNonEmptyString(val, maxLen) {
+      return val is string && val.size() >= 1 && val.size() <= maxLen;
+    }
+
+    function isBoundedString(val, maxLen) {
+      return val is string && val.size() <= maxLen;
+    }
+
+    function hasValidTimestampsCreate(data) {
+      return data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.createdAt == request.time &&
+        data.updatedAt == request.time;
+    }
+
+    function hasValidTimestampsUpdate() {
+      return incoming().createdAt is timestamp &&
+        incoming().updatedAt is timestamp &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time;
+    }
+
+    function isValidRoleList(arr) {
+      return arr is list &&
+        arr.size() <= 25 &&
+        (arr.size() == 0 || (arr[0] is string && arr[0].size() >= 1 && arr[0].size() <= 40));
+    }
+
+    function isValidPermissionsMatrix(m) {
+      return m is map &&
+        m.keys().hasAll(['owner', 'accountant', 'salesman', 'warehouse']) &&
+        m.keys().hasOnly(['owner', 'accountant', 'salesman', 'warehouse']) &&
+        isValidRoleList(m.owner) &&
+        isValidRoleList(m.accountant) &&
+        isValidRoleList(m.salesman) &&
+        isValidRoleList(m.warehouse);
+    }
+
+    function isValidLineItems(items, minLen, maxLen) {
+      return items is list &&
+        items.size() >= minLen &&
+        items.size() <= maxLen && (
+          items.size() == 0 || (
+            items[0] is map &&
+            items[0].keys().hasAll(['productId', 'productName', 'qty', 'unitPrice', 'total']) &&
+            items[0].keys().hasOnly(['productId', 'productName', 'qty', 'unitPrice', 'total']) &&
+            isBoundedString(items[0].productId, 128) &&
+            isNonEmptyString(items[0].productName, 160) &&
+            items[0].qty is number && items[0].qty >= 0 &&
+            items[0].unitPrice is number && items[0].unitPrice >= 0 &&
+            items[0].total is number && items[0].total >= 0
+          )
+        );
+    }
+
+    function isValidJournalLines(lines) {
+      return lines is list &&
+        lines.size() >= 1 &&
+        lines.size() <= 50 &&
+        lines[0] is map &&
+        lines[0].keys().hasAll(['account', 'debit', 'credit']) &&
+        lines[0].keys().hasOnly(['account', 'debit', 'credit']) &&
+        isNonEmptyString(lines[0].account, 160) &&
+        lines[0].debit is number && lines[0].debit >= 0 &&
+        lines[0].credit is number && lines[0].credit >= 0;
+    }
+
+    // =========================================================================
+    // Entity Validation Blueprints (Anti-Update-Gap)
+    // =========================================================================
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'photoUrl', 'role', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        (data.uid == userId) &&
+        (data.uid == request.auth.uid || isAdmin()) &&
+        isNonEmptyString(data.email, 256) &&
+        isNonEmptyString(data.displayName, 120) &&
+        (!('photoUrl' in data) || isBoundedString(data.photoUrl, 512)) &&
+        data.role in ['user', 'admin'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCurrencyCode(code) {
+      return code in ['SAR', 'YER', 'EGP', 'AED', 'USD', 'EUR', 'GBP', 'KWD', 'QAR', 'BHD', 'OMR', 'JOD', 'TRY'];
+    }
+
+    function isValidCurrencyList(arr) {
+      return arr is list &&
+        arr.size() >= 1 &&
+        arr.size() <= 15 &&
+        arr[0] is string &&
+        isValidCurrencyCode(arr[0]);
+    }
+
+    function isValidWorkspace(data) {
+      return data.keys().hasAll([
+          'ownerId', 'companyName', 'taxNumber', 'crNumber', 'phone', 'email', 'address',
+          'currency', 'isArabic', 'isDarkMode', 'monthlySalesGoal', 'defaultSalesTaxRate',
+          'defaultPurchaseTaxRate', 'autoBackupDaily', 'activePlan', 'trialStartIso',
+          'currentRole', 'permissionsMatrix', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerId', 'companyName', 'taxNumber', 'crNumber', 'phone', 'email', 'address',
+          'currency', 'enabledCurrencies', 'exchangeRates', 'lastRatesUpdate',
+          'isArabic', 'isDarkMode', 'monthlySalesGoal', 'defaultSalesTaxRate',
+          'defaultPurchaseTaxRate', 'autoBackupDaily', 'lastBackupDate',
+          'autoCloudSync', 'autoSyncIntervalMinutes', 'activePlan',
+          'trialStartIso', 'currentRole', 'permissionsMatrix', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.ownerId) &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
+        isNonEmptyString(data.companyName, 160) &&
+        isBoundedString(data.taxNumber, 64) &&
+        isBoundedString(data.crNumber, 64) &&
+        isBoundedString(data.phone, 40) &&
+        isBoundedString(data.email, 160) &&
+        isBoundedString(data.address, 300) &&
+        isValidCurrencyCode(data.currency) &&
+        (!('enabledCurrencies' in data) || isValidCurrencyList(data.enabledCurrencies)) &&
+        (!('exchangeRates' in data) || (data.exchangeRates is map && data.exchangeRates.size() <= 20)) &&
+        (!('lastRatesUpdate' in data) || isBoundedString(data.lastRatesUpdate, 64)) &&
+        data.isArabic is bool &&
+        data.isDarkMode is bool &&
+        data.monthlySalesGoal is number && data.monthlySalesGoal >= 0 &&
+        data.defaultSalesTaxRate is number && data.defaultSalesTaxRate >= 0 && data.defaultSalesTaxRate <= 100 &&
+        data.defaultPurchaseTaxRate is number && data.defaultPurchaseTaxRate >= 0 && data.defaultPurchaseTaxRate <= 100 &&
+        data.autoBackupDaily is bool &&
+        (!('lastBackupDate' in data) || isBoundedString(data.lastBackupDate, 64)) &&
+        (!('autoCloudSync' in data) || data.autoCloudSync is bool) &&
+        (!('autoSyncIntervalMinutes' in data) || (data.autoSyncIntervalMinutes is number && data.autoSyncIntervalMinutes >= 0 && data.autoSyncIntervalMinutes <= 1440)) &&
+        isNonEmptyString(data.activePlan, 40) &&
+        isNonEmptyString(data.trialStartIso, 64) &&
+        data.currentRole in ['owner', 'accountant', 'salesman', 'warehouse'] &&
+        isValidPermissionsMatrix(data.permissionsMatrix) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidInvoice(data) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'customerId', 'customerName', 'customerPhone', 'description',
+          'items', 'subtotal', 'taxRate', 'vat', 'total', 'status', 'date', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'customerId', 'customerName', 'customerPhone', 'description',
+          'items', 'subtotal', 'taxRate', 'vat', 'total', 'currency', 'exchangeRate', 'baseTotal',
+          'status', 'date', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.ownerId) &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
+        isBoundedString(data.customerId, 128) &&
+        isNonEmptyString(data.customerName, 160) &&
+        isBoundedString(data.customerPhone, 40) &&
+        isBoundedString(data.description, 500) &&
+        isValidLineItems(data.items, 0, 50) &&
+        data.subtotal is number && data.subtotal >= 0 &&
+        data.taxRate is number && data.taxRate >= 0 && data.taxRate <= 100 &&
+        data.vat is number && data.vat >= 0 &&
+        data.total is number && data.total >= 0 &&
+        (!('currency' in data) || isValidCurrencyCode(data.currency)) &&
+        (!('exchangeRate' in data) || (data.exchangeRate is number && data.exchangeRate > 0)) &&
+        (!('baseTotal' in data) || (data.baseTotal is number && data.baseTotal >= 0)) &&
+        data.status in ['paid', 'pending', 'overdue'] &&
+        isNonEmptyString(data.date, 64) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidReturnRecord(data) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'type', 'originalDocId', 'partyName', 'partyPhone',
+          'productId', 'productName', 'qty', 'unitPrice', 'amount', 'reason', 'notes',
+          'date', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'type', 'originalDocId', 'partyName', 'partyPhone',
+          'productId', 'productName', 'qty', 'unitPrice', 'amount', 'reason', 'notes',
+          'date', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.ownerId) &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
+        data.type in ['sales', 'purchase'] &&
+        isBoundedString(data.originalDocId, 128) &&
+        isNonEmptyString(data.partyName, 160) &&
+        isBoundedString(data.partyPhone, 40) &&
+        isBoundedString(data.productId, 128) &&
+        isNonEmptyString(data.productName, 160) &&
+        data.qty is number && data.qty >= 0 &&
+        data.unitPrice is number && data.unitPrice >= 0 &&
+        data.amount is number && data.amount >= 0 &&
+        data.reason in ['damaged', 'wrong_item', 'expired', 'changed_mind', 'other'] &&
+        isBoundedString(data.notes, 500) &&
+        isNonEmptyString(data.date, 64) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidQuotation(data) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'customerId', 'customerName', 'customerPhone', 'customerEmail',
+          'items', 'discountPercent', 'subtotal', 'discountAmount', 'vat', 'total',
+          'validUntil', 'status', 'notes', 'date', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'customerId', 'customerName', 'customerPhone', 'customerEmail',
+          'items', 'discountPercent', 'subtotal', 'discountAmount', 'vat', 'total',
+          'validUntil', 'status', 'notes', 'date', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.ownerId) &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
+        isBoundedString(data.customerId, 128) &&
+        isNonEmptyString(data.customerName, 160) &&
+        isBoundedString(data.customerPhone, 40) &&
+        isBoundedString(data.customerEmail, 160) &&
+        isValidLineItems(data.items, 1, 50) &&
+        data.discountPercent is number && data.discountPercent >= 0 && data.discountPercent <= 100 &&
+        data.subtotal is number && data.subtotal >= 0 &&
+        data.discountAmount is number && data.discountAmount >= 0 &&
+        data.vat is number && data.vat >= 0 &&
+        data.total is number && data.total >= 0 &&
+        isBoundedString(data.validUntil, 64) &&
+        data.status in ['draft', 'sent', 'accepted', 'rejected', 'expired'] &&
+        isBoundedString(data.notes, 500) &&
+        isNonEmptyString(data.date, 64) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCustomer(data) {
+      return data.keys().hasAll(['id', 'ownerId', 'name', 'phone', 'email', 'debt', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'ownerId', 'name', 'phone', 'email', 'debt', 'creditLimit', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.ownerId) &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
+        isNonEmptyString(data.name, 160) &&
+        isBoundedString(data.phone, 40) &&
+        isBoundedString(data.email, 160) &&
+        data.debt is number && data.debt >= 0 &&
+        (!('creditLimit' in data) || (data.creditLimit is number && data.creditLimit >= 0)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSupplier(data) {
+      return data.keys().hasAll(['id', 'ownerId', 'name', 'phone', 'category', 'payable', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'ownerId', 'name', 'phone', 'category', 'payable', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.ownerId) &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
+        isNonEmptyString(data.name, 160) &&
+        isBoundedString(data.phone, 40) &&
+        isBoundedString(data.category, 100) &&
+        data.payable is number && data.payable >= 0 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPurchaseOrder(data) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'supplierId', 'supplierName', 'supplierPhone', 'productId',
+          'productName', 'quantity', 'unitCost', 'subtotal', 'taxRate', 'vat', 'total',
+          'status', 'date', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'supplierId', 'supplierName', 'supplierPhone', 'productId',
+          'productName', 'quantity', 'unitCost', 'subtotal', 'taxRate', 'vat', 'total',
+          'status', 'date', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.ownerId) &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
+        isBoundedString(data.supplierId, 128) &&
+        isNonEmptyString(data.supplierName, 160) &&
+        isBoundedString(data.supplierPhone, 40) &&
+        isBoundedString(data.productId, 128) &&
+        isNonEmptyString(data.productName, 160) &&
+        data.quantity is number && data.quantity >= 0 &&
+        data.unitCost is number && data.unitCost >= 0 &&
+        data.subtotal is number && data.subtotal >= 0 &&
+        data.taxRate is number && data.taxRate >= 0 && data.taxRate <= 100 &&
+        data.vat is number && data.vat >= 0 &&
+        data.total is number && data.total >= 0 &&
+        data.status in ['ordered', 'received'] &&
+        isNonEmptyString(data.date, 64) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidVoucher(data) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'type', 'partyName', 'partyPhone', 'amount', 'reason',
+          'paymentMethod', 'date', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'type', 'partyName', 'partyPhone', 'amount', 'reason',
+          'paymentMethod', 'date', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.ownerId) &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
+        data.type in ['receipt', 'payment'] &&
+        isNonEmptyString(data.partyName, 160) &&
+        isBoundedString(data.partyPhone, 40) &&
+        data.amount is number && data.amount >= 0 &&
+        isBoundedString(data.reason, 400) &&
+        isBoundedString(data.paymentMethod, 80) &&
+        isNonEmptyString(data.date, 64) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidJournalEntry(data) {
+      return data.keys().hasAll(['id', 'ownerId', 'reference', 'description', 'date', 'lines', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'ownerId', 'reference', 'description', 'date', 'lines', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.ownerId) &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
+        isBoundedString(data.reference, 120) &&
+        isNonEmptyString(data.description, 400) &&
+        isNonEmptyString(data.date, 64) &&
+        isValidJournalLines(data.lines) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll(['id', 'ownerId', 'name', 'sku', 'barcode', 'qty', 'cost', 'price', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'ownerId', 'name', 'sku', 'barcode', 'imageBase64', 'qty', 'cost', 'price', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.ownerId) &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
+        isNonEmptyString(data.name, 160) &&
+        isBoundedString(data.sku, 64) &&
+        isBoundedString(data.barcode, 64) &&
+        (!('imageBase64' in data) || isBoundedString(data.imageBase64, 250000)) &&
+        data.qty is number && data.qty >= 0 &&
+        data.cost is number && data.cost >= 0 &&
+        data.price is number && data.price >= 0 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidEmployee(data) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'name', 'roleTitle', 'role', 'permissions', 'phone',
+          'salary', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'name', 'roleTitle', 'role', 'permissions', 'phone',
+          'salary', 'lastPaidDate', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.ownerId) &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
+        isNonEmptyString(data.name, 160) &&
+        isBoundedString(data.roleTitle, 100) &&
+        data.role in ['owner', 'accountant', 'salesman', 'warehouse'] &&
+        isValidRoleList(data.permissions) &&
+        isBoundedString(data.phone, 40) &&
+        data.salary is number && data.salary >= 0 &&
+        (!('lastPaidDate' in data) || isBoundedString(data.lastPaidDate, 64)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidExpense(data) {
+      return data.keys().hasAll(['id', 'ownerId', 'title', 'category', 'amount', 'paidFromBankId', 'date', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'ownerId', 'title', 'category', 'amount', 'paidFromBankId', 'date', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.ownerId) &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
+        isNonEmptyString(data.title, 160) &&
+        isBoundedString(data.category, 80) &&
+        data.amount is number && data.amount >= 0 &&
+        isBoundedString(data.paidFromBankId, 128) &&
+        isNonEmptyString(data.date, 64) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidBankAccount(data) {
+      return data.keys().hasAll(['id', 'ownerId', 'nameAr', 'nameEn', 'accountNumber', 'balance', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'ownerId', 'nameAr', 'nameEn', 'accountNumber', 'balance', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.ownerId) &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
+        isNonEmptyString(data.nameAr, 120) &&
+        isNonEmptyString(data.nameEn, 120) &&
+        isBoundedString(data.accountNumber, 64) &&
+        data.balance is number &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // =========================================================================
+    // Production Collection Match Blocks
+    // =========================================================================
+
+    match /admins/{adminId} {
+      allow get: if isSignedIn() && isValidId(adminId) && (isOwner(adminId) || isAdmin());
+      allow list, create, update, delete: if false;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isOwner(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        hasValidTimestampsCreate(incoming()) &&
+        incoming().role == 'user';
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        hasValidTimestampsUpdate() && (
+          isAdmin() || (
+            isOwner(userId) &&
+            incoming().uid == existing().uid &&
+            incoming().role == existing().role &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoUrl', 'updatedAt'])
+          )
+        );
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    match /workspaces/{workspaceId} {
+      allow get: if isSignedIn() && isValidId(workspaceId) && (existing().ownerId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(workspaceId) &&
+        isValidWorkspace(incoming()) &&
+        hasValidTimestampsCreate(incoming()) &&
+        (incoming().ownerId == request.auth.uid || isAdmin());
+      allow update: if isVerifiedUser() &&
+        isValidId(workspaceId) &&
+        isValidWorkspace(incoming()) &&
+        hasValidTimestampsUpdate() &&
+        incoming().ownerId == existing().ownerId && (
+          isAdmin() || (
+            existing().ownerId == request.auth.uid && (
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'companyName', 'taxNumber', 'crNumber', 'phone', 'email', 'address',
+                'currency', 'enabledCurrencies', 'exchangeRates', 'lastRatesUpdate',
+                'isArabic', 'isDarkMode', 'monthlySalesGoal',
+                'defaultSalesTaxRate', 'defaultPurchaseTaxRate', 'autoBackupDaily',
+                'lastBackupDate', 'autoCloudSync', 'autoSyncIntervalMinutes', 'updatedAt'
+              ]) ||
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'activePlan', 'trialStartIso', 'currentRole', 'permissionsMatrix', 'updatedAt'
+              ]) ||
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'companyName', 'taxNumber', 'crNumber', 'phone', 'email', 'address',
+                'currency', 'enabledCurrencies', 'exchangeRates', 'lastRatesUpdate',
+                'isArabic', 'isDarkMode', 'monthlySalesGoal',
+                'defaultSalesTaxRate', 'defaultPurchaseTaxRate', 'autoBackupDaily',
+                'lastBackupDate', 'autoCloudSync', 'autoSyncIntervalMinutes',
+                'activePlan', 'trialStartIso', 'currentRole', 'permissionsMatrix', 'updatedAt'
+              ])
+            )
+          )
+        );
+      allow delete: if isVerifiedUser() && isValidId(workspaceId) && (existing().ownerId == request.auth.uid || isAdmin());
+
+      match /invoices/{invoiceId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(invoiceId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(invoiceId) &&
+          isValidInvoice(incoming()) &&
+          hasValidTimestampsCreate(incoming()) &&
+          incoming().id == invoiceId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow update: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(invoiceId) &&
+          isValidInvoice(incoming()) &&
+          hasValidTimestampsUpdate() &&
+          incoming().id == existing().id &&
+          incoming().ownerId == existing().ownerId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin()) &&
+          (existing().status != 'paid' || isAdmin()) && (
+            isAdmin() ||
+            (incoming().status == 'paid' && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'customerId', 'customerName', 'customerPhone', 'description',
+              'items', 'subtotal', 'taxRate', 'vat', 'total', 'currency', 'exchangeRate', 'baseTotal',
+              'status', 'date', 'updatedAt'
+            ])
+          );
+        allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(invoiceId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+      }
+
+      match /returns/{returnId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(returnId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(returnId) &&
+          isValidReturnRecord(incoming()) &&
+          hasValidTimestampsCreate(incoming()) &&
+          incoming().id == returnId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow update: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(returnId) &&
+          isValidReturnRecord(incoming()) &&
+          hasValidTimestampsUpdate() &&
+          incoming().id == existing().id &&
+          incoming().ownerId == existing().ownerId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin()) && (
+            isAdmin() ||
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'type', 'originalDocId', 'partyName', 'partyPhone', 'productId',
+              'productName', 'qty', 'unitPrice', 'amount', 'reason', 'notes', 'date', 'updatedAt'
+            ])
+          );
+        allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(returnId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+      }
+
+      match /quotations/{quotationId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(quotationId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(quotationId) &&
+          isValidQuotation(incoming()) &&
+          hasValidTimestampsCreate(incoming()) &&
+          incoming().id == quotationId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow update: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(quotationId) &&
+          isValidQuotation(incoming()) &&
+          hasValidTimestampsUpdate() &&
+          incoming().id == existing().id &&
+          incoming().ownerId == existing().ownerId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin()) &&
+          (!(existing().status in ['accepted', 'rejected']) || isAdmin()) && (
+            isAdmin() ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'customerId', 'customerName', 'customerPhone', 'customerEmail', 'items',
+              'discountPercent', 'subtotal', 'discountAmount', 'vat', 'total',
+              'validUntil', 'status', 'notes', 'date', 'updatedAt'
+            ])
+          );
+        allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(quotationId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+      }
+
+      match /customers/{customerId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(customerId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(customerId) &&
+          isValidCustomer(incoming()) &&
+          hasValidTimestampsCreate(incoming()) &&
+          incoming().id == customerId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow update: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(customerId) &&
+          isValidCustomer(incoming()) &&
+          hasValidTimestampsUpdate() &&
+          incoming().id == existing().id &&
+          incoming().ownerId == existing().ownerId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin()) && (
+            isAdmin() ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['debt', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'email', 'debt', 'creditLimit', 'updatedAt'])
+          );
+        allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(customerId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+      }
+
+      match /suppliers/{supplierId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(supplierId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(supplierId) &&
+          isValidSupplier(incoming()) &&
+          hasValidTimestampsCreate(incoming()) &&
+          incoming().id == supplierId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow update: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(supplierId) &&
+          isValidSupplier(incoming()) &&
+          hasValidTimestampsUpdate() &&
+          incoming().id == existing().id &&
+          incoming().ownerId == existing().ownerId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin()) && (
+            isAdmin() ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['payable', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'category', 'payable', 'updatedAt'])
+          );
+        allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(supplierId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+      }
+
+      match /purchaseOrders/{poId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(poId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(poId) &&
+          isValidPurchaseOrder(incoming()) &&
+          hasValidTimestampsCreate(incoming()) &&
+          incoming().id == poId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow update: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(poId) &&
+          isValidPurchaseOrder(incoming()) &&
+          hasValidTimestampsUpdate() &&
+          incoming().id == existing().id &&
+          incoming().ownerId == existing().ownerId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin()) &&
+          (existing().status != 'received' || isAdmin()) && (
+            isAdmin() ||
+            (incoming().status == 'received' && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'supplierId', 'supplierName', 'supplierPhone', 'productId', 'productName',
+              'quantity', 'unitCost', 'subtotal', 'taxRate', 'vat', 'total', 'status', 'date', 'updatedAt'
+            ])
+          );
+        allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(poId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+      }
+
+      match /vouchers/{voucherId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(voucherId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(voucherId) &&
+          isValidVoucher(incoming()) &&
+          hasValidTimestampsCreate(incoming()) &&
+          incoming().id == voucherId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow update: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(voucherId) &&
+          isValidVoucher(incoming()) &&
+          hasValidTimestampsUpdate() &&
+          incoming().id == existing().id &&
+          incoming().ownerId == existing().ownerId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin()) && (
+            isAdmin() ||
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'type', 'partyName', 'partyPhone', 'amount', 'reason', 'paymentMethod', 'date', 'updatedAt'
+            ])
+          );
+        allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(voucherId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+      }
+
+      match /journals/{journalId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(journalId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(journalId) &&
+          isValidJournalEntry(incoming()) &&
+          hasValidTimestampsCreate(incoming()) &&
+          incoming().id == journalId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow update: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(journalId) &&
+          isValidJournalEntry(incoming()) &&
+          hasValidTimestampsUpdate() &&
+          incoming().id == existing().id &&
+          incoming().ownerId == existing().ownerId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin()) && (
+            isAdmin() ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['reference', 'description', 'date', 'lines', 'updatedAt'])
+          );
+        allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(journalId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+      }
+
+      match /products/{productId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(productId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(productId) &&
+          isValidProduct(incoming()) &&
+          hasValidTimestampsCreate(incoming()) &&
+          incoming().id == productId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow update: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(productId) &&
+          isValidProduct(incoming()) &&
+          hasValidTimestampsUpdate() &&
+          incoming().id == existing().id &&
+          incoming().ownerId == existing().ownerId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin()) && (
+            isAdmin() ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['qty', 'cost', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'sku', 'barcode', 'imageBase64', 'qty', 'cost', 'price', 'updatedAt'
+            ])
+          );
+        allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(productId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+      }
+
+      match /employees/{employeeId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(employeeId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(employeeId) &&
+          isValidEmployee(incoming()) &&
+          hasValidTimestampsCreate(incoming()) &&
+          incoming().id == employeeId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow update: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(employeeId) &&
+          isValidEmployee(incoming()) &&
+          hasValidTimestampsUpdate() &&
+          incoming().id == existing().id &&
+          incoming().ownerId == existing().ownerId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin()) && (
+            isAdmin() ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['lastPaidDate', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'roleTitle', 'role', 'permissions', 'phone', 'salary', 'lastPaidDate', 'updatedAt'
+            ])
+          );
+        allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(employeeId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+      }
+
+      match /expenses/{expenseId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(expenseId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(expenseId) &&
+          isValidExpense(incoming()) &&
+          hasValidTimestampsCreate(incoming()) &&
+          incoming().id == expenseId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow update: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(expenseId) &&
+          isValidExpense(incoming()) &&
+          hasValidTimestampsUpdate() &&
+          incoming().id == existing().id &&
+          incoming().ownerId == existing().ownerId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin()) && (
+            isAdmin() ||
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'category', 'amount', 'paidFromBankId', 'date', 'updatedAt'
+            ])
+          );
+        allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(expenseId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+      }
+
+      match /banks/{bankId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(bankId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(bankId) &&
+          isValidBankAccount(incoming()) &&
+          hasValidTimestampsCreate(incoming()) &&
+          incoming().id == bankId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow update: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(bankId) &&
+          isValidBankAccount(incoming()) &&
+          hasValidTimestampsUpdate() &&
+          incoming().id == existing().id &&
+          incoming().ownerId == existing().ownerId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin()) && (
+            isAdmin() ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['nameAr', 'nameEn', 'accountNumber', 'balance', 'updatedAt'])
+          );
+        allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(bankId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+      }
+    }
+  }
+}

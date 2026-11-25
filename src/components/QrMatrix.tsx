@@ -38,7 +38,7 @@ export const HealthScoreRing: React.FC<{ score: number; label: string }> = ({ sc
   );
 };
 
-export const QrMatrix: React.FC<{ data: string; size?: number }> = ({ data, size = 116 }) => {
+export const QrMatrix: React.FC<{ data: string; size?: number }> = ({ data, size = 124 }) => {
   const { moduleSize, rects } = useMemo(() => {
     try {
       const qr = QRCode.create(data || 'OSTORA', { errorCorrectionLevel: 'M' });
@@ -57,7 +57,7 @@ export const QrMatrix: React.FC<{ data: string; size?: number }> = ({ data, size
     }
   }, [data]);
 
-  const quietZone = 2;
+  const quietZone = 4;
   const viewSize = moduleSize + quietZone * 2;
 
   return (
@@ -65,7 +65,8 @@ export const QrMatrix: React.FC<{ data: string; size?: number }> = ({ data, size
       width={size}
       height={size}
       viewBox={`0 0 ${viewSize} ${viewSize}`}
-      className="bg-white p-1 rounded-lg border border-slate-200 shrink-0"
+      shapeRendering="crispEdges"
+      className="bg-white rounded-lg border border-slate-300 shrink-0"
       role="img"
       aria-label="ZATCA Phase-1 QR Code"
     >
@@ -77,7 +78,7 @@ export const QrMatrix: React.FC<{ data: string; size?: number }> = ({ data, size
           y={pt.y + quietZone}
           width={1}
           height={1}
-          fill="#0A3D2C"
+          fill="#000000"
         />
       ))}
     </svg>

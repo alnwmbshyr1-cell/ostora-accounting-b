@@ -1,6 +1,11 @@
-import React from 'react';
-import { Printer, X } from 'lucide-react';
-import { buildZatcaTlvBase64 } from '../utils/zatca';
+import React, { useMemo, useState } from 'react';
+import QRCode from 'qrcode';
+import { Check, Copy, Download, Eye, Printer, ShieldCheck, X } from 'lucide-react';
+import {
+  buildZatcaTlvBase64,
+  decodeZatcaTlvBase64,
+  validateZatcaPhase1,
+} from '../utils/zatca';
 import { CompanySettings, Invoice, Quotation, ReturnRecord, Voucher } from '../types/erp';
 import { QrMatrix } from './QrMatrix';
 
@@ -21,6 +26,43 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
   company,
   onClose,
 }) => {
+  const [showTlvDetails, setShowTlvDetails] = useState(false);
+  const [copiedTlv, setCopiedTlv] = useState(false);
+
+  const zatcaQrBase64 = useMemo(() => {
+    if (invoice) {
+      return buildZatcaTlvBase64(
+        company.companyName,
+        company.taxNumber,
+        invoice.date,
+        invoice.total.toFixed(2),
+        invoice.vat.toFixed(2),
+      );
+    }
+    if (returnRecord) {
+      const rate = company.defaultSalesTaxRate ?? 15;
+      const vatAmt = rate > 0 ? (returnRecord.amount * rate) / (100 + rate) : 0;
+      return buildZatcaTlvBase64(
+        company.companyName,
+        company.taxNumber,
+        returnRecord.date,
+        returnRecord.amount.toFixed(2),
+        vatAmt.toFixed(2),
+      );
+    }
+    return '';
+  }, [invoice, returnRecord, company.companyName, company.taxNumber, company.defaultSalesTaxRate]);
+
+  const decodedTags = useMemo(
+    () => (zatcaQrBase64 ? decodeZatcaTlvBase64(zatcaQrBase64) : []),
+    [zatcaQrBase64],
+  );
+
+  const zatcaValidation = useMemo(
+    () => validateZatcaPhase1(company.companyName, company.taxNumber),
+    [company.companyName, company.taxNumber],
+  );
+
   if (!invoice && !voucher && !returnRecord && !quotation) return null;
 
   const isAr = company.isArabic;
@@ -41,6 +83,27 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
 
   const docId = invoice?.id ?? returnRecord?.id ?? quotation?.id ?? voucher?.id ?? '';
   const docDate = invoice?.date ?? returnRecord?.date ?? quotation?.date ?? voucher?.date ?? '';
+
+  const handleDownloadQrPng = async () => {
+    if (!zatcaQrBase64) return;
+    const dataUrl = await QRCode.toDataURL(zatcaQrBase64, {
+      errorCorrectionLevel: 'M',
+      margin: 4,
+      width: 360,
+      color: { dark: '#000000', light: '#FFFFFF' },
+    });
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = `zatca_qr_${docId}.png`;
+    a.click();
+  };
+
+  const handleCopyTlv = async () => {
+    if (!zatcaQrBase64 || !navigator.clipboard) return;
+    await navigator.clipboard.writeText(zatcaQrBase64);
+    setCopiedTlv(true);
+    setTimeout(() => setCopiedTlv(false), 2000);
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
@@ -106,16 +169,76 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                   <p className="text-xs text-slate-600 font-mono mt-0.5">{invoice.customerPhone}</p>
                   <p className="text-xs text-slate-600 mt-0.5 uppercase">Status: {invoice.status}</p>
                 </div>
-                <QrMatrix
-                  data={buildZatcaTlvBase64(
-                    company.companyName,
-                    company.taxNumber,
-                    invoice.date,
-                    invoice.total.toFixed(2),
-                    invoice.vat.toFixed(2),
-                  )}
-                />
+                <div className="flex flex-col items-center gap-1.5">
+                  <QrMatrix data={zatcaQrBase64} size={124} />
+                  <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
+                    <ShieldCheck className="w-3 h-3 text-[#0A3D2C]" />
+                    <span>{isAr ? 'رمز الزكاة والدخل (المرحلة 1)' : 'ZATCA Phase-1 QR'}</span>
+                  </span>
+                  <div className="no-print flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowTlvDetails((v) => !v)}
+                      className="px-2 py-1 rounded-md border border-slate-200 text-[10px] font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-1 cursor-pointer"
+                    >
+                      <Eye className="w-3 h-3" />
+                      <span>TLV</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyTlv()}
+                      className="px-2 py-1 rounded-md border border-slate-200 text-[10px] font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-1 cursor-pointer"
+                    >
+                      {copiedTlv ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedTlv ? (isAr ? 'نُسخ' : 'Copied') : 'Base64'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleDownloadQrPng()}
+                      className="px-2 py-1 rounded-md border border-slate-200 text-[10px] font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-1 cursor-pointer"
+                    >
+                      <Download className="w-3 h-3" />
+                      <span>PNG</span>
+                    </button>
+                  </div>
+                </div>
               </div>
+
+              {showTlvDetails && (
+                <div className="no-print bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-extrabold text-[#0A3D2C]">
+                      {isAr ? 'بيانات ZATCA المرحلة الأولى (TLV Base64)' : 'ZATCA Phase-1 TLV Decoded Tags'}
+                    </span>
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        zatcaValidation.isCompliant
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : 'bg-amber-100 text-amber-800'
+                      }`}
+                    >
+                      {zatcaValidation.isCompliant
+                        ? isAr
+                          ? 'متوافق'
+                          : 'Compliant'
+                        : (isAr ? zatcaValidation.warningsAr[0] : zatcaValidation.warningsEn[0])}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    {decodedTags.map((tag) => (
+                      <div key={tag.tag} className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5">
+                        <span className="text-[10px] font-bold text-slate-400">
+                          Tag {tag.tag} · {isAr ? tag.labelAr : tag.labelEn}
+                        </span>
+                        <p className="font-mono text-[11px] font-semibold text-slate-800 truncate">{tag.value}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="font-mono text-[10px] text-slate-500 break-all bg-white border border-slate-200 rounded-lg p-2">
+                    {zatcaQrBase64}
+                  </p>
+                </div>
+              )}
 
               {(() => {
                 const effRate =
@@ -123,6 +246,9 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                   (invoice.subtotal > 0
                     ? Number(((invoice.vat / invoice.subtotal) * 100).toFixed(1))
                     : company.defaultSalesTaxRate ?? 15);
+                const invCur = invoice.currency ?? company.currency;
+                const fxRate = invoice.exchangeRate ?? 1;
+                const baseTotal = invoice.baseTotal ?? Number((invoice.total * fxRate).toFixed(2));
                 return (
                   <>
                     <table className="w-full border-collapse text-xs sm:text-sm">
@@ -148,7 +274,7 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                                   {itemVat.toFixed(2)}
                                 </td>
                                 <td className="p-3 text-end font-mono font-bold tabular-nums">
-                                  {(it.total + itemVat).toFixed(2)} {company.currency}
+                                  {(it.total + itemVat).toFixed(2)} {invCur}
                                 </td>
                               </tr>
                             );
@@ -159,7 +285,7 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                             <td className="p-3 text-end font-mono tabular-nums">{invoice.subtotal.toFixed(2)}</td>
                             <td className="p-3 text-end font-mono tabular-nums">{invoice.vat.toFixed(2)}</td>
                             <td className="p-3 text-end font-mono font-bold tabular-nums">
-                              {invoice.total.toFixed(2)} {company.currency}
+                              {invoice.total.toFixed(2)} {invCur}
                             </td>
                           </tr>
                         )}
@@ -167,25 +293,33 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                     </table>
 
                     <div className="flex justify-end">
-                      <div className="w-full sm:w-64 bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2">
+                      <div className="w-full sm:w-72 bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2">
                         <div className="flex justify-between text-xs">
                           <span>{isAr ? 'المجموع الفرعي' : 'Subtotal'}</span>
                           <span className="font-mono tabular-nums">
-                            {invoice.subtotal.toFixed(2)} {company.currency}
+                            {invoice.subtotal.toFixed(2)} {invCur}
                           </span>
                         </div>
                         <div className="flex justify-between text-xs">
                           <span>{isAr ? `ضريبة القيمة المضافة ${effRate}%` : `VAT ${effRate}%`}</span>
                           <span className="font-mono tabular-nums">
-                            {invoice.vat.toFixed(2)} {company.currency}
+                            {invoice.vat.toFixed(2)} {invCur}
                           </span>
                         </div>
                         <div className="border-t border-slate-300 pt-2 flex justify-between font-extrabold text-sm text-[#0A3D2C]">
                           <span>{isAr ? 'الإجمالي المستحق' : 'TOTAL'}</span>
                           <span className="font-mono tabular-nums">
-                            {invoice.total.toFixed(2)} {company.currency}
+                            {invoice.total.toFixed(2)} {invCur}
                           </span>
                         </div>
+                        {invCur !== company.currency && (
+                          <div className="border-t border-slate-200 pt-2 flex justify-between text-[11px] text-slate-600 font-mono">
+                            <span>1 {invCur} = {fxRate.toFixed(4)} {company.currency}</span>
+                            <span className="font-bold">
+                              ≈ {baseTotal.toFixed(2)} {company.currency}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </>
@@ -216,15 +350,13 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                     {isAr ? 'السبب:' : 'Reason:'} {returnRecord.reason}
                   </p>
                 </div>
-                <QrMatrix
-                  data={buildZatcaTlvBase64(
-                    company.companyName,
-                    company.taxNumber,
-                    returnRecord.date,
-                    returnRecord.amount.toFixed(2),
-                    (returnRecord.amount * 0.15 / 1.15).toFixed(2),
-                  )}
-                />
+                <div className="flex flex-col items-center gap-1.5">
+                  <QrMatrix data={zatcaQrBase64} size={124} />
+                  <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
+                    <ShieldCheck className="w-3 h-3 text-[#0A3D2C]" />
+                    <span>{isAr ? 'رمز الزكاة والدخل (المرحلة 1)' : 'ZATCA Phase-1 QR'}</span>
+                  </span>
+                </div>
               </div>
 
               <table className="w-full border-collapse text-xs sm:text-sm">
@@ -304,7 +436,13 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                     <span className="font-mono tabular-nums">-{quotation.discountAmount.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span>{isAr ? 'ضريبة 15%' : 'VAT 15%'}</span>
+                    <span>
+                      {(() => {
+                        const netQ = Math.max(0, quotation.subtotal - quotation.discountAmount);
+                        const qRate = netQ > 0 ? Number(((quotation.vat / netQ) * 100).toFixed(1)) : company.defaultSalesTaxRate ?? 15;
+                        return isAr ? `ضريبة ${qRate}%` : `VAT ${qRate}%`;
+                      })()}
+                    </span>
                     <span className="font-mono tabular-nums">{quotation.vat.toFixed(2)}</span>
                   </div>
                   <div className="border-t border-slate-300 pt-2 flex justify-between font-extrabold text-sm text-[#0A3D2C]">

@@ -102,6 +102,67 @@ async function startServer() {
     }
   });
 
+  const ALLOWED_FX = new Set([
+    'SAR', 'YER', 'EGP', 'AED', 'USD', 'EUR', 'GBP', 'KWD', 'QAR', 'BHD', 'OMR', 'JOD', 'TRY',
+  ]);
+  const FALLBACK_SAR_RATES: Record<string, number> = {
+    SAR: 1, AED: 1.0211, USD: 3.75, EUR: 3.96, GBP: 4.74, EGP: 0.076,
+    YER: 0.015, KWD: 12.2, QAR: 1.03, BHD: 9.95, OMR: 9.74, JOD: 5.29, TRY: 0.109,
+  };
+
+  app.get('/api/exchange-rates', async (req, res) => {
+    const rawBase = String(req.query.base ?? 'SAR').toUpperCase();
+    const base = ALLOWED_FX.has(rawBase) ? rawBase : 'SAR';
+    const baseSar = FALLBACK_SAR_RATES[base] ?? 1;
+
+    const buildFallback = () => {
+      const rates: Record<string, number> = {};
+      for (const code of ALLOWED_FX) {
+        rates[code] = code === base ? 1 : Number(((FALLBACK_SAR_RATES[code] ?? 1) / baseSar).toFixed(4));
+      }
+      return rates;
+    };
+
+    try {
+      const upstream = await fetch(`https://open.er-api.com/v6/latest/${base}`, {
+        signal: AbortSignal.timeout(6000),
+      });
+      if (!upstream.ok) {
+        res.json({ base, rates: buildFallback(), updatedAt: new Date().toISOString(), source: 'fallback' });
+        return;
+      }
+      const data = (await upstream.json()) as {
+        result?: string;
+        time_last_update_utc?: string;
+        rates?: Record<string, number>;
+      };
+      if (data.result !== 'success' || !data.rates) {
+        res.json({ base, rates: buildFallback(), updatedAt: new Date().toISOString(), source: 'fallback' });
+        return;
+      }
+      const convertedToBase: Record<string, number> = {};
+      for (const code of ALLOWED_FX) {
+        if (code === base) {
+          convertedToBase[code] = 1;
+        } else {
+          const perBase = data.rates[code];
+          convertedToBase[code] =
+            typeof perBase === 'number' && perBase > 0
+              ? Number((1 / perBase).toFixed(4))
+              : Number(((FALLBACK_SAR_RATES[code] ?? 1) / baseSar).toFixed(4));
+        }
+      }
+      res.json({
+        base,
+        rates: convertedToBase,
+        updatedAt: new Date().toISOString(),
+        source: 'live',
+      });
+    } catch {
+      res.json({ base, rates: buildFallback(), updatedAt: new Date().toISOString(), source: 'fallback' });
+    }
+  });
+
   if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.join(__dirname, 'dist')));
     app.get('*', (_req, res) => {

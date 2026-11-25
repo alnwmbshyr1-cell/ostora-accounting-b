@@ -9,9 +9,18 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
   const cur = state.settings.currency;
   const t = strings[isAr ? 'ar' : 'en'];
 
-  const baseSales = metrics.totalSales;
+  const now = new Date();
+  const curMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const thisMonthSales = state.invoices.reduce((sum, inv) => {
+    const d = new Date(inv.date);
+    if (Number.isNaN(d.getTime())) return sum;
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    return key === curMonthKey ? sum + (inv.baseTotal ?? inv.total * (inv.exchangeRate ?? 1)) : sum;
+  }, 0);
+
+  const baseSales = thisMonthSales > 0 ? thisMonthSales : metrics.totalSales;
   const goal = state.settings.monthlySalesGoal || 120000;
-  const progress = Math.min(100, Math.round((baseSales / Math.max(1, goal)) * 100));
+  const progress = Math.min(100, Math.round((thisMonthSales / Math.max(1, goal)) * 100));
   const cashRunwayMonths =
     metrics.totalExpenses > 0 ? (metrics.totalCashAndBanks / metrics.totalExpenses).toFixed(1) : '—';
   const collectionRatio =
@@ -35,12 +44,14 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
             <div className="flex items-center gap-2">
               <input
                 type="number"
-                min={1000}
+                min={100}
                 step={5000}
                 value={goal}
                 onChange={(e) => {
                   const nextGoal = parseFloat(e.target.value);
-                  if (nextGoal > 0) actions.updateSettings({ monthlySalesGoal: nextGoal });
+                  if (Number.isFinite(nextGoal) && nextGoal >= 100) {
+                    actions.updateSettings({ monthlySalesGoal: nextGoal });
+                  }
                 }}
                 aria-label={t.salesGoal}
                 className="w-28 px-2.5 py-1 rounded-lg bg-white/15 border border-white/20 text-white font-mono text-xs tabular-nums"
@@ -52,7 +63,7 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
             <div className="h-full bg-[#C9A227] rounded-full transition-all" style={{ width: `${progress}%` }} />
           </div>
           <p className="text-xs text-white/80 font-mono tabular-nums">
-            {baseSales.toLocaleString()} / {goal.toLocaleString()} {cur}
+            {thisMonthSales.toLocaleString()} / {goal.toLocaleString()} {cur}
           </p>
         </div>
       </div>

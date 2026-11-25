@@ -1,0 +1,472 @@
+{
+  "entities": {
+    "UserProfilePrivate": {
+      "title": "UserProfilePrivate",
+      "description": "Authenticated user's private profile containing PII isolated under /users/{userId}.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "photoUrl": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "role": {
+          "type": "string",
+          "enum": ["user", "admin"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "displayName", "role", "createdAt", "updatedAt"]
+    },
+    "Workspace": {
+      "title": "Workspace",
+      "description": "Master ERP company workspace storing company configuration, tax defaults, RBAC matrix, and subscription state.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "companyName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "taxNumber": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "crNumber": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "address": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["SAR", "YER", "EGP", "AED", "USD", "EUR", "GBP", "KWD", "QAR", "BHD", "OMR", "JOD", "TRY"]
+        },
+        "enabledCurrencies": {
+          "type": "array"
+        },
+        "exchangeRates": {
+          "type": "object"
+        },
+        "lastRatesUpdate": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "isArabic": {
+          "type": "boolean"
+        },
+        "isDarkMode": {
+          "type": "boolean"
+        },
+        "monthlySalesGoal": {
+          "type": "number"
+        },
+        "defaultSalesTaxRate": {
+          "type": "number"
+        },
+        "defaultPurchaseTaxRate": {
+          "type": "number"
+        },
+        "autoBackupDaily": {
+          "type": "boolean"
+        },
+        "lastBackupDate": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "autoCloudSync": {
+          "type": "boolean"
+        },
+        "autoSyncIntervalMinutes": {
+          "type": "number"
+        },
+        "activePlan": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "trialStartIso": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "currentRole": {
+          "type": "string",
+          "enum": ["owner", "accountant", "salesman", "warehouse"]
+        },
+        "permissionsMatrix": {
+          "type": "object"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "companyName",
+        "taxNumber",
+        "crNumber",
+        "phone",
+        "email",
+        "address",
+        "currency",
+        "isArabic",
+        "isDarkMode",
+        "monthlySalesGoal",
+        "defaultSalesTaxRate",
+        "defaultPurchaseTaxRate",
+        "autoBackupDaily",
+        "activePlan",
+        "trialStartIso",
+        "currentRole",
+        "permissionsMatrix",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Invoice": {
+      "title": "Invoice",
+      "description": "ZATCA-ready sales tax invoice belonging to a workspace.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "customerPhone": { "type": "string", "maxLength": 40 },
+        "description": { "type": "string", "maxLength": 500 },
+        "items": { "type": "array" },
+        "subtotal": { "type": "number" },
+        "taxRate": { "type": "number" },
+        "vat": { "type": "number" },
+        "total": { "type": "number" },
+        "currency": {
+          "type": "string",
+          "enum": ["SAR", "YER", "EGP", "AED", "USD", "EUR", "GBP", "KWD", "QAR", "BHD", "OMR", "JOD", "TRY"]
+        },
+        "exchangeRate": { "type": "number" },
+        "baseTotal": { "type": "number" },
+        "status": { "type": "string", "enum": ["paid", "pending", "overdue"] },
+        "date": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "customerId", "customerName", "customerPhone", "description", "items", "subtotal", "taxRate", "vat", "total", "status", "date", "createdAt", "updatedAt"]
+    },
+    "ReturnRecord": {
+      "title": "ReturnRecord",
+      "description": "Sales or purchase return record belonging to a workspace.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "type": { "type": "string", "enum": ["sales", "purchase"] },
+        "originalDocId": { "type": "string", "maxLength": 128 },
+        "partyName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "partyPhone": { "type": "string", "maxLength": 40 },
+        "productId": { "type": "string", "maxLength": 128 },
+        "productName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "qty": { "type": "number" },
+        "unitPrice": { "type": "number" },
+        "amount": { "type": "number" },
+        "reason": { "type": "string", "enum": ["damaged", "wrong_item", "expired", "changed_mind", "other"] },
+        "notes": { "type": "string", "maxLength": 500 },
+        "date": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "type", "originalDocId", "partyName", "partyPhone", "productId", "productName", "qty", "unitPrice", "amount", "reason", "notes", "date", "createdAt", "updatedAt"]
+    },
+    "Quotation": {
+      "title": "Quotation",
+      "description": "Customer price quotation belonging to a workspace.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "customerPhone": { "type": "string", "maxLength": 40 },
+        "customerEmail": { "type": "string", "maxLength": 160 },
+        "items": { "type": "array" },
+        "discountPercent": { "type": "number" },
+        "subtotal": { "type": "number" },
+        "discountAmount": { "type": "number" },
+        "vat": { "type": "number" },
+        "total": { "type": "number" },
+        "validUntil": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["draft", "sent", "accepted", "rejected", "expired"] },
+        "notes": { "type": "string", "maxLength": 500 },
+        "date": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "customerId", "customerName", "customerPhone", "customerEmail", "items", "discountPercent", "subtotal", "discountAmount", "vat", "total", "validUntil", "status", "notes", "date", "createdAt", "updatedAt"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Customer account and receivables record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "email": { "type": "string", "maxLength": 160 },
+        "debt": { "type": "number" },
+        "creditLimit": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "name", "phone", "email", "debt", "createdAt", "updatedAt"]
+    },
+    "Supplier": {
+      "title": "Supplier",
+      "description": "Vendor/supplier account and payables record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "category": { "type": "string", "maxLength": 100 },
+        "payable": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "name", "phone", "category", "payable", "createdAt", "updatedAt"]
+    },
+    "PurchaseOrder": {
+      "title": "PurchaseOrder",
+      "description": "Supplier purchase order belonging to a workspace.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "supplierId": { "type": "string", "maxLength": 128 },
+        "supplierName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "supplierPhone": { "type": "string", "maxLength": 40 },
+        "productId": { "type": "string", "maxLength": 128 },
+        "productName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "quantity": { "type": "number" },
+        "unitCost": { "type": "number" },
+        "subtotal": { "type": "number" },
+        "taxRate": { "type": "number" },
+        "vat": { "type": "number" },
+        "total": { "type": "number" },
+        "status": { "type": "string", "enum": ["ordered", "received"] },
+        "date": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "supplierId", "supplierName", "supplierPhone", "productId", "productName", "quantity", "unitCost", "subtotal", "taxRate", "vat", "total", "status", "date", "createdAt", "updatedAt"]
+    },
+    "Voucher": {
+      "title": "Voucher",
+      "description": "Receipt or payment cash/bank voucher.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "type": { "type": "string", "enum": ["receipt", "payment"] },
+        "partyName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "partyPhone": { "type": "string", "maxLength": 40 },
+        "amount": { "type": "number" },
+        "reason": { "type": "string", "maxLength": 400 },
+        "paymentMethod": { "type": "string", "maxLength": 80 },
+        "date": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "type", "partyName", "partyPhone", "amount", "reason", "paymentMethod", "date", "createdAt", "updatedAt"]
+    },
+    "JournalEntry": {
+      "title": "JournalEntry",
+      "description": "Double-entry accounting journal record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "reference": { "type": "string", "maxLength": 120 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 400 },
+        "date": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "lines": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "reference", "description", "date", "lines", "createdAt", "updatedAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Inventory catalog SKU with barcode, stock quantity, cost, and price.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "sku": { "type": "string", "maxLength": 64 },
+        "barcode": { "type": "string", "maxLength": 64 },
+        "imageBase64": { "type": "string", "maxLength": 250000 },
+        "qty": { "type": "number" },
+        "cost": { "type": "number" },
+        "price": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "name", "sku", "barcode", "qty", "cost", "price", "createdAt", "updatedAt"]
+    },
+    "Employee": {
+      "title": "Employee",
+      "description": "Staff member record with assigned ERP role and monthly salary.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "roleTitle": { "type": "string", "maxLength": 100 },
+        "role": { "type": "string", "enum": ["owner", "accountant", "salesman", "warehouse"] },
+        "permissions": { "type": "array" },
+        "phone": { "type": "string", "maxLength": 40 },
+        "salary": { "type": "number" },
+        "lastPaidDate": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "name", "roleTitle", "role", "permissions", "phone", "salary", "createdAt", "updatedAt"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Operating expense record linked to a bank or cash account.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "category": { "type": "string", "maxLength": 80 },
+        "amount": { "type": "number" },
+        "paidFromBankId": { "type": "string", "maxLength": 128 },
+        "date": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "title", "category", "amount", "paidFromBankId", "date", "createdAt", "updatedAt"]
+    },
+    "BankAccount": {
+      "title": "BankAccount",
+      "description": "Cash box or bank ledger balance belonging to a workspace.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "nameAr": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "nameEn": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "accountNumber": { "type": "string", "maxLength": 64 },
+        "balance": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "nameAr", "nameEn", "accountNumber", "balance", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfilePrivate" },
+      "description": "Private authenticated user profiles (PII isolated to owner or admin)."
+    },
+    "/workspaces/{workspaceId}": {
+      "schema": { "$ref": "#/entities/Workspace" },
+      "description": "Master ERP workspace settings, tax configuration, and permissions matrix."
+    },
+    "/workspaces/{workspaceId}/invoices/{invoiceId}": {
+      "schema": { "$ref": "#/entities/Invoice" },
+      "description": "Sales tax invoices for a workspace."
+    },
+    "/workspaces/{workspaceId}/returns/{returnId}": {
+      "schema": { "$ref": "#/entities/ReturnRecord" },
+      "description": "Sales and purchase returns for a workspace."
+    },
+    "/workspaces/{workspaceId}/quotations/{quotationId}": {
+      "schema": { "$ref": "#/entities/Quotation" },
+      "description": "Customer quotations for a workspace."
+    },
+    "/workspaces/{workspaceId}/customers/{customerId}": {
+      "schema": { "$ref": "#/entities/Customer" },
+      "description": "Customer directory and balances for a workspace."
+    },
+    "/workspaces/{workspaceId}/suppliers/{supplierId}": {
+      "schema": { "$ref": "#/entities/Supplier" },
+      "description": "Supplier directory and payables for a workspace."
+    },
+    "/workspaces/{workspaceId}/purchaseOrders/{poId}": {
+      "schema": { "$ref": "#/entities/PurchaseOrder" },
+      "description": "Supplier purchase orders for a workspace."
+    },
+    "/workspaces/{workspaceId}/vouchers/{voucherId}": {
+      "schema": { "$ref": "#/entities/Voucher" },
+      "description": "Receipt and payment vouchers for a workspace."
+    },
+    "/workspaces/{workspaceId}/journals/{journalId}": {
+      "schema": { "$ref": "#/entities/JournalEntry" },
+      "description": "Double-entry accounting journals for a workspace."
+    },
+    "/workspaces/{workspaceId}/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Inventory products and barcodes for a workspace."
+    },
+    "/workspaces/{workspaceId}/employees/{employeeId}": {
+      "schema": { "$ref": "#/entities/Employee" },
+      "description": "Employee roster and payroll data for a workspace."
+    },
+    "/workspaces/{workspaceId}/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/Expense" },
+      "description": "Operating expenses for a workspace."
+    },
+    "/workspaces/{workspaceId}/banks/{bankId}": {
+      "schema": { "$ref": "#/entities/BankAccount" },
+      "description": "Bank and cash accounts for a workspace."
+    }
+  }
+}

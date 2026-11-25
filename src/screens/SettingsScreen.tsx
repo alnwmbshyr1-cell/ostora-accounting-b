@@ -1,18 +1,28 @@
 import React, { useRef, useState } from 'react';
-import { CloudUpload, Database, Download, FileSpreadsheet, Percent, RotateCcw, Shield, Trash2, Upload } from 'lucide-react';
+import { Cloud, CloudOff, CloudUpload, Coins, Database, Download, FileSpreadsheet, LogOut, Percent, RefreshCw, RotateCcw, Shield, Trash2, Upload } from 'lucide-react';
 import { ALL_ROUTES } from '../constants/permissions';
+import { useFirebase } from '../contexts/FirebaseContext';
 import { strings } from '../data/translations';
 import { CurrencyCode, RoleId } from '../types/erp';
+import {
+  buildDefaultRatesForBase,
+  DEFAULT_ENABLED_CURRENCIES,
+  SUPPORTED_CURRENCIES,
+} from '../utils/currencies';
 import { downloadTextFile, exportMultiSheetExcel } from '../utils/export';
 import { ScreenProps } from './types';
 
 export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
   const { state, metrics, actions, idbSnapshots } = store;
+  const { user, signingIn, syncStatus, lastCloudSyncAt, authError, signInWithGoogle, signOutFirebase } = useFirebase();
   const isAr = state.settings.isArabic;
   const t = strings[isAr ? 'ar' : 'en'];
 
   const [importConfirmRaw, setImportConfirmRaw] = useState<string | null>(null);
+  const [dangerConfirm, setDangerConfirm] = useState<'deleteAll' | 'restoreDemo' | null>(null);
   const [downloadingBackup, setDownloadingBackup] = useState(false);
+  const [syncingNow, setSyncingNow] = useState(false);
+  const [updatingRates, setUpdatingRates] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const roles: RoleId[] = ['owner', 'accountant', 'salesman', 'warehouse'];
@@ -26,6 +36,7 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
         <div>
           <label className="text-xs font-bold text-slate-500">{t.companyName}</label>
           <input
+            maxLength={160}
             value={state.settings.companyName}
             onChange={(e) => actions.updateSettings({ companyName: e.target.value })}
             className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
@@ -34,6 +45,7 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
         <div>
           <label className="text-xs font-bold text-slate-500">{t.taxNumber}</label>
           <input
+            maxLength={64}
             value={state.settings.taxNumber}
             onChange={(e) => actions.updateSettings({ taxNumber: e.target.value })}
             className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
@@ -42,6 +54,7 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
         <div>
           <label className="text-xs font-bold text-slate-500">{t.crNumber}</label>
           <input
+            maxLength={64}
             value={state.settings.crNumber}
             onChange={(e) => actions.updateSettings({ crNumber: e.target.value })}
             className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
@@ -50,6 +63,7 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
         <div>
           <label className="text-xs font-bold text-slate-500">{t.phone}</label>
           <input
+            maxLength={40}
             value={state.settings.phone}
             onChange={(e) => actions.updateSettings({ phone: e.target.value })}
             className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
@@ -58,6 +72,7 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
         <div>
           <label className="text-xs font-bold text-slate-500">{t.email}</label>
           <input
+            maxLength={160}
             value={state.settings.email}
             onChange={(e) => actions.updateSettings({ email: e.target.value })}
             className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
@@ -66,6 +81,7 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
         <div>
           <label className="text-xs font-bold text-slate-500">{t.address}</label>
           <input
+            maxLength={300}
             value={state.settings.address}
             onChange={(e) => actions.updateSettings({ address: e.target.value })}
             className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
@@ -84,16 +100,16 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
             {isAr ? 'العربية (RTL) → EN' : 'English (LTR) → عربي'}
           </button>
         </div>
-        <div className="p-4 flex items-center justify-between">
-          <span className="text-sm font-bold">{t.currency}</span>
+        <div className="p-4 flex items-center justify-between gap-3">
+          <span className="text-sm font-bold">{t.baseCurrency}</span>
           <select
             value={state.settings.currency}
             onChange={(e) => actions.updateSettings({ currency: e.target.value as CurrencyCode })}
             className="px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm font-bold"
           >
-            {(['SAR', 'YER', 'EGP', 'AED'] as CurrencyCode[]).map((c) => (
-              <option key={c} value={c}>
-                {c}
+            {SUPPORTED_CURRENCIES.map((c) => (
+              <option key={c.code} value={c.code}>
+                {c.code} — {isAr ? c.nameAr : c.nameEn}
               </option>
             ))}
           </select>
@@ -108,6 +124,129 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
           </button>
         </div>
       </div>
+
+      {/* Multi-Currency & Live Exchange Rates Panel */}
+      {(() => {
+        const baseCur = state.settings.currency;
+        const enabledList = state.settings.enabledCurrencies ?? DEFAULT_ENABLED_CURRENCIES;
+        const ratesMap = state.settings.exchangeRates ?? buildDefaultRatesForBase(baseCur);
+        const foreignEnabled = enabledList.filter((c) => c !== baseCur);
+
+        return (
+          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Coins className="w-5 h-5 text-[#0A3D2C] dark:text-[#C9A227]" />
+                <div>
+                  <h3 className="text-base font-extrabold">{t.multiCurrencySection}</h3>
+                  <p className="text-[11px] text-slate-500 font-mono">
+                    {t.lastUpdatedRates}:{' '}
+                    {state.settings.lastRatesUpdate ? state.settings.lastRatesUpdate.slice(0, 16).replace('T', ' ') : '—'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={updatingRates}
+                onClick={async () => {
+                  setUpdatingRates(true);
+                  try {
+                    const res = await actions.refreshLiveExchangeRates(baseCur);
+                    actions.notify(
+                      res.source === 'live'
+                        ? isAr
+                          ? `تم تحديث أسعار الصرف مباشرة مقابل ${baseCur}`
+                          : `Live exchange rates updated against ${baseCur}`
+                        : isAr
+                        ? 'تم تحميل الأسعار المرجعية (وضع غير متصل)'
+                        : 'Loaded reference exchange rates (offline fallback)',
+                    );
+                  } finally {
+                    setUpdatingRates(false);
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer disabled:opacity-60"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${updatingRates ? 'animate-spin' : ''}`} />
+                <span>{updatingRates ? t.fetchingRates : t.fetchLiveRates}</span>
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-500 block">{t.enabledCurrencies}</label>
+              <div className="flex flex-wrap gap-1.5">
+                {SUPPORTED_CURRENCIES.map((c) => {
+                  const isBase = c.code === baseCur;
+                  const active = isBase || enabledList.includes(c.code);
+                  return (
+                    <button
+                      key={c.code}
+                      type="button"
+                      disabled={isBase}
+                      onClick={() => {
+                        const next = active
+                          ? enabledList.filter((x) => x !== c.code)
+                          : [...enabledList, c.code];
+                        actions.updateSettings({ enabledCurrencies: next });
+                      }}
+                      className={`px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-colors cursor-pointer disabled:cursor-default ${
+                        active
+                          ? 'bg-[#0A3D2C] text-white border-[#0A3D2C]'
+                          : 'bg-slate-50 dark:bg-[#0A120F] border-slate-200 dark:border-[#1F332B] text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      {c.code} · {isAr ? c.nameAr : c.nameEn}
+                      {isBase ? (isAr ? ' (أساسية)' : ' (Base)') : ''}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {foreignEnabled.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 pt-1">
+                {foreignEnabled.map((code) => {
+                  const meta = SUPPORTED_CURRENCIES.find((m) => m.code === code);
+                  const val = ratesMap[code] ?? 1;
+                  return (
+                    <div
+                      key={code}
+                      className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B]"
+                    >
+                      <div className="min-w-0">
+                        <span className="text-xs font-extrabold block">1 {code} =</span>
+                        <span className="text-[10px] text-slate-500 truncate block">
+                          {isAr ? meta?.nameAr : meta?.nameEn}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <input
+                          type="number"
+                          min={0.0001}
+                          step={0.0001}
+                          value={val}
+                          onChange={(e) => {
+                            const num = parseFloat(e.target.value);
+                            if (!Number.isFinite(num) || num <= 0) return;
+                            actions.updateSettings({
+                              exchangeRates: {
+                                ...ratesMap,
+                                [code]: num,
+                              },
+                            });
+                          }}
+                          className="w-24 px-2 py-1 rounded-lg bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-mono tabular-nums text-end"
+                        />
+                        <span className="text-xs font-mono font-bold text-slate-500">{baseCur}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* VAT & Tax Configuration Panel */}
       <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-4">
@@ -232,6 +371,156 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
             ))}
           </tbody>
         </table>
+      </div>
+
+      {/* Firebase Cloud Sync & Google Account */}
+      <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            {user ? (
+              <Cloud className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+            ) : (
+              <CloudOff className="w-5 h-5 text-slate-400" />
+            )}
+            <h3 className="text-base font-extrabold">{t.cloudSyncTitle}</h3>
+          </div>
+          <span className="text-xs font-mono font-bold text-slate-500">
+            {user
+              ? syncStatus === 'syncing'
+                ? t.syncingCloud
+                : `${t.syncedCloud}${lastCloudSyncAt ? ` · ${lastCloudSyncAt.slice(11, 19)}` : ''}`
+              : t.cloudOfflineMode}
+          </span>
+        </div>
+
+        {user ? (
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <div className="text-xs space-y-0.5">
+              <p className="font-bold text-slate-800 dark:text-slate-100">
+                {user.displayName || user.email}
+              </p>
+              <p className="text-slate-500 font-mono">{user.email}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={syncingNow || syncStatus === 'syncing'}
+                onClick={async () => {
+                  setSyncingNow(true);
+                  try {
+                    const ok = await actions.syncNowToCloud();
+                    if (ok) {
+                      actions.notify(isAr ? 'تمت مزامنة البيانات مع Firebase' : 'Synced workspace to Firebase');
+                    }
+                  } finally {
+                    setSyncingNow(false);
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer disabled:opacity-60"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${syncingNow || syncStatus === 'syncing' ? 'animate-spin' : ''}`} />
+                <span>{t.syncNow}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void signOutFirebase()}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 dark:border-[#1F332B] text-xs font-bold text-red-600 cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>{t.disconnectGoogle}</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <p className="text-xs text-slate-500">
+              {isAr
+                ? 'اربط حساب Google لحفظ ومزامنة الفواتير والعملاء والمخزون عبر الأجهزة بشكل فوري.'
+                : 'Connect your Google account to back up and sync invoices, customers, and inventory across devices.'}
+            </p>
+            <button
+              type="button"
+              disabled={signingIn}
+              onClick={async () => {
+                const signedUser = await signInWithGoogle();
+                if (signedUser) {
+                  actions.notify(isAr ? 'تم الربط والمزامنة مع Firebase' : 'Connected to Firebase Cloud');
+                }
+              }}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer disabled:opacity-60"
+            >
+              <Cloud className="w-4 h-4" />
+              <span>{t.connectGoogleCloud}</span>
+            </button>
+          </div>
+        )}
+        {/* Auto-Sync Settings */}
+        <div className="mt-2 pt-3 border-t border-slate-100 dark:border-[#1F332B] space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-sm font-bold text-slate-800 dark:text-slate-100">{t.autoSyncSettingsTitle}</p>
+              <p className="text-xs text-slate-500">
+                {(state.settings.autoCloudSync ?? true)
+                  ? (state.settings.autoSyncIntervalMinutes ?? 0) === 0
+                    ? `${t.autoSyncIntervalLabel}: ${t.syncInstant}`
+                    : `${t.autoSyncIntervalLabel}: ${
+                        state.settings.autoSyncIntervalMinutes === 1
+                          ? t.syncEvery1m
+                          : state.settings.autoSyncIntervalMinutes === 5
+                          ? t.syncEvery5m
+                          : t.syncEvery15m
+                      }`
+                  : t.syncManualOnly}
+              </p>
+            </div>
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <span className="text-xs font-bold text-slate-600 dark:text-slate-300">{t.autoCloudSyncToggle}</span>
+              <input
+                type="checkbox"
+                checked={state.settings.autoCloudSync ?? true}
+                onChange={(e) => {
+                  const enabled = e.target.checked;
+                  actions.updateSettings({ autoCloudSync: enabled });
+                  actions.notify(
+                    enabled
+                      ? isAr
+                        ? 'تم تفعيل المزامنة التلقائية مع السحابة'
+                        : 'Automatic cloud sync enabled'
+                      : isAr
+                      ? 'تم إيقاف المزامنة التلقائية (يدوي فقط)'
+                      : 'Automatic cloud sync paused (manual only)',
+                  );
+                }}
+                className="w-4 h-4 accent-[#0A3D2C] cursor-pointer"
+              />
+            </label>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <label className="text-xs font-bold text-slate-500">{t.autoSyncIntervalLabel}</label>
+            <select
+              disabled={!(state.settings.autoCloudSync ?? true)}
+              value={state.settings.autoSyncIntervalMinutes ?? 0}
+              onChange={(e) => {
+                const mins = Number(e.target.value);
+                actions.updateSettings({ autoSyncIntervalMinutes: mins });
+                actions.notify(
+                  isAr
+                    ? 'تم تحديث وتيرة المزامنة التلقائية'
+                    : 'Auto-sync frequency updated',
+                );
+              }}
+              className="px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold disabled:opacity-50"
+            >
+              <option value={0}>{t.syncInstant}</option>
+              <option value={1}>{t.syncEvery1m}</option>
+              <option value={5}>{t.syncEvery5m}</option>
+              <option value={15}>{t.syncEvery15m}</option>
+            </select>
+          </div>
+        </div>
+
+        {authError && <p className="text-xs text-red-600 font-semibold">{authError}</p>}
       </div>
 
       {/* Cloud Backup & Sync Section */}
@@ -430,20 +719,14 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
             <span>{t.exportAllExcel}</span>
           </button>
           <button
-            onClick={() => {
-              actions.restoreDemoData();
-              actions.notify(isAr ? 'تمت استعادة البيانات التجريبية' : 'Demo data restored');
-            }}
+            onClick={() => setDangerConfirm('restoreDemo')}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#C9A227]/20 text-[#0A3D2C] dark:text-[#C9A227] text-xs font-bold cursor-pointer"
           >
             <RotateCcw className="w-4 h-4" />
             <span>{t.restoreDemo}</span>
           </button>
           <button
-            onClick={() => {
-              actions.deleteAllData();
-              actions.notify(isAr ? 'تم مسح جميع السجلات' : 'All records cleared');
-            }}
+            onClick={() => setDangerConfirm('deleteAll')}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-red-600/10 text-red-600 text-xs font-bold cursor-pointer"
           >
             <Trash2 className="w-4 h-4" />
@@ -451,6 +734,49 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
           </button>
         </div>
       </div>
+
+      {/* Confirm Destructive Data Action Modal */}
+      {dangerConfirm && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#121E19] rounded-[20px] max-w-sm w-full p-6 space-y-4">
+            <h3 className="text-base font-extrabold text-red-600">
+              {dangerConfirm === 'deleteAll' ? t.confirmDelete : t.restoreDemo}
+            </h3>
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              {dangerConfirm === 'deleteAll'
+                ? isAr
+                  ? 'سيؤدي هذا الإجراء إلى مسح جميع الفواتير والعملاء والمخزون والقيود الحالية. هل أنت متأكد؟'
+                  : 'This will permanently clear all invoices, customers, inventory, and ledger entries. Continue?'
+                : t.replaceConfirmMsg}
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setDangerConfirm(null)}
+                className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-[#1F332B] text-sm font-bold cursor-pointer"
+              >
+                {t.cancel}
+              </button>
+              <button
+                onClick={() => {
+                  if (dangerConfirm === 'deleteAll') {
+                    actions.deleteAllData();
+                    actions.notify(isAr ? 'تم مسح جميع السجلات' : 'All records cleared');
+                  } else {
+                    actions.restoreDemoData();
+                    actions.notify(isAr ? 'تمت استعادة البيانات التجريبية' : 'Demo data restored');
+                  }
+                  setDangerConfirm(null);
+                }}
+                className={`flex-1 py-2.5 rounded-xl text-white text-sm font-bold cursor-pointer ${
+                  dangerConfirm === 'deleteAll' ? 'bg-red-600' : 'bg-[#0A3D2C]'
+                }`}
+              >
+                {dangerConfirm === 'deleteAll' ? t.delete : t.restoreDemo}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Confirm Import Replacement Modal */}
       {importConfirmRaw && (

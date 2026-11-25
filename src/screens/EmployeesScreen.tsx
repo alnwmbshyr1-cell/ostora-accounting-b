@@ -128,11 +128,11 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white dark:bg-[#121E19] rounded-[20px] max-w-md w-full p-6 space-y-3 my-auto">
             <h3 className="text-lg font-extrabold">{t.addEmployee}</h3>
-            <input value={empForm.name} onChange={(e) => setEmpForm({ ...empForm, name: e.target.value })} placeholder={t.fullName} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
-            <input value={empForm.roleTitle} onChange={(e) => setEmpForm({ ...empForm, roleTitle: e.target.value })} placeholder={t.role} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
+            <input maxLength={160} value={empForm.name} onChange={(e) => setEmpForm({ ...empForm, name: e.target.value })} placeholder={t.fullName} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
+            <input maxLength={100} value={empForm.roleTitle} onChange={(e) => setEmpForm({ ...empForm, roleTitle: e.target.value })} placeholder={t.role} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
             <div className="grid grid-cols-2 gap-2">
-              <input value={empForm.phone} onChange={(e) => setEmpForm({ ...empForm, phone: e.target.value })} placeholder={t.phone} className="px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
-              <input type="number" value={empForm.salary} onChange={(e) => setEmpForm({ ...empForm, salary: e.target.value })} placeholder={t.salary} className="px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
+              <input type="tel" maxLength={40} value={empForm.phone} onChange={(e) => setEmpForm({ ...empForm, phone: e.target.value })} placeholder={t.phone} className="px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
+              <input type="number" min={0} step="0.01" value={empForm.salary} onChange={(e) => setEmpForm({ ...empForm, salary: e.target.value })} placeholder={t.salary} className="px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm font-mono tabular-nums" />
             </div>
 
             <div>
@@ -194,7 +194,7 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
                       role: empForm.role,
                       permissions: empForm.permissions,
                       phone: empForm.phone.trim(),
-                      salary: parseFloat(empForm.salary) || 0,
+                      salary: Math.max(0, parseFloat(empForm.salary) || 0),
                     },
                     empModal.editId,
                   );

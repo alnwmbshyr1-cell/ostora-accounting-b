@@ -136,6 +136,11 @@ export const InventoryScreen: React.FC<ScreenProps> = ({ store }) => {
         </button>
       </div>
 
+      {visibleProducts.length === 0 ? (
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-10 text-center text-sm text-slate-500">
+          {t.noData}
+        </div>
+      ) : (
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {visibleProducts.map((p) => {
           const low = p.qty <= 10;
@@ -206,6 +211,7 @@ export const InventoryScreen: React.FC<ScreenProps> = ({ store }) => {
           );
         })}
       </div>
+      )}
 
       {prdModal.open && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
@@ -263,11 +269,12 @@ export const InventoryScreen: React.FC<ScreenProps> = ({ store }) => {
               </div>
             </div>
 
-            <input value={prdForm.name} onChange={(e) => setPrdForm({ ...prdForm, name: e.target.value })} placeholder={t.fullName} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
-            <input value={prdForm.sku} onChange={(e) => setPrdForm({ ...prdForm, sku: e.target.value })} placeholder={t.sku} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
+            <input maxLength={160} value={prdForm.name} onChange={(e) => setPrdForm({ ...prdForm, name: e.target.value })} placeholder={t.fullName} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
+            <input maxLength={64} value={prdForm.sku} onChange={(e) => setPrdForm({ ...prdForm, sku: e.target.value })} placeholder={t.sku} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
 
             <div className="flex gap-2">
               <input
+                maxLength={64}
                 value={prdForm.barcode}
                 onChange={(e) => setPrdForm({ ...prdForm, barcode: e.target.value })}
                 placeholder={t.barcode}
@@ -295,9 +302,9 @@ export const InventoryScreen: React.FC<ScreenProps> = ({ store }) => {
             </div>
 
             <div className="grid grid-cols-3 gap-2">
-              <input type="number" value={prdForm.qty} onChange={(e) => setPrdForm({ ...prdForm, qty: e.target.value })} placeholder={t.qty} className="px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
-              <input type="number" value={prdForm.cost} onChange={(e) => setPrdForm({ ...prdForm, cost: e.target.value })} placeholder={t.cost} className="px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
-              <input type="number" value={prdForm.price} onChange={(e) => setPrdForm({ ...prdForm, price: e.target.value })} placeholder={t.price} className="px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
+              <input type="number" min={0} value={prdForm.qty} onChange={(e) => setPrdForm({ ...prdForm, qty: e.target.value })} placeholder={t.qty} className="px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm font-mono tabular-nums" />
+              <input type="number" min={0} step="0.01" value={prdForm.cost} onChange={(e) => setPrdForm({ ...prdForm, cost: e.target.value })} placeholder={t.cost} className="px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm font-mono tabular-nums" />
+              <input type="number" min={0} step="0.01" value={prdForm.price} onChange={(e) => setPrdForm({ ...prdForm, price: e.target.value })} placeholder={t.price} className="px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm font-mono tabular-nums" />
             </div>
             <div className="flex gap-2 pt-2">
               <button onClick={() => setPrdModal({ open: false })} className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-[#1F332B] text-sm font-bold cursor-pointer">{t.cancel}</button>
@@ -310,9 +317,9 @@ export const InventoryScreen: React.FC<ScreenProps> = ({ store }) => {
                       sku: prdForm.sku.trim() || 'SKU-NEW',
                       barcode: prdForm.barcode.trim() || generateEan13(),
                       imageBase64: prdForm.imageBase64 || undefined,
-                      qty: parseInt(prdForm.qty, 10) || 0,
-                      cost: parseFloat(prdForm.cost) || 0,
-                      price: parseFloat(prdForm.price) || 0,
+                      qty: Math.max(0, parseInt(prdForm.qty, 10) || 0),
+                      cost: Math.max(0, parseFloat(prdForm.cost) || 0),
+                      price: Math.max(0, parseFloat(prdForm.price) || 0),
                     },
                     prdModal.editId,
                   );

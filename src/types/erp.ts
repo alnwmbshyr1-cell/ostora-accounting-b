@@ -1,7 +1,20 @@
 export type InvoiceStatus = 'paid' | 'pending' | 'overdue';
 export type VoucherType = 'receipt' | 'payment';
 export type PurchaseOrderStatus = 'ordered' | 'received';
-export type CurrencyCode = 'SAR' | 'YER' | 'EGP' | 'AED';
+export type CurrencyCode =
+  | 'SAR'
+  | 'YER'
+  | 'EGP'
+  | 'AED'
+  | 'USD'
+  | 'EUR'
+  | 'GBP'
+  | 'KWD'
+  | 'QAR'
+  | 'BHD'
+  | 'OMR'
+  | 'JOD'
+  | 'TRY';
 export type RoleId = 'owner' | 'accountant' | 'salesman' | 'warehouse';
 export type ReturnType = 'sales' | 'purchase';
 export type ReturnReason = 'damaged' | 'wrong_item' | 'expired' | 'changed_mind' | 'other';
@@ -48,6 +61,9 @@ export interface Invoice {
   taxRate?: number;
   vat: number;
   total: number;
+  currency?: CurrencyCode;
+  exchangeRate?: number;
+  baseTotal?: number;
   status: InvoiceStatus;
   date: string;
 }
@@ -92,6 +108,7 @@ export interface Customer {
   phone: string;
   email: string;
   debt: number;
+  creditLimit?: number;
 }
 
 export interface Supplier {
@@ -191,6 +208,9 @@ export interface CompanySettings {
   email: string;
   address: string;
   currency: CurrencyCode;
+  enabledCurrencies?: CurrencyCode[];
+  exchangeRates?: Record<string, number>;
+  lastRatesUpdate?: string;
   isArabic: boolean;
   isDarkMode: boolean;
   monthlySalesGoal: number;
@@ -198,6 +218,8 @@ export interface CompanySettings {
   defaultPurchaseTaxRate: number;
   autoBackupDaily: boolean;
   lastBackupDate?: string;
+  autoCloudSync?: boolean;
+  autoSyncIntervalMinutes?: number;
 }
 
 export interface SmartAlert {
@@ -209,3 +231,26 @@ export interface SmartAlert {
   actionRoute: RouteId;
   severity: 'warning' | 'danger' | 'info';
 }
+
+export interface PersistedState {
+  onboardingSeen: boolean;
+  isLoggedIn: boolean;
+  currentRole: RoleId;
+  activePlan: string;
+  trialStartIso: string;
+  settings: CompanySettings;
+  permissionsMatrix: PermissionsMatrix;
+  invoices: Invoice[];
+  returns: ReturnRecord[];
+  quotations: Quotation[];
+  customers: Customer[];
+  suppliers: Supplier[];
+  purchaseOrders: PurchaseOrder[];
+  vouchers: Voucher[];
+  journals: JournalEntry[];
+  products: Product[];
+  employees: Employee[];
+  expenses: Expense[];
+  banks: BankAccount[];
+}
+

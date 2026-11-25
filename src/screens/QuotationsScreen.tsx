@@ -1,12 +1,15 @@
 import React, { useState } from 'react';
-import { Edit2, Mail, MessageCircle, Plus, Printer, Trash2 } from 'lucide-react';
+import { Edit2, Lock, Mail, MessageCircle, Plus, Printer, Trash2 } from 'lucide-react';
 import { DEFAULT_PRODUCT_IMAGE } from '../constants/permissions';
+import { useFirebase } from '../contexts/FirebaseContext';
 import { strings } from '../data/translations';
 import { LineItem, QuotationStatus } from '../types/erp';
 import { buildWhatsAppLink } from '../utils/messaging';
 import { ScreenProps } from './types';
 
 export const QuotationsScreen: React.FC<ScreenProps> = ({ store, onNavigate, onPrintQuotation }) => {
+  const { user } = useFirebase();
+  const isAdmin = user?.email === 'alnwmbshyr1@gmail.com';
   const { state, actions } = store;
   const isAr = state.settings.isArabic;
   const cur = state.settings.currency;
@@ -14,6 +17,7 @@ export const QuotationsScreen: React.FC<ScreenProps> = ({ store, onNavigate, onP
 
   const [qtModal, setQtModal] = useState<{ open: boolean; editId?: string }>({ open: false });
   const [qtForm, setQtForm] = useState({
+    customerId: '',
     customerName: '',
     customerPhone: '',
     customerEmail: '',
@@ -59,6 +63,7 @@ export const QuotationsScreen: React.FC<ScreenProps> = ({ store, onNavigate, onP
             setQtSelectedProdId(defProd?.id ?? '');
             setQtItemQty('1');
             setQtForm({
+              customerId: state.customers[0]?.id ?? '',
               customerName: state.customers[0]?.name ?? '',
               customerPhone: state.customers[0]?.phone ?? '',
               customerEmail: state.customers[0]?.email ?? '',
@@ -109,7 +114,15 @@ export const QuotationsScreen: React.FC<ScreenProps> = ({ store, onNavigate, onP
                       {q.status !== 'accepted' && (
                         <button
                           onClick={() => {
-                            actions.convertQuotationToInvoice(q.id);
+                            const res = actions.convertQuotationToInvoice(q.id);
+                            if (!res.ok) {
+                              actions.notify(
+                                isAr
+                                  ? `${t.creditLimitExceeded} (${t.exceededBy}: ${(res.exceededBy ?? 0).toFixed(2)} ${cur})`
+                                  : `${t.creditLimitExceeded} (${t.exceededBy}: ${(res.exceededBy ?? 0).toFixed(2)} ${cur})`,
+                              );
+                              return;
+                            }
                             actions.notify(
                               isAr
                                 ? `تم تحويل عرض السعر ${q.id} إلى فاتورة ضريبية وتحديث المخزون`
@@ -150,24 +163,36 @@ export const QuotationsScreen: React.FC<ScreenProps> = ({ store, onNavigate, onP
                       >
                         <Mail className="w-3.5 h-3.5 text-slate-500" />
                       </a>
-                      <button
-                        onClick={() => {
-                          setQtForm({
-                            customerName: q.customerName,
-                            customerPhone: q.customerPhone,
-                            customerEmail: q.customerEmail,
-                            discountPercent: String(q.discountPercent),
-                            validUntil: q.validUntil,
-                            status: q.status,
-                            notes: q.notes,
-                            items: q.items,
-                          });
-                          setQtModal({ open: true, editId: q.id });
-                        }}
-                        className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-[#1A2C24] cursor-pointer"
-                      >
-                        <Edit2 className="w-3.5 h-3.5 text-slate-500" />
-                      </button>
+                      {(q.status === 'accepted' || q.status === 'rejected') && !isAdmin ? (
+                        <span
+                          title={t.lockedRecordHint}
+                          aria-label={t.lockedRecordHint}
+                          className="p-1.5 rounded-lg text-slate-400 cursor-not-allowed"
+                        >
+                          <Lock className="w-3.5 h-3.5" />
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setQtForm({
+                              customerId: q.customerId,
+                              customerName: q.customerName,
+                              customerPhone: q.customerPhone,
+                              customerEmail: q.customerEmail,
+                              discountPercent: String(q.discountPercent),
+                              validUntil: q.validUntil,
+                              status: q.status,
+                              notes: q.notes,
+                              items: q.items,
+                            });
+                            setQtModal({ open: true, editId: q.id });
+                          }}
+                          aria-label={t.edit}
+                          className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-[#1A2C24] cursor-pointer"
+                        >
+                          <Edit2 className="w-3.5 h-3.5 text-slate-500" />
+                        </button>
+                      )}
                       <button
                         onClick={() => setQtConfirmDelete({ type: 'one', id: q.id })}
                         className="p-1.5 rounded-lg hover:bg-red-50 cursor-pointer"
@@ -189,11 +214,13 @@ export const QuotationsScreen: React.FC<ScreenProps> = ({ store, onNavigate, onP
             <h3 className="text-lg font-extrabold">{t.addQuotation}</h3>
             <input
               list="qt-customers"
+              maxLength={160}
               value={qtForm.customerName}
               onChange={(e) => {
                 const found = state.customers.find((c) => c.name === e.target.value);
                 setQtForm({
                   ...qtForm,
+                  customerId: found?.id ?? '',
                   customerName: e.target.value,
                   customerPhone: found?.phone ?? qtForm.customerPhone,
                   customerEmail: found?.email ?? qtForm.customerEmail,
@@ -209,7 +236,7 @@ export const QuotationsScreen: React.FC<ScreenProps> = ({ store, onNavigate, onP
             </datalist>
 
             <div className="grid grid-cols-2 gap-2">
-              <input value={qtForm.customerPhone} onChange={(e) => setQtForm({ ...qtForm, customerPhone: e.target.value })} placeholder={t.phone} className="px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
+              <input maxLength={40} value={qtForm.customerPhone} onChange={(e) => setQtForm({ ...qtForm, customerPhone: e.target.value })} placeholder={t.phone} className="px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
               <input type="date" value={qtForm.validUntil} onChange={(e) => setQtForm({ ...qtForm, validUntil: e.target.value })} className="px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm" />
             </div>
 
@@ -330,6 +357,7 @@ export const QuotationsScreen: React.FC<ScreenProps> = ({ store, onNavigate, onP
             </div>
 
             <input
+              maxLength={500}
               value={qtForm.notes}
               onChange={(e) => setQtForm({ ...qtForm, notes: e.target.value })}
               placeholder={t.notes}
@@ -348,7 +376,7 @@ export const QuotationsScreen: React.FC<ScreenProps> = ({ store, onNavigate, onP
                   if (!qtForm.customerName.trim() || qtForm.items.length === 0) return;
                   actions.saveQuotation(
                     {
-                      customerId: '',
+                      customerId: qtForm.customerId,
                       customerName: qtForm.customerName.trim(),
                       customerPhone: qtForm.customerPhone.trim(),
                       customerEmail: qtForm.customerEmail.trim(),

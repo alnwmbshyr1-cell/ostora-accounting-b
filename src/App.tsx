@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { strings } from './data/translations';
 import { Invoice, Quotation, ReturnRecord, RoleId, RouteId, Voucher } from './types/erp';
+import { useFirebase } from './contexts/FirebaseContext';
 import { useErpStore } from './store/useErpStore';
 import { AuthOnboardingFlow } from './components/AuthOnboardingFlow';
 import { ROLE_LABELS } from './constants/permissions';
@@ -43,6 +44,7 @@ const FlutterStudioView = React.lazy(() =>
 );
 
 export default function App() {
+  const { user, syncStatus } = useFirebase();
   const store = useErpStore();
   const { state, actions, allowedRoutes, hasPermission, toastMsg } = store;
   const isAr = state.settings.isArabic;
@@ -285,7 +287,14 @@ export default function App() {
             <div className="mb-4 flex items-center justify-between gap-2">
               <h1 className="text-xl font-extrabold truncate">{t[route]}</h1>
               <span className="text-xs text-slate-500 font-mono shrink-0">
-                {roleText} · {state.settings.currency} · {isAr ? 'أوفلاين' : 'Offline'}
+                {roleText} · {state.settings.currency} ·{' '}
+                {user
+                  ? syncStatus === 'syncing'
+                    ? t.syncingCloud
+                    : t.cloudConnected
+                  : isAr
+                  ? 'أوفلاين'
+                  : 'Offline'}
               </span>
             </div>
 

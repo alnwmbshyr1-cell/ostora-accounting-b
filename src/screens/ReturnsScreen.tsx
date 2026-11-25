@@ -314,6 +314,7 @@ export const ReturnsScreen: React.FC<ScreenProps> = ({ store, onPrintReturn }) =
 
             <textarea
               rows={2}
+              maxLength={500}
               value={retForm.notes}
               onChange={(e) => setRetForm({ ...retForm, notes: e.target.value })}
               placeholder={t.notes}
@@ -341,7 +342,15 @@ export const ReturnsScreen: React.FC<ScreenProps> = ({ store, onPrintReturn }) =
                     );
                     return;
                   }
-                  const amount = Number((q * selectedItem.unitPrice * 1.15).toFixed(2));
+                  const matchedDocRate =
+                    retTab === 'sales'
+                      ? state.invoices.find((i) => i.id === selectedDoc.id)?.taxRate ??
+                        state.settings.defaultSalesTaxRate ??
+                        15
+                      : state.purchaseOrders.find((p) => p.id === selectedDoc.id)?.taxRate ??
+                        state.settings.defaultPurchaseTaxRate ??
+                        15;
+                  const amount = Number((q * selectedItem.unitPrice * (1 + matchedDocRate / 100)).toFixed(2));
                   const record: Omit<ReturnRecord, 'id'> = {
                     type: retTab,
                     originalDocId: selectedDoc.id,

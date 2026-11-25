@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_PERMISSIONS_MATRIX } from '../constants/permissions';
+import { useFirebase } from '../contexts/FirebaseContext';
+import {
+  loadOrSeedWorkspace,
+  pushFullStateToCloud,
+  subscribeWorkspace,
+  syncStateDiffToFirestore,
+} from '../services/firebaseSync';
 import {
   DailyBackupMeta,
   DailyBackupRecord,
@@ -11,14 +18,22 @@ import {
 } from '../utils/backupDb';
 import { generateEan13 } from '../utils/barcode';
 import {
+  ALL_CURRENCY_CODES,
+  buildDefaultRatesForBase,
+  DEFAULT_ENABLED_CURRENCIES,
+  fetchLiveExchangeRates,
+} from '../utils/currencies';
+import {
   BankAccount,
   CompanySettings,
+  CurrencyCode,
   Customer,
   Employee,
   Expense,
   Invoice,
   JournalEntry,
   PermissionsMatrix,
+  PersistedState,
   Product,
   PurchaseOrder,
   Quotation,
@@ -30,29 +45,22 @@ import {
   Voucher,
 } from '../types/erp';
 
+export type { PersistedState } from '../types/erp';
+
 const STORAGE_KEY = 'ostora_accounting_erp_state_v1';
 export const AUTOSAVE_KEY = 'ostora_autosave';
 
-export interface PersistedState {
-  onboardingSeen: boolean;
-  isLoggedIn: boolean;
-  currentRole: RoleId;
-  activePlan: string;
-  trialStartIso: string;
-  settings: CompanySettings;
-  permissionsMatrix: PermissionsMatrix;
-  invoices: Invoice[];
-  returns: ReturnRecord[];
-  quotations: Quotation[];
-  customers: Customer[];
-  suppliers: Supplier[];
-  purchaseOrders: PurchaseOrder[];
-  vouchers: Voucher[];
-  journals: JournalEntry[];
-  products: Product[];
-  employees: Employee[];
-  expenses: Expense[];
-  banks: BankAccount[];
+function nextSequentialId(prefix: string, startBase: number, existingIds: string[]): string {
+  const re = new RegExp(`^${prefix}-(\\d+)$`);
+  let maxNum = startBase;
+  for (const id of existingIds) {
+    const m = re.exec(id);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (Number.isFinite(n) && n > maxNum) maxNum = n;
+    }
+  }
+  return `${prefix}-${maxNum + 1}`;
 }
 
 function createDemoState(prevSettings?: CompanySettings): PersistedState {
@@ -75,6 +83,8 @@ function createDemoState(prevSettings?: CompanySettings): PersistedState {
       email: 'finance@ostora.systems',
       address: 'الرياض، حي العليا، المملكة العربية السعودية',
       currency: 'SAR',
+      enabledCurrencies: [...DEFAULT_ENABLED_CURRENCIES],
+      exchangeRates: buildDefaultRatesForBase('SAR'),
       isArabic: true,
       isDarkMode: false,
       monthlySalesGoal: 120000,
@@ -82,11 +92,13 @@ function createDemoState(prevSettings?: CompanySettings): PersistedState {
       defaultPurchaseTaxRate: 15,
       autoBackupDaily: true,
       lastBackupDate: undefined,
+      autoCloudSync: true,
+      autoSyncIntervalMinutes: 0,
     },
     customers: [
-      { id: 'C-101', name: 'شركة النخبة التجارية', phone: '0504412398', email: 'accounts@nokhba.sa', debt: 18400 },
-      { id: 'C-102', name: 'مؤسسة الفجر للمقاولات', phone: '0558231904', email: 'finance@fajr.sa', debt: 9200 },
-      { id: 'C-103', name: 'متاجر الريادة الحديثة', phone: '0531187420', email: 'pay@riyadah.sa', debt: 0 },
+      { id: 'C-101', name: 'شركة النخبة التجارية', phone: '0504412398', email: 'accounts@nokhba.sa', debt: 18400, creditLimit: 50000 },
+      { id: 'C-102', name: 'مؤسسة الفجر للمقاولات', phone: '0558231904', email: 'finance@fajr.sa', debt: 9200, creditLimit: 25000 },
+      { id: 'C-103', name: 'متاجر الريادة الحديثة', phone: '0531187420', email: 'pay@riyadah.sa', debt: 0, creditLimit: 40000 },
     ],
     suppliers: [
       { id: 'S-201', name: 'مصنع الخليج للتجهيزات', phone: '0549012234', category: 'مواد خام', payable: 14500 },
@@ -297,12 +309,33 @@ function hydrateState(rawObj: Partial<PersistedState>): PersistedState {
     settings: {
       ...demo.settings,
       ...(rawObj.settings ?? {}),
+      enabledCurrencies:
+        rawObj.settings?.enabledCurrencies && rawObj.settings.enabledCurrencies.length > 0
+          ? Array.from(
+              new Set<CurrencyCode>([
+                rawObj.settings?.currency ?? demo.settings.currency,
+                ...rawObj.settings.enabledCurrencies.filter((c) => ALL_CURRENCY_CODES.includes(c)),
+              ]),
+            )
+          : [...DEFAULT_ENABLED_CURRENCIES],
+      exchangeRates: {
+        ...buildDefaultRatesForBase(rawObj.settings?.currency ?? demo.settings.currency),
+        ...(rawObj.settings?.exchangeRates ?? {}),
+        [rawObj.settings?.currency ?? demo.settings.currency]: 1,
+      },
       defaultSalesTaxRate: Number.isFinite(rawObj.settings?.defaultSalesTaxRate)
         ? Number(rawObj.settings!.defaultSalesTaxRate)
         : 15,
       defaultPurchaseTaxRate: Number.isFinite(rawObj.settings?.defaultPurchaseTaxRate)
         ? Number(rawObj.settings!.defaultPurchaseTaxRate)
         : 15,
+      autoCloudSync:
+        typeof rawObj.settings?.autoCloudSync === 'boolean'
+          ? rawObj.settings.autoCloudSync
+          : true,
+      autoSyncIntervalMinutes: Number.isFinite(rawObj.settings?.autoSyncIntervalMinutes)
+        ? Math.max(0, Number(rawObj.settings!.autoSyncIntervalMinutes))
+        : 0,
     },
   };
 }
@@ -320,17 +353,34 @@ function loadInitialState(): PersistedState {
 }
 
 export function useErpStore() {
+  const {
+    user,
+    authReady,
+    setSyncStatus,
+    setLastCloudSyncAt,
+    signOutFirebase,
+  } = useFirebase();
+
   const [state, setState] = useState<PersistedState>(loadInitialState);
   const [dismissedAlerts, setDismissedAlerts] = useState<string[]>([]);
   const [toastMsg, setToastMsg] = useState<string>('');
   const [idbSnapshots, setIdbSnapshots] = useState<DailyBackupMeta[]>([]);
+  const [fatalSyncError, setFatalSyncError] = useState<Error | null>(null);
   const latestStateRef = useRef<PersistedState>(state);
   latestStateRef.current = state;
 
-  const notify = (msg: string) => {
+  const lastSyncedStateRef = useRef<PersistedState | null>(null);
+  const cloudHydratedUidRef = useRef<string | null>(null);
+  const applyingRemoteRef = useRef(false);
+
+  if (fatalSyncError) {
+    throw fatalSyncError;
+  }
+
+  const notify = useCallback((msg: string) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg((prev) => (prev === msg ? '' : prev)), 3000);
-  };
+  }, []);
 
   useEffect(() => {
     try {
@@ -444,6 +494,149 @@ export function useErpStore() {
     }
   }, [state.settings.isArabic, state.settings.isDarkMode]);
 
+  // Firebase Firestore hydration + real-time subscription when authenticated
+  useEffect(() => {
+    if (!authReady) return;
+    if (!user) {
+      cloudHydratedUidRef.current = null;
+      lastSyncedStateRef.current = null;
+      setSyncStatus('offline');
+      return;
+    }
+
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+    setSyncStatus('syncing');
+
+    loadOrSeedWorkspace(user.uid, latestStateRef.current)
+      .then((cloudPatch) => {
+        if (cancelled) return;
+        const hydrated = hydrateState({ ...latestStateRef.current, ...cloudPatch });
+        applyingRemoteRef.current = true;
+        lastSyncedStateRef.current = hydrated;
+        cloudHydratedUidRef.current = user.uid;
+        setState(hydrated);
+        setSyncStatus('synced');
+        setLastCloudSyncAt(new Date().toISOString());
+
+        unsubscribe = subscribeWorkspace(
+          user.uid,
+          (remotePatch) => {
+            if (cancelled) return;
+            applyingRemoteRef.current = true;
+            setState((prev) => {
+              const merged = hydrateState({ ...prev, ...remotePatch });
+              lastSyncedStateRef.current = merged;
+              return merged;
+            });
+            setSyncStatus('synced');
+            setLastCloudSyncAt(new Date().toISOString());
+          },
+          (err) => {
+            if (cancelled) return;
+            setSyncStatus('error');
+            setFatalSyncError(err);
+          },
+        );
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setSyncStatus('error');
+        setFatalSyncError(err instanceof Error ? err : new Error(String(err)));
+      });
+
+    return () => {
+      cancelled = true;
+      if (unsubscribe) unsubscribe();
+    };
+  }, [authReady, user, setSyncStatus, setLastCloudSyncAt]);
+
+  // Debounced or periodic diff sync from local store mutations to Cloud Firestore
+  const autoCloudSyncEnabled = state.settings.autoCloudSync ?? true;
+  const autoSyncIntervalMinutes = Math.max(0, state.settings.autoSyncIntervalMinutes ?? 0);
+
+  useEffect(() => {
+    if (!authReady || !user) return;
+    if (cloudHydratedUidRef.current !== user.uid || !lastSyncedStateRef.current) return;
+
+    if (applyingRemoteRef.current) {
+      applyingRemoteRef.current = false;
+      return;
+    }
+
+    const syncPreferenceChanged =
+      (lastSyncedStateRef.current.settings.autoCloudSync ?? true) !== autoCloudSyncEnabled ||
+      (lastSyncedStateRef.current.settings.autoSyncIntervalMinutes ?? 0) !== autoSyncIntervalMinutes;
+
+    if (!autoCloudSyncEnabled && !syncPreferenceChanged) {
+      return;
+    }
+
+    if (autoCloudSyncEnabled && autoSyncIntervalMinutes > 0 && !syncPreferenceChanged) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      const prevSynced = lastSyncedStateRef.current;
+      const nextState = latestStateRef.current;
+      if (!prevSynced) return;
+      setSyncStatus('syncing');
+      syncStateDiffToFirestore(user.uid, user.email, prevSynced, nextState)
+        .then(() => {
+          lastSyncedStateRef.current = nextState;
+          setSyncStatus('synced');
+          setLastCloudSyncAt(new Date().toISOString());
+        })
+        .catch((err) => {
+          setSyncStatus('error');
+          setFatalSyncError(err instanceof Error ? err : new Error(String(err)));
+        });
+    }, 450);
+
+    return () => clearTimeout(timer);
+  }, [
+    state,
+    authReady,
+    user,
+    autoCloudSyncEnabled,
+    autoSyncIntervalMinutes,
+    setSyncStatus,
+    setLastCloudSyncAt,
+  ]);
+
+  useEffect(() => {
+    if (!authReady || !user) return;
+    if (!autoCloudSyncEnabled || autoSyncIntervalMinutes <= 0) return;
+
+    const intervalMs = autoSyncIntervalMinutes * 60 * 1000;
+    const timer = setInterval(() => {
+      if (cloudHydratedUidRef.current !== user.uid) return;
+      const prevSynced = lastSyncedStateRef.current;
+      const nextState = latestStateRef.current;
+      if (!prevSynced || prevSynced === nextState) return;
+      setSyncStatus('syncing');
+      syncStateDiffToFirestore(user.uid, user.email, prevSynced, nextState)
+        .then(() => {
+          lastSyncedStateRef.current = nextState;
+          setSyncStatus('synced');
+          setLastCloudSyncAt(new Date().toISOString());
+        })
+        .catch((err) => {
+          setSyncStatus('error');
+          setFatalSyncError(err instanceof Error ? err : new Error(String(err)));
+        });
+    }, intervalMs);
+
+    return () => clearInterval(timer);
+  }, [
+    authReady,
+    user,
+    autoCloudSyncEnabled,
+    autoSyncIntervalMinutes,
+    setSyncStatus,
+    setLastCloudSyncAt,
+  ]);
+
   const allowedRoutes = useMemo(() => {
     return state.permissionsMatrix[state.currentRole] ?? DEFAULT_PERMISSIONS_MATRIX.owner;
   }, [state.permissionsMatrix, state.currentRole]);
@@ -451,9 +644,18 @@ export function useErpStore() {
   const hasPermission = (route: RouteId): boolean => allowedRoutes.includes(route);
 
   const metrics = useMemo(() => {
-    const totalSales = state.invoices.reduce((s, i) => s + i.total, 0);
-    const revenueExVat = state.invoices.reduce((s, i) => s + i.subtotal, 0);
-    const vatOutput = state.invoices.reduce((s, i) => s + i.vat, 0);
+    const totalSales = state.invoices.reduce(
+      (s, i) => s + (i.baseTotal ?? i.total * (i.exchangeRate ?? 1)),
+      0,
+    );
+    const revenueExVat = state.invoices.reduce(
+      (s, i) => s + i.subtotal * (i.exchangeRate ?? 1),
+      0,
+    );
+    const vatOutput = state.invoices.reduce(
+      (s, i) => s + i.vat * (i.exchangeRate ?? 1),
+      0,
+    );
     const customerDebt = state.customers.reduce((s, c) => s + c.debt, 0);
     const supplierDebt = state.suppliers.reduce((s, sp) => s + sp.payable, 0);
     const stockValue = state.products.reduce((s, p) => s + p.qty * p.cost, 0);
@@ -534,11 +736,78 @@ export function useErpStore() {
     toggleDarkMode: () =>
       setState((p) => ({ ...p, settings: { ...p.settings, isDarkMode: !p.settings.isDarkMode } })),
     updateSettings: (patch: Partial<CompanySettings>) =>
-      setState((p) => ({ ...p, settings: { ...p.settings, ...patch } })),
+      setState((p) => {
+        const nextCurrency = patch.currency ?? p.settings.currency;
+        let nextEnabled = patch.enabledCurrencies ?? p.settings.enabledCurrencies ?? DEFAULT_ENABLED_CURRENCIES;
+        if (!nextEnabled.includes(nextCurrency)) {
+          nextEnabled = [nextCurrency, ...nextEnabled];
+        }
+        let nextRates = patch.exchangeRates ?? p.settings.exchangeRates ?? buildDefaultRatesForBase(nextCurrency);
+        if (patch.currency && patch.currency !== p.settings.currency) {
+          const prevBase = p.settings.currency;
+          const oldFactorForNewBase = nextRates[nextCurrency] || buildDefaultRatesForBase(prevBase)[nextCurrency] || 1;
+          const rebased: Record<string, number> = {};
+          for (const code of ALL_CURRENCY_CODES) {
+            if (code === nextCurrency) {
+              rebased[code] = 1;
+            } else {
+              const oldVal = nextRates[code] ?? buildDefaultRatesForBase(prevBase)[code] ?? 1;
+              rebased[code] = Number((oldVal / oldFactorForNewBase).toFixed(4));
+            }
+          }
+          nextRates = rebased;
+        }
+        return {
+          ...p,
+          settings: {
+            ...p.settings,
+            ...patch,
+            enabledCurrencies: nextEnabled,
+            exchangeRates: nextRates,
+          },
+        };
+      }),
+    refreshLiveExchangeRates: async (targetBase?: CurrencyCode) => {
+      const base = targetBase ?? latestStateRef.current.settings.currency;
+      const result = await fetchLiveExchangeRates(base);
+      setState((p) => ({
+        ...p,
+        settings: {
+          ...p.settings,
+          exchangeRates: {
+            ...(p.settings.exchangeRates ?? {}),
+            ...result.rates,
+            [base]: 1,
+          },
+          lastRatesUpdate: result.updatedAt,
+        },
+      }));
+      return result;
+    },
     setLoggedIn: (v: boolean) => setState((p) => ({ ...p, isLoggedIn: v })),
     setCurrentRole: (role: RoleId) => setState((p) => ({ ...p, currentRole: role })),
     // Fix Data Loss: Logout preserves all persisted business data!
-    logoutPreserveData: () => setState((p) => ({ ...p, isLoggedIn: false })),
+    logoutPreserveData: () => {
+      setState((p) => ({ ...p, isLoggedIn: false }));
+      if (user) {
+        void signOutFirebase();
+      }
+    },
+    syncNowToCloud: async () => {
+      if (!user) return false;
+      setSyncStatus('syncing');
+      try {
+        await pushFullStateToCloud(user.uid, latestStateRef.current);
+        lastSyncedStateRef.current = latestStateRef.current;
+        setSyncStatus('synced');
+        setLastCloudSyncAt(new Date().toISOString());
+        return true;
+      } catch (err) {
+        setSyncStatus('error');
+        setFatalSyncError(err instanceof Error ? err : new Error(String(err)));
+        return false;
+      }
+    },
     setOnboardingSeen: (v: boolean) => setState((p) => ({ ...p, onboardingSeen: v })),
     setActivePlan: (plan: string) => setState((p) => ({ ...p, activePlan: plan })),
     dismissAlert: (id: string) => setDismissedAlerts((prev) => [...prev, id]),
@@ -557,30 +826,202 @@ export function useErpStore() {
         };
       }),
 
-    saveInvoice: (inv: Omit<Invoice, 'id' | 'vat' | 'total'>, editId?: string) =>
-      setState((p) => {
-        const rate = Math.max(0, Math.min(100, inv.taxRate ?? p.settings.defaultSalesTaxRate ?? 15));
-        const vat = Number(((inv.subtotal * rate) / 100).toFixed(2));
-        const total = Number((inv.subtotal + vat).toFixed(2));
+    checkCustomerCreditLimit: (
+      customerName: string,
+      customerId: string | undefined,
+      baseTotal: number,
+      status: Invoice['status'],
+      editId?: string,
+    ) => {
+      const s = latestStateRef.current;
+      const customer = s.customers.find(
+        (c) => (customerId && c.id === customerId) || c.name.trim() === customerName.trim(),
+      );
+      if (!customer || typeof customer.creditLimit !== 'number' || !Number.isFinite(customer.creditLimit)) {
+        return {
+          allowed: true,
+          customer,
+          currentDebt: customer?.debt ?? 0,
+          creditLimit: undefined as number | undefined,
+          projectedDebt: Number(((customer?.debt ?? 0) + (status !== 'paid' ? baseTotal : 0)).toFixed(2)),
+          exceededBy: 0,
+        };
+      }
+      let prevUnpaidImpact = 0;
+      if (editId) {
+        const prevInv = s.invoices.find((x) => x.id === editId);
+        if (
+          prevInv &&
+          prevInv.status !== 'paid' &&
+          ((prevInv.customerId && prevInv.customerId === customer.id) ||
+            prevInv.customerName.trim() === customer.name.trim())
+        ) {
+          prevUnpaidImpact =
+            prevInv.baseTotal ?? Number((prevInv.total * (prevInv.exchangeRate ?? 1)).toFixed(2));
+        }
+      }
+      const nextUnpaidImpact = status !== 'paid' ? baseTotal : 0;
+      const projectedDebt = Number(Math.max(0, customer.debt - prevUnpaidImpact + nextUnpaidImpact).toFixed(2));
+      const allowed = status === 'paid' || projectedDebt <= customer.creditLimit;
+      const exceededBy = allowed ? 0 : Number((projectedDebt - customer.creditLimit).toFixed(2));
+      return {
+        allowed,
+        customer,
+        currentDebt: customer.debt,
+        creditLimit: customer.creditLimit,
+        projectedDebt,
+        exceededBy,
+      };
+    },
+
+    saveInvoice: (inv: Omit<Invoice, 'id' | 'vat' | 'total'>, editId?: string) => {
+      const s = latestStateRef.current;
+      const rate = Math.max(0, Math.min(100, inv.taxRate ?? s.settings.defaultSalesTaxRate ?? 15));
+      const vat = Number(((inv.subtotal * rate) / 100).toFixed(2));
+      const total = Number((inv.subtotal + vat).toFixed(2));
+      const invCurrency = inv.currency ?? s.settings.currency;
+      const fxRate =
+        invCurrency === s.settings.currency
+          ? 1
+          : Math.max(0.0001, inv.exchangeRate ?? s.settings.exchangeRates?.[invCurrency] ?? 1);
+      const baseTotal = Number((total * fxRate).toFixed(2));
+
+      const matchedCustomer = s.customers.find(
+        (c) => (inv.customerId && c.id === inv.customerId) || c.name.trim() === inv.customerName.trim(),
+      );
+      if (
+        inv.status !== 'paid' &&
+        matchedCustomer &&
+        typeof matchedCustomer.creditLimit === 'number' &&
+        Number.isFinite(matchedCustomer.creditLimit)
+      ) {
+        let prevUnpaidImpact = 0;
         if (editId) {
+          const prevInv = s.invoices.find((x) => x.id === editId);
+          if (
+            prevInv &&
+            prevInv.status !== 'paid' &&
+            ((prevInv.customerId && prevInv.customerId === matchedCustomer.id) ||
+              prevInv.customerName.trim() === matchedCustomer.name.trim())
+          ) {
+            prevUnpaidImpact =
+              prevInv.baseTotal ?? Number((prevInv.total * (prevInv.exchangeRate ?? 1)).toFixed(2));
+          }
+        }
+        const projectedDebt = Number(
+          Math.max(0, matchedCustomer.debt - prevUnpaidImpact + baseTotal).toFixed(2),
+        );
+        if (projectedDebt > matchedCustomer.creditLimit) {
+          return {
+            ok: false as const,
+            creditLimit: matchedCustomer.creditLimit,
+            projectedDebt,
+            exceededBy: Number((projectedDebt - matchedCustomer.creditLimit).toFixed(2)),
+          };
+        }
+      }
+
+      setState((p) => {
+        const curRate = Math.max(0, Math.min(100, inv.taxRate ?? p.settings.defaultSalesTaxRate ?? 15));
+        const curVat = Number(((inv.subtotal * curRate) / 100).toFixed(2));
+        const curTotal = Number((inv.subtotal + curVat).toFixed(2));
+        const curInvCurrency = inv.currency ?? p.settings.currency;
+        const curFxRate =
+          curInvCurrency === p.settings.currency
+            ? 1
+            : Math.max(0.0001, inv.exchangeRate ?? p.settings.exchangeRates?.[curInvCurrency] ?? 1);
+        const curBaseTotal = Number((curTotal * curFxRate).toFixed(2));
+
+        const targetCustomer = p.customers.find(
+          (c) => (inv.customerId && c.id === inv.customerId) || c.name.trim() === inv.customerName.trim(),
+        );
+
+        if (editId) {
+          const prevInv = p.invoices.find((x) => x.id === editId);
+          const prevUnpaid =
+            prevInv && prevInv.status !== 'paid'
+              ? prevInv.baseTotal ?? Number((prevInv.total * (prevInv.exchangeRate ?? 1)).toFixed(2))
+              : 0;
+          const nextUnpaid = inv.status !== 'paid' ? curBaseTotal : 0;
+
+          if (
+            inv.status !== 'paid' &&
+            targetCustomer &&
+            typeof targetCustomer.creditLimit === 'number' &&
+            Number.isFinite(targetCustomer.creditLimit)
+          ) {
+            const samePrev =
+              prevInv &&
+              ((prevInv.customerId && prevInv.customerId === targetCustomer.id) ||
+                prevInv.customerName.trim() === targetCustomer.name.trim());
+            const proj = Number(
+              Math.max(0, targetCustomer.debt - (samePrev ? prevUnpaid : 0) + nextUnpaid).toFixed(2),
+            );
+            if (proj > targetCustomer.creditLimit) return p;
+          }
+
+          const updatedCustomers = p.customers.map((c) => {
+            const matchesPrev =
+              prevInv &&
+              ((prevInv.customerId && prevInv.customerId === c.id) ||
+                prevInv.customerName.trim() === c.name.trim());
+            const matchesNext =
+              (inv.customerId && inv.customerId === c.id) ||
+              inv.customerName.trim() === c.name.trim();
+            if (!matchesPrev && !matchesNext) return c;
+            const delta = (matchesNext ? nextUnpaid : 0) - (matchesPrev ? prevUnpaid : 0);
+            return { ...c, debt: Math.max(0, Number((c.debt + delta).toFixed(2))) };
+          });
+
           return {
             ...p,
             invoices: p.invoices.map((x) =>
-              x.id === editId ? { ...inv, id: editId, taxRate: rate, vat, total } : x,
+              x.id === editId
+                ? {
+                    ...inv,
+                    customerId: targetCustomer?.id ?? inv.customerId,
+                    id: editId,
+                    taxRate: curRate,
+                    vat: curVat,
+                    total: curTotal,
+                    currency: curInvCurrency,
+                    exchangeRate: curFxRate,
+                    baseTotal: curBaseTotal,
+                  }
+                : x,
             ),
+            customers: updatedCustomers,
           };
         }
+
+        if (
+          inv.status !== 'paid' &&
+          targetCustomer &&
+          typeof targetCustomer.creditLimit === 'number' &&
+          Number.isFinite(targetCustomer.creditLimit) &&
+          Number((targetCustomer.debt + curBaseTotal).toFixed(2)) > targetCustomer.creditLimit
+        ) {
+          return p;
+        }
+
+        const newInvId = nextSequentialId('INV', 1000, p.invoices.map((x) => x.id));
         const newInv: Invoice = {
           ...inv,
-          id: `INV-${1000 + p.invoices.length + 1}`,
-          taxRate: rate,
-          vat,
-          total,
+          customerId: targetCustomer?.id ?? inv.customerId,
+          id: newInvId,
+          taxRate: curRate,
+          vat: curVat,
+          total: curTotal,
+          currency: curInvCurrency,
+          exchangeRate: curFxRate,
+          baseTotal: curBaseTotal,
         };
         const updatedCustomers =
           inv.status !== 'paid'
             ? p.customers.map((c) =>
-                c.name === inv.customerName ? { ...c, debt: Number((c.debt + total).toFixed(2)) } : c,
+                (targetCustomer && c.id === targetCustomer.id) || c.name.trim() === inv.customerName.trim()
+                  ? { ...c, debt: Number((c.debt + curBaseTotal).toFixed(2)) }
+                  : c,
               )
             : p.customers;
         const updatedProducts = inv.items?.length
@@ -589,8 +1030,49 @@ export function useErpStore() {
               return sold ? { ...pr, qty: Math.max(0, pr.qty - sold.qty) } : pr;
             })
           : p.products;
-        return { ...p, invoices: [newInv, ...p.invoices], customers: updatedCustomers, products: updatedProducts };
-      }),
+
+        const targetBank =
+          p.banks.find((b) => b.id === 'alrajhi') ??
+          p.banks.find((b) => b.id === 'cash') ??
+          p.banks[0];
+        const updatedBanks =
+          inv.status === 'paid' && targetBank
+            ? p.banks.map((b) =>
+                b.id === targetBank.id ? { ...b, balance: Number((b.balance + curBaseTotal).toFixed(2)) } : b,
+              )
+            : p.banks;
+
+        const baseSubtotal = Number((inv.subtotal * curFxRate).toFixed(2));
+        const baseVat = Number((curBaseTotal - baseSubtotal).toFixed(2));
+        const debitAccount =
+          inv.status === 'paid'
+            ? `1010 - ${targetBank ? (p.settings.isArabic ? targetBank.nameAr : targetBank.nameEn) : 'Cash'}`
+            : `1020 - ذمم العملاء (${inv.customerName})`;
+        const autoJournal: JournalEntry = {
+          id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
+          reference: newInvId,
+          description: p.settings.isArabic
+            ? `فاتورة مبيعات ${newInvId} - ${inv.customerName}`
+            : `Sales Invoice ${newInvId} - ${inv.customerName}`,
+          date: inv.date,
+          lines: [
+            { account: debitAccount, debit: curBaseTotal, credit: 0 },
+            { account: '4010 - إيرادات المبيعات', debit: 0, credit: baseSubtotal },
+            ...(baseVat > 0 ? [{ account: '2020 - ضريبة القيمة المضافة', debit: 0, credit: baseVat }] : []),
+          ],
+        };
+
+        return {
+          ...p,
+          invoices: [newInv, ...p.invoices],
+          customers: updatedCustomers,
+          products: updatedProducts,
+          banks: updatedBanks,
+          journals: [autoJournal, ...p.journals],
+        };
+      });
+      return { ok: true as const };
+    },
     deleteInvoice: (id: string) =>
       setState((p) => ({ ...p, invoices: p.invoices.filter((i) => i.id !== id) })),
     deleteAllInvoices: () => setState((p) => ({ ...p, invoices: [] })),
@@ -598,17 +1080,27 @@ export function useErpStore() {
       setState((p) => {
         const target = p.invoices.find((i) => i.id === id);
         if (!target || target.status === 'paid') return p;
+        const settledBaseAmount = target.baseTotal ?? Number((target.total * (target.exchangeRate ?? 1)).toFixed(2));
         const nowIso = new Date().toISOString();
-        const voucherId = `VCH-${500 + p.vouchers.length + 1}`;
-        const journalId = `JRN-${700 + p.journals.length + 1}`;
+        const targetBank =
+          p.banks.find((b) => b.id === 'alrajhi') ??
+          p.banks.find((b) => b.id === 'cash') ??
+          p.banks[0];
+        const voucherId = nextSequentialId('VCH', 500, p.vouchers.map((x) => x.id));
+        const journalId = nextSequentialId('JRN', 700, p.journals.map((x) => x.id));
+        const bankLabel = targetBank
+          ? p.settings.isArabic
+            ? targetBank.nameAr
+            : targetBank.nameEn
+          : 'Cash';
         const newVoucher: Voucher = {
           id: voucherId,
           type: 'receipt',
           partyName: target.customerName,
           partyPhone: target.customerPhone,
-          amount: target.total,
+          amount: settledBaseAmount,
           reason: p.settings.isArabic ? `تحصيل الفاتورة ${target.id}` : `Settlement for ${target.id}`,
-          paymentMethod: 'AlRajhi Bank',
+          paymentMethod: targetBank?.nameEn ?? 'Cash',
           date: nowIso,
         };
         const newJournal: JournalEntry = {
@@ -619,21 +1111,24 @@ export function useErpStore() {
             : `Invoice ${target.id} payment - ${target.customerName}`,
           date: nowIso,
           lines: [
-            { account: '1010 - مصرف الراجحي', debit: target.total, credit: 0 },
-            { account: `1020 - ذمم العملاء (${target.customerName})`, debit: 0, credit: target.total },
+            { account: `1010 - ${bankLabel}`, debit: settledBaseAmount, credit: 0 },
+            { account: `1020 - ذمم العملاء (${target.customerName})`, debit: 0, credit: settledBaseAmount },
           ],
         };
         return {
           ...p,
           invoices: p.invoices.map((i) => (i.id === id ? { ...i, status: 'paid' as const } : i)),
           customers: p.customers.map((c) =>
-            c.name === target.customerName
-              ? { ...c, debt: Math.max(0, Number((c.debt - target.total).toFixed(2))) }
+            (target.customerId && c.id === target.customerId) ||
+            c.name.trim() === target.customerName.trim()
+              ? { ...c, debt: Math.max(0, Number((c.debt - settledBaseAmount).toFixed(2))) }
               : c,
           ),
-          banks: p.banks.map((b) =>
-            b.id === 'alrajhi' ? { ...b, balance: Number((b.balance + target.total).toFixed(2)) } : b,
-          ),
+          banks: targetBank
+            ? p.banks.map((b) =>
+                b.id === targetBank.id ? { ...b, balance: Number((b.balance + settledBaseAmount).toFixed(2)) } : b,
+              )
+            : p.banks,
           vouchers: [newVoucher, ...p.vouchers],
           journals: [newJournal, ...p.journals],
         };
@@ -648,7 +1143,7 @@ export function useErpStore() {
             returns: p.returns.map((r) => (r.id === editId ? { ...ret, id: editId } : r)),
           };
         }
-        const newId = `RET-${400 + p.returns.length + 1}`;
+        const newId = nextSequentialId('RET', 400, p.returns.map((x) => x.id));
         const newRet: ReturnRecord = { ...ret, id: newId };
 
         const updatedProducts = p.products.map((pr) => {
@@ -662,19 +1157,23 @@ export function useErpStore() {
         const updatedCustomers =
           ret.type === 'sales'
             ? p.customers.map((c) =>
-                c.name === ret.partyName ? { ...c, debt: Math.max(0, Number((c.debt - ret.amount).toFixed(2))) } : c,
+                c.name.trim() === ret.partyName.trim()
+                  ? { ...c, debt: Math.max(0, Number((c.debt - ret.amount).toFixed(2))) }
+                  : c,
               )
             : p.customers;
 
         const updatedSuppliers =
           ret.type === 'purchase'
             ? p.suppliers.map((s) =>
-                s.name === ret.partyName ? { ...s, payable: Math.max(0, Number((s.payable - ret.amount).toFixed(2))) } : s,
+                s.name.trim() === ret.partyName.trim()
+                  ? { ...s, payable: Math.max(0, Number((s.payable - ret.amount).toFixed(2))) }
+                  : s,
               )
             : p.suppliers;
 
         const autoJournal: JournalEntry = {
-          id: `JRN-${700 + p.journals.length + 1}`,
+          id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
           reference: newId,
           description:
             ret.type === 'sales'
@@ -712,27 +1211,63 @@ export function useErpStore() {
         ...p,
         quotations: editId
           ? p.quotations.map((x) => (x.id === editId ? { ...qt, id: editId } : x))
-          : [{ ...qt, id: `QT-${200 + p.quotations.length + 1}` }, ...p.quotations],
+          : [{ ...qt, id: nextSequentialId('QT', 200, p.quotations.map((x) => x.id)) }, ...p.quotations],
       })),
     deleteQuotation: (id: string) =>
       setState((p) => ({ ...p, quotations: p.quotations.filter((q) => q.id !== id) })),
     deleteAllQuotations: () => setState((p) => ({ ...p, quotations: [] })),
-    convertQuotationToInvoice: (qtId: string) =>
+    convertQuotationToInvoice: (qtId: string) => {
+      const s = latestStateRef.current;
+      const qt = s.quotations.find((q) => q.id === qtId);
+      if (!qt) return { ok: false as const };
+      const netSub = Number((qt.subtotal - qt.discountAmount).toFixed(2));
+      const salesRate = Math.max(0, Math.min(100, s.settings.defaultSalesTaxRate ?? 15));
+      const vatCheck = Number(((netSub * salesRate) / 100).toFixed(2));
+      const totalCheck = Number((netSub + vatCheck).toFixed(2));
+      const matchedCustomer = s.customers.find(
+        (c) => (qt.customerId && c.id === qt.customerId) || c.name.trim() === qt.customerName.trim(),
+      );
+      if (
+        matchedCustomer &&
+        typeof matchedCustomer.creditLimit === 'number' &&
+        Number.isFinite(matchedCustomer.creditLimit)
+      ) {
+        const projectedDebt = Number((matchedCustomer.debt + totalCheck).toFixed(2));
+        if (projectedDebt > matchedCustomer.creditLimit) {
+          return {
+            ok: false as const,
+            creditLimit: matchedCustomer.creditLimit,
+            exceededBy: Number((projectedDebt - matchedCustomer.creditLimit).toFixed(2)),
+          };
+        }
+      }
+
       setState((p) => {
-        const qt = p.quotations.find((q) => q.id === qtId);
-        if (!qt) return p;
-        const netSubtotal = Number((qt.subtotal - qt.discountAmount).toFixed(2));
+        const qItem = p.quotations.find((q) => q.id === qtId);
+        if (!qItem) return p;
+        const netSubtotal = Number((qItem.subtotal - qItem.discountAmount).toFixed(2));
         const rate = Math.max(0, Math.min(100, p.settings.defaultSalesTaxRate ?? 15));
         const vat = Number(((netSubtotal * rate) / 100).toFixed(2));
         const total = Number((netSubtotal + vat).toFixed(2));
-        const newInvId = `INV-${1000 + p.invoices.length + 1}`;
+        const targetCust = p.customers.find(
+          (c) => (qItem.customerId && c.id === qItem.customerId) || c.name.trim() === qItem.customerName.trim(),
+        );
+        if (
+          targetCust &&
+          typeof targetCust.creditLimit === 'number' &&
+          Number.isFinite(targetCust.creditLimit) &&
+          Number((targetCust.debt + total).toFixed(2)) > targetCust.creditLimit
+        ) {
+          return p;
+        }
+        const newInvId = nextSequentialId('INV', 1000, p.invoices.map((x) => x.id));
         const newInv: Invoice = {
           id: newInvId,
-          customerId: qt.customerId,
-          customerName: qt.customerName,
-          customerPhone: qt.customerPhone,
-          description: `${qt.id} · ${qt.items.map((i) => `${i.productName} ×${i.qty}`).join(', ')}`,
-          items: qt.items,
+          customerId: targetCust?.id ?? qItem.customerId,
+          customerName: qItem.customerName,
+          customerPhone: qItem.customerPhone,
+          description: `${qItem.id} · ${qItem.items.map((i) => `${i.productName} ×${i.qty}`).join(', ')}`,
+          items: qItem.items,
           subtotal: netSubtotal,
           taxRate: rate,
           vat,
@@ -741,19 +1276,21 @@ export function useErpStore() {
           date: new Date().toISOString(),
         };
         const updatedProducts = p.products.map((pr) => {
-          const item = qt.items.find((i) => i.productId === pr.id || i.productName === pr.name);
+          const item = qItem.items.find((i) => i.productId === pr.id || i.productName === pr.name);
           return item ? { ...pr, qty: Math.max(0, pr.qty - item.qty) } : pr;
         });
         const updatedCustomers = p.customers.map((c) =>
-          c.name === qt.customerName ? { ...c, debt: Number((c.debt + total).toFixed(2)) } : c,
+          (targetCust && c.id === targetCust.id) || c.name.trim() === qItem.customerName.trim()
+            ? { ...c, debt: Number((c.debt + total).toFixed(2)) }
+            : c,
         );
         const autoJournal: JournalEntry = {
-          id: `JRN-${700 + p.journals.length + 1}`,
+          id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
           reference: newInvId,
-          description: `تحويل عرض السعر ${qt.id} إلى فاتورة ${newInvId}`,
+          description: `تحويل عرض السعر ${qItem.id} إلى فاتورة ${newInvId}`,
           date: new Date().toISOString(),
           lines: [
-            { account: `1020 - ذمم العملاء (${qt.customerName})`, debit: total, credit: 0 },
+            { account: `1020 - ذمم العملاء (${qItem.customerName})`, debit: total, credit: 0 },
             { account: '4010 - إيرادات المبيعات', debit: 0, credit: netSubtotal },
             { account: '2020 - ضريبة القيمة المضافة', debit: 0, credit: vat },
           ],
@@ -766,23 +1303,26 @@ export function useErpStore() {
           customers: updatedCustomers,
           journals: [autoJournal, ...p.journals],
         };
-      }),
+      });
+      return { ok: true as const };
+    },
 
     saveCustomer: (c: Omit<Customer, 'id'>, editId?: string) =>
       setState((p) => ({
         ...p,
         customers: editId
           ? p.customers.map((x) => (x.id === editId ? { ...c, id: editId } : x))
-          : [{ ...c, id: `C-${100 + p.customers.length + 1}` }, ...p.customers],
+          : [{ ...c, id: nextSequentialId('C', 100, p.customers.map((x) => x.id)) }, ...p.customers],
       })),
     importCustomersBulk: (items: Omit<Customer, 'id'>[]) => {
       if (items.length === 0) return 0;
       setState((p) => {
-        const base = 100 + p.customers.length;
-        const created: Customer[] = items.map((c, idx) => ({
-          ...c,
-          id: `C-${base + idx + 1}`,
-        }));
+        const ids = p.customers.map((x) => x.id);
+        const created: Customer[] = items.map((c) => {
+          const nextId = nextSequentialId('C', 100, ids);
+          ids.push(nextId);
+          return { ...c, id: nextId };
+        });
         return { ...p, customers: [...created, ...p.customers] };
       });
       return items.length;
@@ -795,7 +1335,7 @@ export function useErpStore() {
         ...p,
         suppliers: editId
           ? p.suppliers.map((x) => (x.id === editId ? { ...s, id: editId } : x))
-          : [{ ...s, id: `S-${200 + p.suppliers.length + 1}` }, ...p.suppliers],
+          : [{ ...s, id: nextSequentialId('S', 200, p.suppliers.map((x) => x.id)) }, ...p.suppliers],
       })),
     deleteSupplier: (id: string) =>
       setState((p) => ({ ...p, suppliers: p.suppliers.filter((s) => s.id !== id) })),
@@ -813,7 +1353,7 @@ export function useErpStore() {
           purchaseOrders: [
             {
               ...po,
-              id: `PO-${300 + p.purchaseOrders.length + 1}`,
+              id: nextSequentialId('PO', 300, p.purchaseOrders.map((x) => x.id)),
               subtotal,
               taxRate: rate,
               vat,
@@ -840,7 +1380,7 @@ export function useErpStore() {
             )
           : [
               {
-                id: `P-${p.products.length + 11}`,
+                id: nextSequentialId('P', 10, p.products.map((x) => x.id)),
                 name: target.productName,
                 sku: `SKU-${target.quantity}`,
                 barcode: generateEan13(),
@@ -850,12 +1390,37 @@ export function useErpStore() {
               },
               ...p.products,
             ];
+        const updatedSuppliers = p.suppliers.map((s) =>
+          (target.supplierId && s.id === target.supplierId) ||
+          s.name.trim() === target.supplierName.trim()
+            ? { ...s, payable: Number((s.payable + target.total).toFixed(2)) }
+            : s,
+        );
+        const poSubtotal = Number((target.subtotal ?? target.quantity * target.unitCost).toFixed(2));
+        const poVat = Number((target.vat ?? Math.max(0, target.total - poSubtotal)).toFixed(2));
+        const autoJournal: JournalEntry = {
+          id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
+          reference: target.id,
+          description: p.settings.isArabic
+            ? `استلام أمر شراء ${target.id} - ${target.supplierName}`
+            : `PO ${target.id} received - ${target.supplierName}`,
+          date: new Date().toISOString(),
+          lines: [
+            { account: `1030 - المخزون (${target.productName})`, debit: poSubtotal, credit: 0 },
+            ...(poVat > 0
+              ? [{ account: '2025 - ضريبة مدخلات المشتريات', debit: poVat, credit: 0 }]
+              : []),
+            { account: `2010 - ذمم الموردين (${target.supplierName})`, debit: 0, credit: target.total },
+          ],
+        };
         return {
           ...p,
           purchaseOrders: p.purchaseOrders.map((x) =>
             x.id === poId ? { ...x, status: 'received' } : x,
           ),
           products: updatedProducts,
+          suppliers: updatedSuppliers,
+          journals: [autoJournal, ...p.journals],
         };
       }),
     deletePurchaseOrder: (poId: string) =>
@@ -872,16 +1437,72 @@ export function useErpStore() {
             vouchers: p.vouchers.map((x) => (x.id === editId ? { ...v, id: editId } : x)),
           };
         }
-        const newV: Voucher = { ...v, id: `VCH-${500 + p.vouchers.length + 1}` };
+        const newId = nextSequentialId('VCH', 500, p.vouchers.map((x) => x.id));
+        const newV: Voucher = { ...v, id: newId };
+        const matchedBank = p.banks.find(
+          (b) =>
+            b.id === v.paymentMethod ||
+            b.nameEn.toLowerCase() === v.paymentMethod.trim().toLowerCase() ||
+            b.nameAr.trim() === v.paymentMethod.trim(),
+        );
+        const bankDelta = v.type === 'receipt' ? v.amount : -v.amount;
+        const updatedBanks = matchedBank
+          ? p.banks.map((b) =>
+              b.id === matchedBank.id
+                ? { ...b, balance: Number((b.balance + bankDelta).toFixed(2)) }
+                : b,
+            )
+          : p.banks;
         const updatedCustomers =
           v.type === 'receipt'
             ? p.customers.map((c) =>
-                c.name === v.partyName
+                c.name.trim() === v.partyName.trim()
                   ? { ...c, debt: Math.max(0, Number((c.debt - v.amount).toFixed(2))) }
                   : c,
               )
             : p.customers;
-        return { ...p, vouchers: [newV, ...p.vouchers], customers: updatedCustomers };
+        const updatedSuppliers =
+          v.type === 'payment'
+            ? p.suppliers.map((s) =>
+                s.name.trim() === v.partyName.trim()
+                  ? { ...s, payable: Math.max(0, Number((s.payable - v.amount).toFixed(2))) }
+                  : s,
+              )
+            : p.suppliers;
+        const bankLabel = matchedBank
+          ? `1010 - ${p.settings.isArabic ? matchedBank.nameAr : matchedBank.nameEn}`
+          : `1010 - ${v.paymentMethod || 'Cash'}`;
+        const autoJournal: JournalEntry = {
+          id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
+          reference: newId,
+          description:
+            v.type === 'receipt'
+              ? p.settings.isArabic
+                ? `سند قبض ${newId} - ${v.partyName}`
+                : `Receipt ${newId} - ${v.partyName}`
+              : p.settings.isArabic
+              ? `سند صرف ${newId} - ${v.partyName}`
+              : `Payment ${newId} - ${v.partyName}`,
+          date: v.date,
+          lines:
+            v.type === 'receipt'
+              ? [
+                  { account: bankLabel, debit: v.amount, credit: 0 },
+                  { account: `1020 - ذمم العملاء (${v.partyName})`, debit: 0, credit: v.amount },
+                ]
+              : [
+                  { account: `2010 - ذمم الموردين (${v.partyName})`, debit: v.amount, credit: 0 },
+                  { account: bankLabel, debit: 0, credit: v.amount },
+                ],
+        };
+        return {
+          ...p,
+          vouchers: [newV, ...p.vouchers],
+          customers: updatedCustomers,
+          suppliers: updatedSuppliers,
+          banks: updatedBanks,
+          journals: [autoJournal, ...p.journals],
+        };
       }),
     deleteVoucher: (id: string) =>
       setState((p) => ({ ...p, vouchers: p.vouchers.filter((v) => v.id !== id) })),
@@ -891,7 +1512,7 @@ export function useErpStore() {
         ...p,
         journals: editId
           ? p.journals.map((x) => (x.id === editId ? { ...j, id: editId } : x))
-          : [{ ...j, id: `JRN-${700 + p.journals.length + 1}` }, ...p.journals],
+          : [{ ...j, id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)) }, ...p.journals],
       })),
     deleteJournal: (id: string) =>
       setState((p) => ({ ...p, journals: p.journals.filter((j) => j.id !== id) })),
@@ -901,16 +1522,17 @@ export function useErpStore() {
         ...p,
         products: editId
           ? p.products.map((x) => (x.id === editId ? { ...pr, id: editId } : x))
-          : [{ ...pr, id: `P-${10 + p.products.length + 1}` }, ...p.products],
+          : [{ ...pr, id: nextSequentialId('P', 10, p.products.map((x) => x.id)) }, ...p.products],
       })),
     importProductsBulk: (items: Omit<Product, 'id'>[]) => {
       if (items.length === 0) return 0;
       setState((p) => {
-        const base = 10 + p.products.length;
-        const created: Product[] = items.map((pr, idx) => ({
-          ...pr,
-          id: `P-${base + idx + 1}`,
-        }));
+        const ids = p.products.map((x) => x.id);
+        const created: Product[] = items.map((pr) => {
+          const nextId = nextSequentialId('P', 10, ids);
+          ids.push(nextId);
+          return { ...pr, id: nextId };
+        });
         return { ...p, products: [...created, ...p.products] };
       });
       return items.length;
@@ -928,38 +1550,102 @@ export function useErpStore() {
         ...p,
         employees: editId
           ? p.employees.map((x) => (x.id === editId ? { ...emp, id: editId } : x))
-          : [{ ...emp, id: `E-${10 + p.employees.length + 1}` }, ...p.employees],
+          : [{ ...emp, id: nextSequentialId('E', 10, p.employees.map((x) => x.id)) }, ...p.employees],
       })),
     paySalary: (id: string) =>
       setState((p) => {
         const emp = p.employees.find((e) => e.id === id);
         if (!emp) return p;
+        const targetBank =
+          p.banks.find((b) => b.id === 'alrajhi') ??
+          p.banks.find((b) => b.id === 'cash') ??
+          p.banks[0];
+        const bankId = targetBank?.id ?? 'alrajhi';
+        const nowIso = new Date().toISOString();
+        const expId = nextSequentialId('EXP', 900, p.expenses.map((x) => x.id));
         const newExp: Expense = {
-          id: `EXP-${900 + p.expenses.length + 1}`,
+          id: expId,
           title: p.settings.isArabic ? `راتب ${emp.name}` : `Salary - ${emp.name}`,
           category: p.settings.isArabic ? 'الرواتب والأجور' : 'Payroll',
           amount: emp.salary,
-          paidFromBankId: 'alrajhi',
-          date: new Date().toISOString(),
+          paidFromBankId: bankId,
+          date: nowIso,
+        };
+        const autoJournal: JournalEntry = {
+          id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
+          reference: expId,
+          description: p.settings.isArabic ? `صرف راتب ${emp.name}` : `Salary payment - ${emp.name}`,
+          date: nowIso,
+          lines: [
+            { account: '5030 - الرواتب والأجور', debit: emp.salary, credit: 0 },
+            {
+              account: `1010 - ${targetBank ? (p.settings.isArabic ? targetBank.nameAr : targetBank.nameEn) : bankId}`,
+              debit: 0,
+              credit: emp.salary,
+            },
+          ],
         };
         return {
           ...p,
           employees: p.employees.map((e) =>
-            e.id === id ? { ...e, lastPaidDate: new Date().toISOString() } : e,
+            e.id === id ? { ...e, lastPaidDate: nowIso } : e,
           ),
+          banks: targetBank
+            ? p.banks.map((b) =>
+                b.id === bankId ? { ...b, balance: Number((b.balance - emp.salary).toFixed(2)) } : b,
+              )
+            : p.banks,
           expenses: [newExp, ...p.expenses],
+          journals: [autoJournal, ...p.journals],
         };
       }),
     deleteEmployee: (id: string) =>
       setState((p) => ({ ...p, employees: p.employees.filter((e) => e.id !== id) })),
 
     saveExpense: (exp: Omit<Expense, 'id'>, editId?: string) =>
-      setState((p) => ({
-        ...p,
-        expenses: editId
-          ? p.expenses.map((x) => (x.id === editId ? { ...exp, id: editId } : x))
-          : [{ ...exp, id: `EXP-${900 + p.expenses.length + 1}` }, ...p.expenses],
-      })),
+      setState((p) => {
+        if (editId) {
+          const prevExp = p.expenses.find((x) => x.id === editId);
+          const updatedBanks = p.banks.map((b) => {
+            let delta = 0;
+            if (prevExp && prevExp.paidFromBankId === b.id) delta += prevExp.amount;
+            if (exp.paidFromBankId === b.id) delta -= exp.amount;
+            return delta !== 0 ? { ...b, balance: Number((b.balance + delta).toFixed(2)) } : b;
+          });
+          return {
+            ...p,
+            expenses: p.expenses.map((x) => (x.id === editId ? { ...exp, id: editId } : x)),
+            banks: updatedBanks,
+          };
+        }
+        const newId = nextSequentialId('EXP', 900, p.expenses.map((x) => x.id));
+        const paidBank = p.banks.find((b) => b.id === exp.paidFromBankId);
+        const updatedBanks = paidBank
+          ? p.banks.map((b) =>
+              b.id === paidBank.id ? { ...b, balance: Number((b.balance - exp.amount).toFixed(2)) } : b,
+            )
+          : p.banks;
+        const autoJournal: JournalEntry = {
+          id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
+          reference: newId,
+          description: `${exp.title} (${exp.category || (p.settings.isArabic ? 'مصروف' : 'Expense')})`,
+          date: exp.date,
+          lines: [
+            { account: `5010 - مصروفات (${exp.category || 'تشغيل'})`, debit: exp.amount, credit: 0 },
+            {
+              account: `1010 - ${paidBank ? (p.settings.isArabic ? paidBank.nameAr : paidBank.nameEn) : exp.paidFromBankId}`,
+              debit: 0,
+              credit: exp.amount,
+            },
+          ],
+        };
+        return {
+          ...p,
+          expenses: [{ ...exp, id: newId }, ...p.expenses],
+          banks: updatedBanks,
+          journals: [autoJournal, ...p.journals],
+        };
+      }),
     deleteExpense: (id: string) =>
       setState((p) => ({ ...p, expenses: p.expenses.filter((e) => e.id !== id) })),
 
@@ -968,6 +1654,55 @@ export function useErpStore() {
         ...p,
         banks: p.banks.map((b) => (b.id === id ? { ...b, balance } : b)),
       })),
+    saveBankAccount: (account: Omit<BankAccount, 'id'>, editId?: string) =>
+      setState((p) => ({
+        ...p,
+        banks: editId
+          ? p.banks.map((b) => (b.id === editId ? { ...account, id: editId } : b))
+          : [{ ...account, id: `BNK-${Date.now().toString(36)}` }, ...p.banks],
+      })),
+    deleteBankAccount: (id: string) =>
+      setState((p) => ({
+        ...p,
+        banks: id === 'cash' ? p.banks : p.banks.filter((b) => b.id !== id),
+      })),
+    transferBetweenBanks: (fromId: string, toId: string, amount: number, notes?: string) => {
+      if (!fromId || !toId || fromId === toId || !Number.isFinite(amount) || amount <= 0) {
+        return false;
+      }
+      setState((p) => {
+        const fromAcc = p.banks.find((b) => b.id === fromId);
+        const toAcc = p.banks.find((b) => b.id === toId);
+        if (!fromAcc || !toAcc) return p;
+        const nowIso = new Date().toISOString();
+        const fromLabel = p.settings.isArabic ? fromAcc.nameAr : fromAcc.nameEn;
+        const toLabel = p.settings.isArabic ? toAcc.nameAr : toAcc.nameEn;
+        const autoJournal: JournalEntry = {
+          id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
+          reference: `TRF-${Date.now().toString(36).slice(-4).toUpperCase()}`,
+          description: notes?.trim()
+            ? notes.trim()
+            : p.settings.isArabic
+            ? `تحويل نقدي من ${fromLabel} إلى ${toLabel}`
+            : `Funds transfer from ${fromLabel} to ${toLabel}`,
+          date: nowIso,
+          lines: [
+            { account: `1010 - ${toLabel}`, debit: amount, credit: 0 },
+            { account: `1010 - ${fromLabel}`, debit: 0, credit: amount },
+          ],
+        };
+        return {
+          ...p,
+          banks: p.banks.map((b) => {
+            if (b.id === fromId) return { ...b, balance: Number((b.balance - amount).toFixed(2)) };
+            if (b.id === toId) return { ...b, balance: Number((b.balance + amount).toFixed(2)) };
+            return b;
+          }),
+          journals: [autoJournal, ...p.journals],
+        };
+      });
+      return true;
+    },
 
     exportBackupJson: () => {
       const nowIso = new Date().toISOString();

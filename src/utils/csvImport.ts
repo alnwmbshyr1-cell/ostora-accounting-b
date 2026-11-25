@@ -83,6 +83,7 @@ export function parseCustomersCsv(rawText: string): {
   const phoneIdx = hasHeader ? findCol(['phone', 'mobile', 'tel', 'الجوال', 'رقمالجوال', 'الهاتف']) : -1;
   const emailIdx = hasHeader ? findCol(['email', 'mail', 'البريد', 'البريدالإلكتروني']) : -1;
   const debtIdx = hasHeader ? findCol(['debt', 'balance', 'balancedue', 'due', 'الرصيد', 'الرصيدالمستحق', 'المديونية']) : -1;
+  const limitIdx = hasHeader ? findCol(['creditlimit', 'limit', 'maxdebt', 'الحدالائتماني', 'حدالائتمان']) : -1;
 
   const dataRows = hasHeader ? rows.slice(1) : rows;
   const items: Omit<Customer, 'id'>[] = [];
@@ -93,23 +94,27 @@ export function parseCustomersCsv(rawText: string): {
     let phone = '';
     let email = '';
     let debt = 0;
+    let rawLimit: string | undefined;
 
     if (hasHeader) {
       name = (nameIdx >= 0 ? r[nameIdx] : r[0]) ?? '';
       phone = (phoneIdx >= 0 ? r[phoneIdx] : r[1]) ?? '';
       email = (emailIdx >= 0 ? r[emailIdx] : r[2]) ?? '';
       debt = toNumber(debtIdx >= 0 ? r[debtIdx] : r[3], 0);
+      rawLimit = limitIdx >= 0 ? r[limitIdx] : r[4];
     } else if (r.length >= 5 && /^C-\d+/i.test(r[0])) {
-      // Matches exported format: ID,Name,Phone,Email,Debt
+      // Matches exported format: ID,Name,Phone,Email,Debt[,CreditLimit]
       name = r[1] ?? '';
       phone = r[2] ?? '';
       email = r[3] ?? '';
       debt = toNumber(r[4], 0);
+      rawLimit = r[5];
     } else {
       name = r[0] ?? '';
       phone = r[1] ?? '';
       email = r[2] ?? '';
       debt = toNumber(r[3], 0);
+      rawLimit = r[4];
     }
 
     if (!name.trim()) {
@@ -117,11 +122,14 @@ export function parseCustomersCsv(rawText: string): {
       continue;
     }
 
+    const parsedLimit = rawLimit && rawLimit.trim() !== '' ? toNumber(rawLimit, -1) : -1;
+
     items.push({
       name: name.trim(),
       phone: phone.trim(),
       email: email.trim(),
       debt,
+      ...(parsedLimit >= 0 ? { creditLimit: parsedLimit } : {}),
     });
   }
 

@@ -43,7 +43,12 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
       </div>
 
       <div className="space-y-3">
-        {state.journals.map((j) => {
+        {state.journals.length === 0 ? (
+          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-10 text-center text-sm text-slate-500">
+            {t.noData}
+          </div>
+        ) : (
+          state.journals.map((j) => {
           const totalD = j.lines.reduce((s, l) => s + l.debit, 0);
           const totalC = j.lines.reduce((s, l) => s + l.credit, 0);
           return (
@@ -90,7 +95,8 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
               </div>
             </div>
           );
-        })}
+        })
+        )}
       </div>
 
       {jrnModal.open && (
@@ -109,12 +115,14 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
             <div className="grid grid-cols-3 gap-2">
               <input
                 value={jrnForm.description}
+                maxLength={400}
                 onChange={(e) => setJrnForm({ ...jrnForm, description: e.target.value })}
                 placeholder={t.reason}
                 className="col-span-2 px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
               />
               <input
                 value={jrnForm.reference}
+                maxLength={120}
                 onChange={(e) => setJrnForm({ ...jrnForm, reference: e.target.value })}
                 placeholder="REF"
                 className="px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
@@ -126,6 +134,7 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
                 <div key={idx} className="grid grid-cols-12 gap-1.5 items-center">
                   <input
                     value={line.account}
+                    maxLength={160}
                     onChange={(e) => {
                       const next = [...jrnLines];
                       next[idx] = { ...next[idx], account: e.target.value };
@@ -136,6 +145,8 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
                   />
                   <input
                     type="number"
+                    min={0}
+                    step="0.01"
                     value={line.debit}
                     onChange={(e) => {
                       const next = [...jrnLines];
@@ -147,6 +158,8 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
                   />
                   <input
                     type="number"
+                    min={0}
+                    step="0.01"
                     value={line.credit}
                     onChange={(e) => {
                       const next = [...jrnLines];
@@ -185,8 +198,8 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
                   const parsed: JournalLine[] = jrnLines
                     .map((l) => ({
                       account: l.account.trim(),
-                      debit: parseFloat(l.debit) || 0,
-                      credit: parseFloat(l.credit) || 0,
+                      debit: Math.max(0, parseFloat(l.debit) || 0),
+                      credit: Math.max(0, parseFloat(l.credit) || 0),
                     }))
                     .filter((l) => l.account && (l.debit > 0 || l.credit > 0));
                   const d = parsed.reduce((s, l) => s + l.debit, 0);
