@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
+  BellRing,
   CalendarClock,
   CheckCircle2,
   Edit2,
@@ -14,6 +15,7 @@ import {
 } from 'lucide-react';
 import { DEFAULT_PRODUCT_IMAGE } from '../constants/permissions';
 import { strings } from '../data/translations';
+import { fromHalalas, toHalalas } from '../domain/halala';
 import {
   CurrencyCode,
   InvoiceStatus,
@@ -41,12 +43,15 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
 
   const [search, setSearch] = useState('');
   const [filterTab, setFilterTab] = useState<'all' | 'active' | 'due' | 'paused'>('all');
+  const [freqFilter, setFreqFilter] = useState<'all' | RecurringFrequency>('all');
   const [modalOpen, setModalOpen] = useState(false);
   const [editId, setEditId] = useState<string | undefined>(undefined);
+  const [formError, setFormError] = useState('');
   const [prodId, setProdId] = useState(state.products[0]?.id ?? '');
   const [prodQty, setProdQty] = useState('1');
 
   const [form, setForm] = useState({
+    templateName: '',
     customerId: '',
     customerName: '',
     customerPhone: '',
@@ -56,9 +61,16 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
     taxRate: String(defaultTaxRate),
     currency: cur as CurrencyCode,
     frequency: 'monthly' as RecurringFrequency,
-    nextRunDate: new Date().toISOString().slice(0, 10),
+    startDate: todayKey,
+    endDate: '',
+    maxOccurrences: '',
+    issueDay: '1',
+    nextRunDate: todayKey,
     targetStatus: 'pending' as InvoiceStatus,
     autoGenerate: true,
+    autoSendWhatsApp: false,
+    autoSendEmail: false,
+    notifyDaysBefore: '3',
     active: true,
     notes: '',
   });
@@ -70,12 +82,27 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
     return t.freqYearly;
   };
 
+  // Templates approaching renewal within notifyDaysBefore (default 3 days)
+  const upcomingAlerts = useMemo(() => {
+    const todayMs = new Date(`${todayKey}T00:00:00`).getTime();
+    return state.recurringInvoices.filter((rec) => {
+      if (!rec.active) return false;
+      const runMs = new Date(`${rec.nextRunDate}T00:00:00`).getTime();
+      if (Number.isNaN(runMs)) return false;
+      const diffDays = Math.ceil((runMs - todayMs) / 86400000);
+      const notifyWin = rec.notifyDaysBefore ?? 3;
+      return diffDays >= 0 && diffDays <= notifyWin;
+    });
+  }, [state.recurringInvoices, todayKey]);
+
   const openCreateModal = () => {
     const firstCust = state.customers[0];
+    setFormError('');
     setEditId(undefined);
     setProdId(state.products[0]?.id ?? '');
     setProdQty('1');
     setForm({
+      templateName: '',
       customerId: firstCust?.id ?? '',
       customerName: firstCust?.name ?? '',
       customerPhone: firstCust?.phone ?? '',
@@ -85,9 +112,16 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
       taxRate: String(defaultTaxRate),
       currency: cur,
       frequency: 'monthly',
-      nextRunDate: new Date().toISOString().slice(0, 10),
+      startDate: todayKey,
+      endDate: '',
+      maxOccurrences: '',
+      issueDay: '1',
+      nextRunDate: todayKey,
       targetStatus: 'pending',
       autoGenerate: true,
+      autoSendWhatsApp: false,
+      autoSendEmail: false,
+      notifyDaysBefore: '3',
       active: true,
       notes: '',
     });
@@ -95,10 +129,12 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
   };
 
   const openEditModal = (rec: RecurringInvoice) => {
+    setFormError('');
     setEditId(rec.id);
     setProdId(state.products[0]?.id ?? '');
     setProdQty('1');
     setForm({
+      templateName: rec.templateName ?? '',
       customerId: rec.customerId,
       customerName: rec.customerName,
       customerPhone: rec.customerPhone,
@@ -108,9 +144,16 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
       taxRate: String(rec.taxRate),
       currency: rec.currency,
       frequency: rec.frequency,
+      startDate: rec.startDate ?? rec.nextRunDate,
+      endDate: rec.endDate ?? '',
+      maxOccurrences: rec.maxOccurrences ? String(rec.maxOccurrences) : '',
+      issueDay: rec.issueDay ? String(rec.issueDay) : '1',
       nextRunDate: rec.nextRunDate,
       targetStatus: rec.targetStatus,
       autoGenerate: rec.autoGenerate,
+      autoSendWhatsApp: Boolean(rec.autoSendWhatsApp),
+      autoSendEmail: Boolean(rec.autoSendEmail),
+      notifyDaysBefore: String(rec.notifyDaysBefore ?? 3),
       active: rec.active,
       notes: rec.notes,
     });
@@ -122,10 +165,12 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
     if (filterTab === 'active' && !rec.active) return false;
     if (filterTab === 'paused' && rec.active) return false;
     if (filterTab === 'due' && !isDue) return false;
+    if (freqFilter !== 'all' && rec.frequency !== freqFilter) return false;
     const q = search.trim().toLowerCase();
     if (!q) return true;
     return (
       rec.id.toLowerCase().includes(q) ||
+      (rec.templateName ?? '').toLowerCase().includes(q) ||
       rec.customerName.toLowerCase().includes(q) ||
       rec.description.toLowerCase().includes(q)
     );
@@ -153,12 +198,26 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
 
   const subNum = parseFloat(form.subtotal) || 0;
   const rateNum = Math.max(0, Math.min(100, parseFloat(form.taxRate) || 0));
-  const vatNum = Number(((subNum * rateNum) / 100).toFixed(2));
-  const totalNum = Number((subNum + vatNum).toFixed(2));
+  const vatNum = fromHalalas(Math.round((toHalalas(subNum) * rateNum) / 100));
+  const totalNum = fromHalalas(toHalalas(subNum) + toHalalas(vatNum));
 
   return (
     <div className="space-y-4">
-      {/* Compact Summary Strip */}
+      {/* 3-Day Renewal Notification Banner */}
+      {upcomingAlerts.length > 0 && (
+        <div className="rounded-[20px] bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-900/50 p-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 text-xs sm:text-sm text-amber-900 dark:text-amber-200 font-bold">
+            <BellRing className="w-5 h-5 text-amber-600 shrink-0" />
+            <span>
+              {isAr
+                ? `تنبيه تجديد قريب (${upcomingAlerts.length}): ${upcomingAlerts.map((a) => `${a.templateName || a.customerName} (${a.nextRunDate})`).join(' · ')}`
+                : `Upcoming Renewal Alert (${upcomingAlerts.length}): ${upcomingAlerts.map((a) => `${a.templateName || a.customerName} (${a.nextRunDate})`).join(' · ')}`}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Summary Strip */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 flex items-center justify-between">
           <div>
@@ -201,6 +260,17 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
             className="w-full ps-10 pe-4 py-2.5 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-sm outline-none focus:border-[#0A3D2C]"
           />
         </div>
+        <select
+          value={freqFilter}
+          onChange={(e) => setFreqFilter(e.target.value as 'all' | RecurringFrequency)}
+          className="px-3 py-2.5 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+        >
+          <option value="all">{isAr ? 'كل التكرارات' : 'All Frequencies'}</option>
+          <option value="weekly">{t.freqWeekly}</option>
+          <option value="monthly">{t.freqMonthly}</option>
+          <option value="quarterly">{t.freqQuarterly}</option>
+          <option value="yearly">{t.freqYearly}</option>
+        </select>
         {dueCount > 0 && (
           <button
             onClick={() => {
@@ -305,6 +375,11 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
                 </div>
 
                 <div>
+                  {rec.templateName && (
+                    <span className="text-[11px] font-bold text-[#0A3D2C] dark:text-[#C9A227] block">
+                      {rec.templateName}
+                    </span>
+                  )}
                   <h4 className="font-extrabold text-base">{rec.customerName}</h4>
                   <p className="text-xs text-slate-500 mt-0.5">{rec.description || '—'}</p>
                 </div>
@@ -316,6 +391,7 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
                     </p>
                     <p>
                       {t.generatedCountLabel}: {rec.generatedCount}
+                      {rec.maxOccurrences ? `/${rec.maxOccurrences}` : ''}
                       {rec.lastGeneratedDate ? ` · ${t.lastGeneratedDate}: ${rec.lastGeneratedDate}` : ''}
                     </p>
                   </div>
@@ -390,45 +466,63 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
       {/* Create / Edit Modal */}
       {modalOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] max-w-lg w-full p-6 space-y-3 my-auto">
-            <h3 className="text-lg font-extrabold">
-              {editId ? t.editRecurringInvoice : t.addRecurringInvoice}
-            </h3>
+          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] max-w-2xl w-full p-6 space-y-3 my-auto max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-extrabold">
+                {editId ? t.editRecurringInvoice : t.addRecurringInvoice}
+              </h3>
+              <button onClick={() => setModalOpen(false)} className="p-1 rounded-lg cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
 
-            <input
-              type="text"
-              maxLength={160}
-              list="ostora_rec_customers"
-              value={form.customerName}
-              onChange={(e) => {
-                const val = e.target.value;
-                const match = state.customers.find((c) => c.name === val);
-                setForm({
-                  ...form,
-                  customerId: match ? match.id : '',
-                  customerName: val,
-                  customerPhone: match ? match.phone : form.customerPhone,
-                });
-              }}
-              placeholder={t.client}
-              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
-            />
-            <datalist id="ostora_rec_customers">
-              {state.customers.map((c) => (
-                <option key={c.id} value={c.name} />
-              ))}
-            </datalist>
+            {formError && (
+              <div className="p-2.5 rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 text-red-700 text-xs font-bold">
+                {formError}
+              </div>
+            )}
 
-            <input
-              type="tel"
-              maxLength={40}
-              value={form.customerPhone}
-              onChange={(e) => setForm({ ...form, customerPhone: e.target.value })}
-              placeholder={t.phone}
-              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
-            />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div>
+                <label className="text-[11px] font-bold text-slate-500 block mb-1">{t.templateName} *</label>
+                <input
+                  type="text"
+                  maxLength={120}
+                  value={form.templateName}
+                  onChange={(e) => setForm({ ...form, templateName: e.target.value })}
+                  placeholder={isAr ? 'مثال: باقة الصيانة الشهرية' : 'e.g. Monthly Support Plan'}
+                  className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] font-bold text-slate-500 block mb-1">{t.client} *</label>
+                <input
+                  type="text"
+                  maxLength={160}
+                  list="ostora_rec_customers"
+                  value={form.customerName}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    const match = state.customers.find((c) => c.name === val);
+                    setForm({
+                      ...form,
+                      customerId: match ? match.id : '',
+                      customerName: val,
+                      customerPhone: match ? match.phone : form.customerPhone,
+                    });
+                  }}
+                  placeholder={`${t.client} *`}
+                  className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+                />
+                <datalist id="ostora_rec_customers">
+                  {state.customers.map((c) => (
+                    <option key={c.id} value={c.name} />
+                  ))}
+                </datalist>
+              </div>
+            </div>
 
-            {/* Optional Line Items Picker */}
+            {/* Line Items Picker */}
             <div className="border border-slate-200 dark:border-[#1F332B] rounded-xl p-3 space-y-2">
               <p className="text-xs font-bold text-slate-500">{t.product} ({isAr ? 'اختياري' : 'Optional'})</p>
               <div className="max-h-24 overflow-y-auto space-y-1">
@@ -463,9 +557,16 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
                     if (!pr) return;
                     const nextItems = [
                       ...form.items,
-                      { productId: pr.id, productName: pr.name, qty, unitPrice: pr.price, total: Number((qty * pr.price).toFixed(2)) },
+                      {
+                        productId: pr.id,
+                        productName: pr.name,
+                        qty,
+                        unit: pr.unit ?? 'piece',
+                        unitPrice: pr.price,
+                        total: fromHalalas(Math.round(toHalalas(pr.price) * qty)),
+                      },
                     ];
-                    const nextSub = nextItems.reduce((s, it) => s + it.total, 0);
+                    const nextSub = fromHalalas(nextItems.reduce((s, it) => s + toHalalas(it.total), 0));
                     setForm({
                       ...form,
                       items: nextItems,
@@ -489,7 +590,7 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
                           type="button"
                           onClick={() => {
                             const nextItems = form.items.filter((_, i) => i !== idx);
-                            const nextSub = nextItems.reduce((s, x) => s + x.total, 0);
+                            const nextSub = fromHalalas(nextItems.reduce((s, x) => s + toHalalas(x.total), 0));
                             setForm({
                               ...form,
                               items: nextItems,
@@ -513,12 +614,12 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
               value={form.description}
               onChange={(e) => setForm({ ...form, description: e.target.value })}
               placeholder={t.reason}
-              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
+              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
             />
 
             <div className="grid grid-cols-3 gap-2">
               <div>
-                <label className="text-[11px] font-bold text-slate-500 block mb-1">{t.subtotal}</label>
+                <label className="text-[11px] font-bold text-slate-500 block mb-1">{t.subtotal} *</label>
                 <input
                   type="number"
                   min={0}
@@ -559,9 +660,10 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
               </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-2">
+            {/* Schedule Controls */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div>
-                <label className="text-[11px] font-bold text-slate-500 block mb-1">{t.frequency}</label>
+                <label className="text-[10px] font-bold text-slate-500 block mb-1">{t.frequency} *</label>
                 <select
                   value={form.frequency}
                   onChange={(e) => setForm({ ...form, frequency: e.target.value as RecurringFrequency })}
@@ -574,7 +676,25 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
                 </select>
               </div>
               <div>
-                <label className="text-[11px] font-bold text-slate-500 block mb-1">{t.nextRunDate}</label>
+                <label className="text-[10px] font-bold text-slate-500 block mb-1">{isAr ? 'تاريخ البدء' : 'Start Date'}</label>
+                <input
+                  type="date"
+                  value={form.startDate}
+                  onChange={(e) => setForm({ ...form, startDate: e.target.value })}
+                  className="w-full px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-1">{isAr ? 'تاريخ الانتهاء' : 'End Date'}</label>
+                <input
+                  type="date"
+                  value={form.endDate}
+                  onChange={(e) => setForm({ ...form, endDate: e.target.value })}
+                  className="w-full px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-1">{t.nextRunDate} *</label>
                 <input
                   type="date"
                   value={form.nextRunDate}
@@ -582,8 +702,44 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
                   className="w-full px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
                 />
               </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div>
-                <label className="text-[11px] font-bold text-slate-500 block mb-1">{t.targetInvoiceStatus}</label>
+                <label className="text-[10px] font-bold text-slate-500 block mb-1">{isAr ? 'عدد التكرارات الأقصى' : 'Max Runs'}</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={form.maxOccurrences}
+                  onChange={(e) => setForm({ ...form, maxOccurrences: e.target.value })}
+                  placeholder="∞"
+                  className="w-full px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-1">{isAr ? 'يوم الإصدار (1-28)' : 'Issue Day'}</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={28}
+                  value={form.issueDay}
+                  onChange={(e) => setForm({ ...form, issueDay: e.target.value })}
+                  className="w-full px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-1">{isAr ? 'تنبيه قبل (أيام)' : 'Notify Days'}</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={30}
+                  value={form.notifyDaysBefore}
+                  onChange={(e) => setForm({ ...form, notifyDaysBefore: e.target.value })}
+                  className="w-full px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-1">{t.targetInvoiceStatus}</label>
                 <select
                   value={form.targetStatus}
                   onChange={(e) => setForm({ ...form, targetStatus: e.target.value as InvoiceStatus })}
@@ -591,19 +747,48 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
                 >
                   <option value="pending">{t.pending}</option>
                   <option value="paid">{t.paid}</option>
+                  <option value="draft">{t.draft}</option>
                 </select>
               </div>
             </div>
 
-            <label className="flex items-center gap-2 text-xs font-bold cursor-pointer select-none pt-1">
-              <input
-                type="checkbox"
-                checked={form.autoGenerate}
-                onChange={(e) => setForm({ ...form, autoGenerate: e.target.checked })}
-                className="rounded accent-[#0A3D2C] w-4 h-4"
-              />
-              <span>{t.autoGenerateToggle}</span>
-            </label>
+            <div className="flex flex-wrap gap-4 text-xs font-bold pt-1">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={form.autoGenerate}
+                  onChange={(e) => setForm({ ...form, autoGenerate: e.target.checked })}
+                  className="rounded accent-[#0A3D2C] w-4 h-4"
+                />
+                <span>{t.autoGenerateToggle}</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={form.autoSendWhatsApp}
+                  onChange={(e) => setForm({ ...form, autoSendWhatsApp: e.target.checked })}
+                  className="rounded accent-[#0A3D2C] w-4 h-4"
+                />
+                <span>{isAr ? 'تذكير واتساب تلقائي' : 'Auto WhatsApp'}</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={form.autoSendEmail}
+                  onChange={(e) => setForm({ ...form, autoSendEmail: e.target.checked })}
+                  className="rounded accent-[#0A3D2C] w-4 h-4"
+                />
+                <span>{isAr ? 'إرسال إيميل تلقائي' : 'Auto Email'}</span>
+              </label>
+            </div>
+
+            <input
+              type="text"
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              placeholder={t.notes}
+              className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+            />
 
             <div className="p-3 rounded-xl bg-slate-100 dark:bg-[#0A120F] flex justify-between text-xs font-bold tabular-nums">
               <span>{t.vat} ({rateNum}%): {vatNum.toFixed(2)} {form.currency}</span>
@@ -619,9 +804,16 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
               </button>
               <button
                 onClick={() => {
-                  if (!form.customerName.trim() || subNum <= 0) return;
+                  if (!form.customerName.trim() || subNum <= 0) {
+                    setFormError(isAr ? 'العميل والمبلغ الفرعي حقول إلزامية *' : 'Customer and subtotal are required *');
+                    return;
+                  }
+                  const maxOccNum = parseInt(form.maxOccurrences, 10);
+                  const issueDayNum = parseInt(form.issueDay, 10);
+                  const notifyDaysNum = parseInt(form.notifyDaysBefore, 10);
                   actions.saveRecurringInvoice(
                     {
+                      templateName: form.templateName.trim() || undefined,
                       customerId: form.customerId,
                       customerName: form.customerName.trim(),
                       customerPhone: form.customerPhone.trim(),
@@ -631,9 +823,16 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
                       taxRate: rateNum,
                       currency: form.currency,
                       frequency: form.frequency,
+                      startDate: form.startDate || undefined,
+                      endDate: form.endDate || undefined,
+                      maxOccurrences: Number.isFinite(maxOccNum) && maxOccNum > 0 ? maxOccNum : undefined,
+                      issueDay: Number.isFinite(issueDayNum) && issueDayNum >= 1 ? Math.min(28, issueDayNum) : undefined,
                       nextRunDate: form.nextRunDate || todayKey,
                       targetStatus: form.targetStatus,
                       autoGenerate: form.autoGenerate,
+                      autoSendWhatsApp: form.autoSendWhatsApp,
+                      autoSendEmail: form.autoSendEmail,
+                      notifyDaysBefore: Number.isFinite(notifyDaysNum) ? notifyDaysNum : 3,
                       active: form.active,
                       notes: form.notes.trim(),
                       date: new Date().toISOString(),

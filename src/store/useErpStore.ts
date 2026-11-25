@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { waitForPendingWrites } from 'firebase/firestore';
 import { ALL_ROUTES, DEFAULT_PERMISSIONS_MATRIX } from '../constants/permissions';
 import { useFirebase } from '../contexts/FirebaseContext';
+import { strings } from '../data/translations';
+import { db } from '../firebase';
 import {
   buildDoubleEntryForInvoice,
   computeBankReconciliationDiff,
@@ -55,6 +58,8 @@ import {
   JournalEntry,
   PermissionsMatrix,
   PersistedState,
+  PosHeldCart,
+  PosShiftSession,
   Product,
   PurchaseOrder,
   Quotation,
@@ -75,6 +80,28 @@ export type { PersistedState } from '../types/erp';
 
 const STORAGE_KEY = 'ostora_accounting_erp_state_v1';
 export const AUTOSAVE_KEY = 'ostora_autosave';
+const POS_REGISTER_KEY = 'ostora_pos_register_v1';
+
+interface PosRegisterStorage {
+  heldCarts: PosHeldCart[];
+  shift: PosShiftSession | null;
+}
+
+function loadPosRegister(): PosRegisterStorage {
+  try {
+    const raw = localStorage.getItem(POS_REGISTER_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<PosRegisterStorage>;
+      return {
+        heldCarts: Array.isArray(parsed.heldCarts) ? parsed.heldCarts : [],
+        shift: parsed.shift ?? null,
+      };
+    }
+  } catch {
+    // Ignore malformed register state
+  }
+  return { heldCarts: [], shift: null };
+}
 
 function nextSequentialId(prefix: string, startBase: number, existingIds: string[]): string {
   const re = new RegExp(`^${prefix}-(\\d+)$`);
@@ -760,6 +787,7 @@ export function useErpStore() {
   } = useFirebase();
 
   const [state, setState] = useState<PersistedState>(loadInitialState);
+  const [posRegister, setPosRegister] = useState<PosRegisterStorage>(loadPosRegister);
   const [dismissedAlerts, setDismissedAlerts] = useState<string[]>([]);
   const [toastMsg, setToastMsg] = useState<string>('');
   const [idbSnapshots, setIdbSnapshots] = useState<DailyBackupMeta[]>([]);
@@ -768,17 +796,28 @@ export function useErpStore() {
   const latestStateRef = useRef<PersistedState>(state);
   latestStateRef.current = state;
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(POS_REGISTER_KEY, JSON.stringify(posRegister));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [posRegister]);
+
   const lastSyncedStateRef = useRef<PersistedState | null>(null);
   const cloudHydratedUidRef = useRef<string | null>(null);
   const applyingRemoteRef = useRef(false);
+  const wasOfflineRef = useRef<boolean>(
+    typeof navigator !== 'undefined' ? !navigator.onLine : false,
+  );
 
   if (fatalSyncError) {
     throw fatalSyncError;
   }
 
-  const notify = useCallback((msg: string) => {
+  const notify = useCallback((msg: string, durationMs = 3200) => {
     setToastMsg(msg);
-    setTimeout(() => setToastMsg((prev) => (prev === msg ? '' : prev)), 3200);
+    setTimeout(() => setToastMsg((prev) => (prev === msg ? '' : prev)), durationMs);
   }, []);
 
   const actorLabel = user?.email ?? user?.displayName ?? state.currentRole;
@@ -954,7 +993,8 @@ export function useErpStore() {
 
     let cancelled = false;
     let unsubscribe: (() => void) | null = null;
-    setSyncStatus('syncing');
+    const isOfflineNow = typeof navigator !== 'undefined' && !navigator.onLine;
+    setSyncStatus(isOfflineNow ? 'offline' : 'syncing');
 
     loadOrSeedWorkspace(user.uid, latestStateRef.current)
       .then((cloudPatch) => {
@@ -964,8 +1004,11 @@ export function useErpStore() {
         lastSyncedStateRef.current = hydrated;
         cloudHydratedUidRef.current = user.uid;
         setState(hydrated);
-        setSyncStatus('synced');
-        setLastCloudSyncAt(new Date().toISOString());
+        const offline = typeof navigator !== 'undefined' && !navigator.onLine;
+        setSyncStatus(offline ? 'offline' : 'synced');
+        if (!offline) {
+          setLastCloudSyncAt(new Date().toISOString());
+        }
 
         void listCloudBackupSnapshots(user.uid).then((bList) => {
           if (!cancelled) setCloudBackups(bList);
@@ -981,8 +1024,11 @@ export function useErpStore() {
               lastSyncedStateRef.current = merged;
               return merged;
             });
-            setSyncStatus('synced');
-            setLastCloudSyncAt(new Date().toISOString());
+            const offlineNow = typeof navigator !== 'undefined' && !navigator.onLine;
+            setSyncStatus(offlineNow ? 'offline' : 'synced');
+            if (!offlineNow) {
+              setLastCloudSyncAt(new Date().toISOString());
+            }
           },
           (err) => {
             if (cancelled) return;
@@ -1054,6 +1100,60 @@ export function useErpStore() {
     setSyncStatus,
     setLastCloudSyncAt,
   ]);
+
+  useEffect(() => {
+    const handleOffline = () => {
+      wasOfflineRef.current = true;
+      if (user) {
+        setSyncStatus('offline');
+      }
+    };
+
+    const handleOnline = () => {
+      if (!wasOfflineRef.current) return;
+      wasOfflineRef.current = false;
+
+      const lang = latestStateRef.current.settings.isArabic ? 'ar' : 'en';
+      if (!user) {
+        notify(strings[lang].backOnlineSignInToSync, 4500);
+        return;
+      }
+
+      setSyncStatus('syncing');
+      notify(strings[lang].backOnlineSyncStarted, 4500);
+
+      const prevSynced = lastSyncedStateRef.current;
+      const nextState = latestStateRef.current;
+      const syncPromise =
+        cloudHydratedUidRef.current === user.uid && prevSynced && prevSynced !== nextState
+          ? syncStateDiffToFirestore(user.uid, user.email, prevSynced, nextState).then(() => {
+              lastSyncedStateRef.current = nextState;
+            })
+          : Promise.resolve();
+
+      syncPromise
+        .then(() => waitForPendingWrites(db))
+        .then(() => {
+          setSyncStatus('synced');
+          setLastCloudSyncAt(new Date().toISOString());
+        })
+        .catch((err) => {
+          console.error('Firestore reconnect sync error:', err);
+          setSyncStatus('error');
+        });
+    };
+
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      handleOffline();
+    }
+
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
+    return () => {
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [user, notify, setSyncStatus, setLastCloudSyncAt]);
 
   useEffect(() => {
     if (!authReady || !user) return;
@@ -1437,11 +1537,16 @@ export function useErpStore() {
         status: inv.status,
       });
 
-      const matchedCustomer = s.customers.find(
-        (c) => (inv.customerId && c.id === inv.customerId) || c.name.trim() === inv.customerName.trim(),
-      );
+      const matchedCustomer =
+        inv.customerId === 'CASH'
+          ? undefined
+          : s.customers.find(
+              (c) => (inv.customerId && c.id === inv.customerId) || c.name.trim() === inv.customerName.trim(),
+            );
       if (
+        inv.customerId !== 'CASH' &&
         inv.status !== 'paid' &&
+        inv.status !== 'draft' &&
         inv.status !== 'cancelled' &&
         inv.invoiceType !== 'return' &&
         inv.invoiceType !== 'quotation' &&
@@ -1455,6 +1560,7 @@ export function useErpStore() {
           if (
             prevInv &&
             prevInv.status !== 'paid' &&
+            prevInv.status !== 'draft' &&
             prevInv.status !== 'cancelled' &&
             ((prevInv.customerId && prevInv.customerId === matchedCustomer.id) ||
               prevInv.customerName.trim() === matchedCustomer.name.trim())
@@ -1474,19 +1580,56 @@ export function useErpStore() {
         }
       }
 
+      const predictedInvId = editId ?? nextSequentialId('INV', 1000, s.invoices.map((x) => x.id));
+      const isActiveInvoice =
+        inv.status !== 'draft' &&
+        inv.status !== 'cancelled' &&
+        inv.invoiceType !== 'quotation';
+      const isReturnDocPreview = inv.invoiceType === 'return';
+      const prevInvPreview = editId ? s.invoices.find((x) => x.id === editId) : undefined;
+      const wasInactivePreview =
+        !prevInvPreview ||
+        prevInvPreview.status === 'draft' ||
+        prevInvPreview.status === 'cancelled';
+
+      const lowStockItems: string[] = [];
+      if (isActiveInvoice && !isReturnDocPreview && (!editId || wasInactivePreview) && inv.items?.length) {
+        for (const pr of s.products) {
+          const sold = inv.items.find((it) => it.productId === pr.id || it.productName === pr.name);
+          if (sold) {
+            const nextQty = Math.max(0, pr.qty - sold.qty);
+            if (nextQty <= (pr.minStock ?? 10)) {
+              lowStockItems.push(`${pr.name} (${nextQty})`);
+            }
+          }
+        }
+      }
+
       setState((p) => {
-        const targetCustomer = p.customers.find(
-          (c) => (inv.customerId && c.id === inv.customerId) || c.name.trim() === inv.customerName.trim(),
-        );
+        const targetCustomer =
+          inv.customerId === 'CASH'
+            ? undefined
+            : p.customers.find(
+                (c) => (inv.customerId && c.id === inv.customerId) || c.name.trim() === inv.customerName.trim(),
+              );
 
         if (editId) {
           const prevInv = p.invoices.find((x) => x.id === editId);
+          const prevActive =
+            Boolean(prevInv) &&
+            prevInv!.status !== 'draft' &&
+            prevInv!.status !== 'cancelled' &&
+            prevInv!.invoiceType !== 'quotation';
+          const nextActive =
+            inv.status !== 'draft' &&
+            inv.status !== 'cancelled' &&
+            inv.invoiceType !== 'quotation';
           const prevUnpaidH =
-            prevInv && prevInv.status !== 'paid' && prevInv.status !== 'cancelled'
-              ? toHalalas(prevInv.remainingAmount ?? prevInv.baseTotal ?? prevInv.total)
+            prevActive && prevInv!.status !== 'paid'
+              ? toHalalas(prevInv!.remainingAmount ?? prevInv!.baseTotal ?? prevInv!.total)
               : 0;
           const nextUnpaidH =
-            inv.status !== 'paid' && inv.status !== 'cancelled' ? toHalalas(calc.remainingAmount) : 0;
+            nextActive && inv.status !== 'paid' ? toHalalas(calc.remainingAmount) : 0;
 
           const updatedCustomers = p.customers.map((c) => {
             const matchesPrev =
@@ -1494,12 +1637,89 @@ export function useErpStore() {
               ((prevInv.customerId && prevInv.customerId === c.id) ||
                 prevInv.customerName.trim() === c.name.trim());
             const matchesNext =
-              (inv.customerId && inv.customerId === c.id) ||
-              inv.customerName.trim() === c.name.trim();
+              inv.customerId !== 'CASH' &&
+              ((inv.customerId && inv.customerId === c.id) ||
+                inv.customerName.trim() === c.name.trim());
             if (!matchesPrev && !matchesNext) return c;
             const deltaH = (matchesNext ? nextUnpaidH : 0) - (matchesPrev ? prevUnpaidH : 0);
             return { ...c, debt: Math.max(0, fromHalalas(toHalalas(c.debt) + deltaH)) };
           });
+
+          const transitionedToActive = !prevActive && nextActive;
+          const isReturnDoc = inv.invoiceType === 'return';
+          const debtSign = isReturnDoc ? -1 : 1;
+          let nextMovements = [...p.stockMovements];
+          const updatedProducts =
+            transitionedToActive && inv.items?.length
+              ? p.products.map((pr) => {
+                  const sold = inv.items?.find((it) => it.productId === pr.id || it.productName === pr.name);
+                  if (!sold) return pr;
+                  const qtyDelta = isReturnDoc ? sold.qty : -sold.qty;
+                  nextMovements = [
+                    {
+                      id: nextSequentialId('MOV', 100, nextMovements.map((m) => m.id)),
+                      productId: pr.id,
+                      productName: pr.name,
+                      movementType: isReturnDoc ? 'return_in' : 'sale',
+                      qtyDelta,
+                      fromWarehouseId: inv.warehouseId ?? p.settings.defaultWarehouseId ?? p.warehouses[0]?.id,
+                      referenceId: editId,
+                      notes: `${inv.customerName}`,
+                      date: inv.date,
+                    },
+                    ...nextMovements,
+                  ];
+                  return { ...pr, qty: Math.max(0, pr.qty + qtyDelta) };
+                })
+              : p.products;
+
+          const targetBank =
+            (inv.paymentMethod === 'cash'
+              ? p.banks.find((b) => b.id === 'cash')
+              : p.banks.find((b) => b.id === 'alrajhi')) ??
+            p.banks.find((b) => b.id === 'cash') ??
+            p.banks[0];
+
+          const updatedBanks =
+            transitionedToActive && calc.paidAmount > 0 && targetBank
+              ? p.banks.map((b) =>
+                  b.id === targetBank.id
+                    ? { ...b, balance: fromHalalas(toHalalas(b.balance) + toHalalas(calc.paidAmount) * debtSign) }
+                    : b,
+                )
+              : p.banks;
+
+          const bankLabel = targetBank ? (p.settings.isArabic ? targetBank.nameAr : targetBank.nameEn) : 'Cash';
+          const lines = transitionedToActive
+            ? buildDoubleEntryForInvoice({
+                customerName: inv.customerName,
+                bankLabel,
+                baseTotal: calc.baseTotal,
+                baseSubtotal: calc.baseSubtotal,
+                baseVat: calc.baseVat,
+                paidAmountBase: calc.paidAmount,
+                remainingAmountBase: calc.remainingAmount,
+                status: inv.status,
+              })
+            : [];
+
+          const nextJournals =
+            lines.length > 0
+              ? [
+                  {
+                    id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
+                    reference: editId,
+                    description: p.settings.isArabic
+                      ? `اعتماد فاتورة مبيعات ${editId} - ${inv.customerName}`
+                      : `Finalized Sales Invoice ${editId} - ${inv.customerName}`,
+                    date: inv.date,
+                    lines: isReturnDoc
+                      ? lines.map((l) => ({ account: l.account, debit: l.credit, credit: l.debit }))
+                      : lines,
+                  },
+                  ...p.journals,
+                ]
+              : p.journals;
 
           return {
             ...p,
@@ -1525,6 +1745,10 @@ export function useErpStore() {
                 : x,
             ),
             customers: updatedCustomers,
+            products: updatedProducts,
+            banks: updatedBanks,
+            journals: nextJournals,
+            stockMovements: nextMovements,
             auditLogs: [
               makeAuditEntry(p, actorLabel, 'update', 'Invoice', editId, `تعديل فاتورة ${editId} (${inv.customerName})`),
               ...p.auditLogs,
@@ -1554,12 +1778,14 @@ export function useErpStore() {
           createdByRole: p.currentRole,
         };
 
+        const isDraftOrCancelled = inv.status === 'draft' || inv.status === 'cancelled';
         const isReturnDoc = inv.invoiceType === 'return';
         const isQuotationDoc = inv.invoiceType === 'quotation';
+        const shouldPost = !isDraftOrCancelled && !isQuotationDoc;
         const debtSign = isReturnDoc ? -1 : 1;
 
         const updatedCustomers =
-          !isQuotationDoc && calc.remainingAmount > 0
+          shouldPost && calc.remainingAmount > 0 && inv.customerId !== 'CASH'
             ? p.customers.map((c) =>
                 (targetCustomer && c.id === targetCustomer.id) || c.name.trim() === inv.customerName.trim()
                   ? { ...c, debt: Math.max(0, fromHalalas(toHalalas(c.debt) + toHalalas(calc.remainingAmount) * debtSign)) }
@@ -1569,7 +1795,7 @@ export function useErpStore() {
 
         let nextMovements = [...p.stockMovements];
         const updatedProducts =
-          !isQuotationDoc && inv.items?.length
+          shouldPost && inv.items?.length
             ? p.products.map((pr) => {
                 const sold = inv.items?.find((it) => it.productId === pr.id || it.productName === pr.name);
                 if (!sold) return pr;
@@ -1600,7 +1826,7 @@ export function useErpStore() {
           p.banks[0];
 
         const updatedBanks =
-          !isQuotationDoc && calc.paidAmount > 0 && targetBank
+          shouldPost && calc.paidAmount > 0 && targetBank
             ? p.banks.map((b) =>
                 b.id === targetBank.id
                   ? { ...b, balance: fromHalalas(toHalalas(b.balance) + toHalalas(calc.paidAmount) * debtSign) }
@@ -1609,7 +1835,7 @@ export function useErpStore() {
             : p.banks;
 
         const bankLabel = targetBank ? (p.settings.isArabic ? targetBank.nameAr : targetBank.nameEn) : 'Cash';
-        const lines = !isQuotationDoc
+        const lines = shouldPost
           ? buildDoubleEntryForInvoice({
               customerName: inv.customerName,
               bankLabel,
@@ -1654,7 +1880,7 @@ export function useErpStore() {
           ],
         };
       });
-      return { ok: true as const };
+      return { ok: true as const, invoiceId: predictedInvId, lowStockItems };
     },
 
     deleteInvoice: (id: string) => {
@@ -2050,33 +2276,58 @@ export function useErpStore() {
           };
         }
         const newId = nextSequentialId('RET', 400, p.returns.map((x) => x.id));
-        const newRet: ReturnRecord = { ...ret, id: newId };
+        const isApproved = ret.approved !== false;
+        const itemCondition = ret.itemCondition ?? 'good_restock';
+        const compMethod = ret.compensationMethod ?? 'account_credit';
+        const newRet: ReturnRecord = { ...ret, id: newId, approved: isApproved, itemCondition, compensationMethod: compMethod };
         const amtH = toHalalas(ret.amount);
+        const cleanAmt = fromHalalas(amtH);
 
         let nextMovements = [...p.stockMovements];
-        const updatedProducts = p.products.map((pr) => {
-          if (pr.id === ret.productId || pr.name === ret.productName) {
-            const delta = ret.type === 'sales' ? ret.qty : -ret.qty;
-            nextMovements = [
-              {
-                id: nextSequentialId('MOV', 100, nextMovements.map((m) => m.id)),
-                productId: pr.id,
-                productName: pr.name,
-                movementType: ret.type === 'sales' ? 'return_in' : 'return_out',
-                qtyDelta: delta,
-                referenceId: newId,
-                notes: ret.notes || ret.partyName,
-                date: ret.date,
-              },
-              ...nextMovements,
-            ];
-            return { ...pr, qty: Math.max(0, pr.qty + delta) };
-          }
-          return pr;
-        });
+        const updatedProducts = isApproved
+          ? p.products.map((pr) => {
+              if (pr.id === ret.productId || pr.name === ret.productName) {
+                const isScrapSalesReturn = ret.type === 'sales' && itemCondition === 'damaged_scrap';
+                const delta = isScrapSalesReturn ? 0 : ret.type === 'sales' ? ret.qty : -ret.qty;
+                nextMovements = [
+                  {
+                    id: nextSequentialId('MOV', 100, nextMovements.map((m) => m.id)),
+                    productId: pr.id,
+                    productName: pr.name,
+                    movementType: ret.type === 'sales' ? 'return_in' : 'return_out',
+                    qtyDelta: delta,
+                    fromWarehouseId: ret.warehouseId,
+                    referenceId: newId,
+                    notes: isScrapSalesReturn
+                      ? `${ret.notes || ret.partyName} [تالف - بدون إعادة للمخزون]`
+                      : ret.notes || ret.partyName,
+                    date: ret.date,
+                  },
+                  ...nextMovements,
+                ];
+                return { ...pr, qty: Math.max(0, pr.qty + delta) };
+              }
+              return pr;
+            })
+          : p.products;
+
+        const targetBank = p.banks.find((b) => b.id === 'cash') ?? p.banks[0];
+        const updatedBanks =
+          isApproved && compMethod === 'cash_refund' && targetBank
+            ? p.banks.map((b) =>
+                b.id === targetBank.id
+                  ? {
+                      ...b,
+                      balance: fromHalalas(
+                        toHalalas(b.balance) + (ret.type === 'sales' ? -amtH : amtH),
+                      ),
+                    }
+                  : b,
+              )
+            : p.banks;
 
         const updatedCustomers =
-          ret.type === 'sales'
+          isApproved && ret.type === 'sales' && compMethod === 'account_credit'
             ? p.customers.map((c) =>
                 c.name.trim() === ret.partyName.trim()
                   ? { ...c, debt: Math.max(0, fromHalalas(toHalalas(c.debt) - amtH)) }
@@ -2085,7 +2336,7 @@ export function useErpStore() {
             : p.customers;
 
         const updatedSuppliers =
-          ret.type === 'purchase'
+          isApproved && ret.type === 'purchase' && compMethod === 'account_credit'
             ? p.suppliers.map((s) =>
                 s.name.trim() === ret.partyName.trim()
                   ? { ...s, payable: Math.max(0, fromHalalas(toHalalas(s.payable) - amtH)) }
@@ -2093,34 +2344,54 @@ export function useErpStore() {
               )
             : p.suppliers;
 
-        const cleanAmt = fromHalalas(amtH);
-        const autoJournal: JournalEntry = {
-          id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
-          reference: newId,
-          description:
-            ret.type === 'sales'
-              ? `مرتجع مبيعات - ${ret.partyName} (${ret.productName})`
-              : `مرتجع مشتريات - ${ret.partyName} (${ret.productName})`,
-          date: ret.date,
-          lines:
-            ret.type === 'sales'
-              ? [
-                  { account: '4020 - مردودات ومسموحات المبيعات', debit: cleanAmt, credit: 0 },
-                  { account: `1020 - ذمم العملاء (${ret.partyName})`, debit: 0, credit: cleanAmt },
-                ]
-              : [
-                  { account: `2010 - ذمم الموردين (${ret.partyName})`, debit: cleanAmt, credit: 0 },
-                  { account: '5020 - مردودات المشتريات', debit: 0, credit: cleanAmt },
-                ],
-        };
+        const bankLabel = targetBank ? `1010 - ${p.settings.isArabic ? targetBank.nameAr : targetBank.nameEn}` : '1010 - الصندوق النقدي';
+        const salesCreditAccount =
+          compMethod === 'cash_refund'
+            ? bankLabel
+            : compMethod === 'replacement'
+            ? '1030 - مخزون الاستبدال'
+            : `1020 - ذمم العملاء (${ret.partyName})`;
+        const purchaseDebitAccount =
+          compMethod === 'cash_refund'
+            ? bankLabel
+            : compMethod === 'replacement'
+            ? '1030 - مخزون الاستبدال'
+            : `2010 - ذمم الموردين (${ret.partyName})`;
+
+        const nextJournals =
+          isApproved && cleanAmt > 0
+            ? [
+                {
+                  id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
+                  reference: newId,
+                  description:
+                    ret.type === 'sales'
+                      ? `مرتجع مبيعات - ${ret.partyName} (${ret.productName})`
+                      : `مرتجع مشتريات - ${ret.partyName} (${ret.productName})`,
+                  date: ret.date,
+                  lines:
+                    ret.type === 'sales'
+                      ? [
+                          { account: '4020 - مردودات ومسموحات المبيعات', debit: cleanAmt, credit: 0 },
+                          { account: salesCreditAccount, debit: 0, credit: cleanAmt },
+                        ]
+                      : [
+                          { account: purchaseDebitAccount, debit: cleanAmt, credit: 0 },
+                          { account: '5020 - مردودات المشتريات', debit: 0, credit: cleanAmt },
+                        ],
+                },
+                ...p.journals,
+              ]
+            : p.journals;
 
         return {
           ...p,
           returns: [newRet, ...p.returns],
           products: updatedProducts,
+          banks: updatedBanks,
           customers: updatedCustomers,
           suppliers: updatedSuppliers,
-          journals: [autoJournal, ...p.journals],
+          journals: nextJournals,
           stockMovements: nextMovements,
           auditLogs: [
             makeAuditEntry(p, actorLabel, 'create', 'Return', newId, `مرتجع ${ret.type} رقم ${newId} بقيمة ${cleanAmt}`),
@@ -2328,10 +2599,16 @@ export function useErpStore() {
       if (!guardFiscalOpen(nowIso)) return;
       setState((p) => {
         const rate = Math.max(0, Math.min(100, po.taxRate ?? p.settings.defaultPurchaseTaxRate ?? 15));
+        const itemsSubH = po.items?.length
+          ? po.items.reduce((acc, it) => acc + toHalalas(it.total), 0)
+          : Math.round(po.quantity * toHalalas(po.unitCost));
         const calc = computeInvoiceTotalsHalala({
-          subtotal: fromHalalas(Math.round(po.quantity * toHalalas(po.unitCost))),
+          subtotal: fromHalalas(itemsSubH),
+          discountTotal: po.discountTotal,
+          shippingFee: po.shippingFee,
           taxRate: rate,
           fxRate: 1,
+          paidAmount: po.paidAmount,
           status: 'pending',
         });
         const newId = nextSequentialId('PO', 300, p.purchaseOrders.map((x) => x.id));
@@ -2342,6 +2619,8 @@ export function useErpStore() {
               ...po,
               id: newId,
               subtotal: calc.subtotal,
+              discountTotal: calc.discountTotal,
+              shippingFee: calc.shippingFee,
               taxRate: rate,
               vat: calc.vat,
               total: calc.total,
@@ -2357,34 +2636,135 @@ export function useErpStore() {
         };
       });
     },
-    receivePurchaseOrder: (poId: string) => {
+    savePurchaseOrder: (
+      po: Omit<PurchaseOrder, 'id' | 'subtotal' | 'vat' | 'total'> & { status?: PurchaseOrder['status']; date?: string },
+      editId?: string,
+    ) => {
+      const docDate = po.date || new Date().toISOString();
+      if (!guardFiscalOpen(docDate)) return;
+      setState((p) => {
+        const rate = Math.max(0, Math.min(100, po.taxRate ?? p.settings.defaultPurchaseTaxRate ?? 15));
+        const itemsSubH = po.items?.length
+          ? po.items.reduce((acc, it) => acc + toHalalas(it.total), 0)
+          : Math.round(po.quantity * toHalalas(po.unitCost));
+        const calc = computeInvoiceTotalsHalala({
+          subtotal: fromHalalas(itemsSubH),
+          discountTotal: po.discountTotal,
+          shippingFee: po.shippingFee,
+          taxRate: rate,
+          fxRate: 1,
+          paidAmount: po.paidAmount,
+          status: 'pending',
+        });
+        const nextId = editId ?? nextSequentialId('PO', 300, p.purchaseOrders.map((x) => x.id));
+        const builtPo: PurchaseOrder = {
+          ...po,
+          id: nextId,
+          subtotal: calc.subtotal,
+          discountTotal: calc.discountTotal,
+          shippingFee: calc.shippingFee,
+          taxRate: rate,
+          vat: calc.vat,
+          total: calc.total,
+          status: po.status ?? 'ordered',
+          date: docDate,
+        };
+        return {
+          ...p,
+          purchaseOrders: editId
+            ? p.purchaseOrders.map((x) => (x.id === editId ? builtPo : x))
+            : [builtPo, ...p.purchaseOrders],
+          auditLogs: [
+            makeAuditEntry(p, actorLabel, editId ? 'update' : 'create', 'PurchaseOrder', nextId, `أمر شراء ${nextId} - ${po.supplierName}`),
+            ...p.auditLogs,
+          ],
+        };
+      });
+    },
+    updatePurchaseOrderStatus: (poId: string, nextStatus: PurchaseOrder['status']) => {
+      const target = latestStateRef.current.purchaseOrders.find((x) => x.id === poId);
+      if (!target || !guardFiscalOpen(target.date)) return;
+      setState((p) => ({
+        ...p,
+        purchaseOrders: p.purchaseOrders.map((po) =>
+          po.id === poId ? { ...po, status: nextStatus } : po,
+        ),
+        auditLogs: [
+          makeAuditEntry(p, actorLabel, 'update', 'PurchaseOrder', poId, `تغيير حالة أمر الشراء ${poId} إلى ${nextStatus}`),
+          ...p.auditLogs,
+        ],
+      }));
+    },
+    receivePurchaseOrder: (poId: string, receivedQtys?: Record<string, number>) => {
       const nowIso = new Date().toISOString();
       if (!guardFiscalOpen(nowIso)) return;
       setState((p) => {
         const target = p.purchaseOrders.find((x) => x.id === poId);
-        if (!target || target.status === 'received') return p;
-        const matched = p.products.some(
-          (pr) => pr.id === target.productId || pr.name === target.productName,
-        );
-        const updatedProducts = matched
-          ? p.products.map((pr) =>
-              pr.id === target.productId || pr.name === target.productName
-                ? { ...pr, qty: pr.qty + target.quantity, cost: target.unitCost }
-                : pr,
-            )
-          : [
-              {
-                id: nextSequentialId('P', 10, p.products.map((x) => x.id)),
-                name: target.productName,
-                sku: `SKU-${target.quantity}`,
-                barcode: generateEan13(),
-                qty: target.quantity,
-                cost: target.unitCost,
-                price: fromHalalas(Math.round(toHalalas(target.unitCost) * 1.25)),
-                warehouseId: target.warehouseId ?? p.warehouses[0]?.id,
-              },
-              ...p.products,
-            ];
+        if (!target || target.status === 'received' || target.status === 'cancelled') return p;
+
+        const linesToReceive =
+          target.items && target.items.length > 0
+            ? target.items.map((it) => ({
+                ...it,
+                receivedQty:
+                  receivedQtys?.[it.productId || it.productName] ?? it.receivedQty ?? it.qty,
+              }))
+            : [
+                {
+                  productId: target.productId,
+                  productName: target.productName,
+                  qty: target.quantity,
+                  receivedQty: receivedQtys?.[target.productId || target.productName] ?? target.quantity,
+                  unitPrice: target.unitCost,
+                  total: fromHalalas(Math.round(target.quantity * toHalalas(target.unitCost))),
+                },
+              ];
+
+        let updatedProducts = [...p.products];
+        let nextMovements = [...p.stockMovements];
+
+        for (const line of linesToReceive) {
+          const recQty = Math.max(0, line.receivedQty ?? line.qty);
+          if (recQty <= 0) continue;
+          const idx = updatedProducts.findIndex(
+            (pr) => (line.productId && pr.id === line.productId) || pr.name === line.productName,
+          );
+          if (idx >= 0) {
+            const existing = updatedProducts[idx];
+            updatedProducts[idx] = {
+              ...existing,
+              qty: existing.qty + recQty,
+              cost: line.unitPrice > 0 ? line.unitPrice : existing.cost,
+            };
+          } else {
+            const createdProd: Product = {
+              id: nextSequentialId('P', 10, updatedProducts.map((x) => x.id)),
+              name: line.productName,
+              sku: `SKU-${recQty}`,
+              barcode: generateEan13(),
+              qty: recQty,
+              cost: line.unitPrice,
+              price: fromHalalas(Math.round(toHalalas(line.unitPrice) * 1.25)),
+              warehouseId: target.warehouseId ?? p.warehouses[0]?.id,
+            };
+            updatedProducts = [createdProd, ...updatedProducts];
+          }
+          nextMovements = [
+            {
+              id: nextSequentialId('MOV', 100, nextMovements.map((m) => m.id)),
+              productId: line.productId || target.productId,
+              productName: line.productName,
+              movementType: 'purchase',
+              qtyDelta: recQty,
+              toWarehouseId: target.warehouseId ?? p.warehouses[0]?.id,
+              referenceId: target.id,
+              notes: target.supplierName,
+              date: nowIso,
+            },
+            ...nextMovements,
+          ];
+        }
+
         const poTotalH = toHalalas(target.total);
         const paidH = Math.min(poTotalH, Math.max(0, toHalalas(target.paidAmount ?? 0)));
         const remH = poTotalH - paidH;
@@ -2394,6 +2774,21 @@ export function useErpStore() {
             ? { ...s, payable: fromHalalas(toHalalas(s.payable) + remH) }
             : s,
         );
+
+        const targetBank =
+          (target.paymentMethod === 'cash'
+            ? p.banks.find((b) => b.id === 'cash')
+            : p.banks.find((b) => b.id === 'alrajhi')) ??
+          p.banks.find((b) => b.id === 'cash') ??
+          p.banks[0];
+        const updatedBanks =
+          paidH > 0 && targetBank
+            ? p.banks.map((b) =>
+                b.id === targetBank.id ? { ...b, balance: fromHalalas(toHalalas(b.balance) - paidH) } : b,
+              )
+            : p.banks;
+        const bankLabel = targetBank ? (p.settings.isArabic ? targetBank.nameAr : targetBank.nameEn) : 'الصندوق النقدي';
+
         const poSubH = toHalalas(target.subtotal ?? fromHalalas(Math.round(target.quantity * toHalalas(target.unitCost))));
         const poVatH = Math.max(0, poTotalH - poSubH);
         const autoJournal: JournalEntry = {
@@ -2406,30 +2801,28 @@ export function useErpStore() {
           lines: [
             { account: `1030 - المخزون (${target.productName})`, debit: fromHalalas(poSubH), credit: 0 },
             ...(poVatH > 0 ? [{ account: '1040 - ضريبة مدخلات المشتريات', debit: fromHalalas(poVatH), credit: 0 }] : []),
-            ...(paidH > 0 ? [{ account: '1010 - الصندوق النقدي', debit: 0, credit: fromHalalas(paidH) }] : []),
+            ...(paidH > 0 ? [{ account: `1010 - ${bankLabel}`, debit: 0, credit: fromHalalas(paidH) }] : []),
             ...(remH > 0 ? [{ account: `2010 - ذمم الموردين (${target.supplierName})`, debit: 0, credit: fromHalalas(remH) }] : []),
           ],
         };
-        const movement: StockMovement = {
-          id: nextSequentialId('MOV', 100, p.stockMovements.map((m) => m.id)),
-          productId: target.productId,
-          productName: target.productName,
-          movementType: 'purchase',
-          qtyDelta: target.quantity,
-          toWarehouseId: target.warehouseId ?? p.warehouses[0]?.id,
-          referenceId: target.id,
-          notes: target.supplierName,
-          date: nowIso,
-        };
         return {
           ...p,
-          purchaseOrders: p.purchaseOrders.map((x) => (x.id === poId ? { ...x, status: 'received' } : x)),
+          purchaseOrders: p.purchaseOrders.map((x) =>
+            x.id === poId
+              ? {
+                  ...x,
+                  status: 'received',
+                  items: target.items?.length ? linesToReceive : x.items,
+                }
+              : x,
+          ),
           products: updatedProducts,
           suppliers: updatedSuppliers,
+          banks: updatedBanks,
           journals: [autoJournal, ...p.journals],
-          stockMovements: [movement, ...p.stockMovements],
+          stockMovements: nextMovements,
           auditLogs: [
-            makeAuditEntry(p, actorLabel, 'receive', 'PurchaseOrder', poId, `استلام أمر شراء ${poId} (${target.productName} ×${target.quantity})`),
+            makeAuditEntry(p, actorLabel, 'receive', 'PurchaseOrder', poId, `استلام أمر شراء ${poId} (${target.supplierName})`),
             ...p.auditLogs,
           ],
         };
@@ -2447,29 +2840,114 @@ export function useErpStore() {
     saveVoucher: (v: Omit<Voucher, 'id'>, editId?: string) => {
       if (!guardFiscalOpen(v.date)) return;
       setState((p) => {
-        if (editId) {
-          return {
-            ...p,
-            vouchers: p.vouchers.map((x) => (x.id === editId ? { ...v, id: editId } : x)),
-            auditLogs: [makeAuditEntry(p, actorLabel, 'update', 'Voucher', editId, `تعديل سند ${editId}`), ...p.auditLogs],
-          };
-        }
-        const newId = nextSequentialId('VCH', 500, p.vouchers.map((x) => x.id));
         const cleanAmt = fromHalalas(toHalalas(v.amount));
         const amtH = toHalalas(cleanAmt);
-        const newV: Voucher = { ...v, id: newId, amount: cleanAmt };
-        const matchedBank = p.banks.find(
-          (b) =>
-            b.id === v.paymentMethod ||
-            b.nameEn.toLowerCase() === v.paymentMethod.trim().toLowerCase() ||
-            b.nameAr.trim() === v.paymentMethod.trim(),
-        );
-        const bankDeltaH = v.type === 'receipt' ? amtH : -amtH;
-        const updatedBanks = matchedBank
-          ? p.banks.map((b) =>
-              b.id === matchedBank.id ? { ...b, balance: fromHalalas(toHalalas(b.balance) + bankDeltaH) } : b,
-            )
-          : p.banks;
+        const nextStatus = v.status ?? 'approved';
+        const matchedBank =
+          (v.bankId ? p.banks.find((b) => b.id === v.bankId) : undefined) ??
+          p.banks.find(
+            (b) =>
+              b.id === v.paymentMethod ||
+              b.nameEn.toLowerCase() === v.paymentMethod.trim().toLowerCase() ||
+              b.nameAr.trim() === v.paymentMethod.trim(),
+          ) ??
+          (v.paymentMethod === 'cash' ? p.banks.find((b) => b.id === 'cash') : undefined);
+
+        if (editId) {
+          const prevV = p.vouchers.find((x) => x.id === editId);
+          const wasDraft = prevV?.status === 'draft';
+          const shouldPostOnEdit = wasDraft && nextStatus === 'approved' && amtH > 0;
+          if (!shouldPostOnEdit) {
+            return {
+              ...p,
+              vouchers: p.vouchers.map((x) => (x.id === editId ? { ...v, id: editId, amount: cleanAmt, status: nextStatus } : x)),
+              auditLogs: [makeAuditEntry(p, actorLabel, 'update', 'Voucher', editId, `تعديل سند ${editId}`), ...p.auditLogs],
+            };
+          }
+          const bankDeltaH = v.type === 'receipt' ? amtH : v.type === 'payment' ? -amtH : 0;
+          const updatedBanks =
+            matchedBank && bankDeltaH !== 0
+              ? p.banks.map((b) =>
+                  b.id === matchedBank.id ? { ...b, balance: fromHalalas(toHalalas(b.balance) + bankDeltaH) } : b,
+                )
+              : p.banks;
+          const updatedCustomers =
+            v.type === 'receipt'
+              ? p.customers.map((c) =>
+                  c.name.trim() === v.partyName.trim()
+                    ? { ...c, debt: Math.max(0, fromHalalas(toHalalas(c.debt) - amtH)) }
+                    : c,
+                )
+              : p.customers;
+          const updatedSuppliers =
+            v.type === 'payment'
+              ? p.suppliers.map((s) =>
+                  s.name.trim() === v.partyName.trim()
+                    ? { ...s, payable: Math.max(0, fromHalalas(toHalalas(s.payable) - amtH)) }
+                    : s,
+                )
+              : p.suppliers;
+          const bankLabel = matchedBank
+            ? `1010 - ${p.settings.isArabic ? matchedBank.nameAr : matchedBank.nameEn}`
+            : `1010 - ${v.paymentMethod || 'Cash'}`;
+          const autoJournal: JournalEntry = {
+            id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
+            reference: editId,
+            description:
+              v.type === 'receipt'
+                ? p.settings.isArabic
+                  ? `اعتماد سند قبض ${editId} - ${v.partyName}`
+                  : `Approved Receipt ${editId} - ${v.partyName}`
+                : v.type === 'payment'
+                ? p.settings.isArabic
+                  ? `اعتماد سند صرف ${editId} - ${v.partyName}`
+                  : `Approved Payment ${editId} - ${v.partyName}`
+                : `${p.settings.isArabic ? 'قيد سند' : 'Journal Voucher'} ${editId} - ${v.reason}`,
+            date: v.date,
+            lines:
+              v.type === 'receipt'
+                ? [
+                    { account: bankLabel, debit: cleanAmt, credit: 0 },
+                    { account: v.fromAccount || `1020 - ذمم العملاء (${v.partyName})`, debit: 0, credit: cleanAmt },
+                  ]
+                : v.type === 'payment'
+                ? [
+                    { account: v.toAccount || `2010 - ذمم الموردين (${v.partyName})`, debit: cleanAmt, credit: 0 },
+                    { account: bankLabel, debit: 0, credit: cleanAmt },
+                  ]
+                : [
+                    { account: v.toAccount || bankLabel, debit: cleanAmt, credit: 0 },
+                    { account: v.fromAccount || `1020 - ${v.partyName || 'تسوية'}`, debit: 0, credit: cleanAmt },
+                  ],
+          };
+          return {
+            ...p,
+            vouchers: p.vouchers.map((x) => (x.id === editId ? { ...v, id: editId, amount: cleanAmt, status: nextStatus } : x)),
+            customers: updatedCustomers,
+            suppliers: updatedSuppliers,
+            banks: updatedBanks,
+            journals: [autoJournal, ...p.journals],
+            auditLogs: [makeAuditEntry(p, actorLabel, 'update', 'Voucher', editId, `اعتماد سند ${editId}`), ...p.auditLogs],
+          };
+        }
+
+        const newId = nextSequentialId('VCH', 500, p.vouchers.map((x) => x.id));
+        const newV: Voucher = { ...v, id: newId, amount: cleanAmt, status: nextStatus };
+        if (nextStatus === 'draft') {
+          return {
+            ...p,
+            vouchers: [newV, ...p.vouchers],
+            auditLogs: [makeAuditEntry(p, actorLabel, 'create', 'Voucher', newId, `مسودة سند ${newId} بمبلغ ${cleanAmt}`), ...p.auditLogs],
+          };
+        }
+
+        const bankDeltaH = v.type === 'receipt' ? amtH : v.type === 'payment' ? -amtH : 0;
+        const updatedBanks =
+          matchedBank && bankDeltaH !== 0
+            ? p.banks.map((b) =>
+                b.id === matchedBank.id ? { ...b, balance: fromHalalas(toHalalas(b.balance) + bankDeltaH) } : b,
+              )
+            : p.banks;
         const updatedCustomers =
           v.type === 'receipt'
             ? p.customers.map((c) =>
@@ -2497,19 +2975,26 @@ export function useErpStore() {
               ? p.settings.isArabic
                 ? `سند قبض ${newId} - ${v.partyName}`
                 : `Receipt ${newId} - ${v.partyName}`
-              : p.settings.isArabic
-              ? `سند صرف ${newId} - ${v.partyName}`
-              : `Payment ${newId} - ${v.partyName}`,
+              : v.type === 'payment'
+              ? p.settings.isArabic
+                ? `سند صرف ${newId} - ${v.partyName}`
+                : `Payment ${newId} - ${v.partyName}`
+              : `${p.settings.isArabic ? 'قيد سند' : 'Journal Voucher'} ${newId} - ${v.reason}`,
           date: v.date,
           lines:
             v.type === 'receipt'
               ? [
                   { account: bankLabel, debit: cleanAmt, credit: 0 },
-                  { account: `1020 - ذمم العملاء (${v.partyName})`, debit: 0, credit: cleanAmt },
+                  { account: v.fromAccount || `1020 - ذمم العملاء (${v.partyName})`, debit: 0, credit: cleanAmt },
+                ]
+              : v.type === 'payment'
+              ? [
+                  { account: v.toAccount || `2010 - ذمم الموردين (${v.partyName})`, debit: cleanAmt, credit: 0 },
+                  { account: bankLabel, debit: 0, credit: cleanAmt },
                 ]
               : [
-                  { account: `2010 - ذمم الموردين (${v.partyName})`, debit: cleanAmt, credit: 0 },
-                  { account: bankLabel, debit: 0, credit: cleanAmt },
+                  { account: v.toAccount || bankLabel, debit: cleanAmt, credit: 0 },
+                  { account: v.fromAccount || `1020 - ${v.partyName || 'تسوية'}`, debit: 0, credit: cleanAmt },
                 ],
         };
         return {
@@ -2520,7 +3005,14 @@ export function useErpStore() {
           banks: updatedBanks,
           journals: [autoJournal, ...p.journals],
           auditLogs: [
-            makeAuditEntry(p, actorLabel, 'create', 'Voucher', newId, `سند ${v.type === 'receipt' ? 'قبض' : 'صرف'} ${newId} بمبلغ ${cleanAmt}`),
+            makeAuditEntry(
+              p,
+              actorLabel,
+              'create',
+              'Voucher',
+              newId,
+              `سند ${v.type === 'receipt' ? 'قبض' : v.type === 'payment' ? 'صرف' : 'قيد'} ${newId} بمبلغ ${cleanAmt}`,
+            ),
             ...p.auditLogs,
           ],
         };
@@ -2536,7 +3028,14 @@ export function useErpStore() {
     },
 
     saveJournal: (j: Omit<JournalEntry, 'id'>, editId?: string) => {
-      if (!guardFiscalOpen(j.date)) return;
+      if (!guardFiscalOpen(j.date)) return { ok: false as const };
+      const debitH = j.lines.reduce((sum, l) => sum + toHalalas(l.debit), 0);
+      const creditH = j.lines.reduce((sum, l) => sum + toHalalas(l.credit), 0);
+      if (j.lines.length < 2 || debitH <= 0 || debitH !== creditH) {
+        const isArNow = latestStateRef.current.settings.isArabic;
+        notify(strings[isArNow ? 'ar' : 'en'].unbalancedError);
+        return { ok: false as const };
+      }
       setState((p) => {
         const nextId = editId ?? nextSequentialId('JRN', 700, p.journals.map((x) => x.id));
         return {
@@ -2550,6 +3049,7 @@ export function useErpStore() {
           ],
         };
       });
+      return { ok: true as const };
     },
     deleteJournal: (id: string) => {
       if (!guardDeleteAllowed()) return;
@@ -2625,6 +3125,7 @@ export function useErpStore() {
       toWarehouseId: string,
       qty: number,
       notes: string,
+      dateIso?: string,
     ) => {
       if (!productId || !fromWarehouseId || !toWarehouseId || fromWarehouseId === toWarehouseId || qty <= 0) {
         return false;
@@ -2632,7 +3133,7 @@ export function useErpStore() {
       setState((p) => {
         const prod = p.products.find((x) => x.id === productId);
         if (!prod) return p;
-        const nowIso = new Date().toISOString();
+        const nowIso = dateIso || new Date().toISOString();
         const mov: StockMovement = {
           id: nextSequentialId('MOV', 100, p.stockMovements.map((m) => m.id)),
           productId: prod.id,
@@ -2642,6 +3143,7 @@ export function useErpStore() {
           fromWarehouseId,
           toWarehouseId,
           referenceId: `TRF-${Date.now().toString(36).slice(-4).toUpperCase()}`,
+          reason: notes || undefined,
           notes: notes || `تحويل ${qty} وحدة`,
           date: nowIso,
         };
@@ -2658,7 +3160,14 @@ export function useErpStore() {
       return true;
     },
 
-    recordStocktake: (warehouseId: string, productId: string, actualQty: number, notes: string) => {
+    recordStocktake: (
+      warehouseId: string,
+      productId: string,
+      actualQty: number,
+      notes: string,
+      countedBy?: string,
+      reason?: string,
+    ) => {
       const nowIso = new Date().toISOString();
       if (!guardFiscalOpen(nowIso)) return false;
       setState((p) => {
@@ -2679,6 +3188,8 @@ export function useErpStore() {
           actualQty,
           varianceQty,
           varianceValue,
+          countedBy: countedBy || actorLabel,
+          reason: reason || undefined,
           notes: notes || (p.settings.isArabic ? 'تسوية جرد فعلي' : 'Physical stocktake adjustment'),
           date: nowIso,
         };
@@ -2690,6 +3201,7 @@ export function useErpStore() {
           qtyDelta: varianceQty,
           toWarehouseId: warehouseId,
           referenceId: stkId,
+          reason: reason || undefined,
           notes: `System ${prod.qty} -> Actual ${actualQty}`,
           date: nowIso,
         };
@@ -3087,6 +3599,60 @@ export function useErpStore() {
       }));
     },
     restoreDemoData: () => setState((p) => createDemoState(p.settings)),
+
+    holdPosCart: (cart: Omit<PosHeldCart, 'id' | 'createdAt'>) => {
+      const id = `HOLD-${Date.now().toString(36).toUpperCase()}`;
+      const created: PosHeldCart = { ...cart, id, createdAt: new Date().toISOString() };
+      setPosRegister((prev) => ({
+        ...prev,
+        heldCarts: [created, ...prev.heldCarts],
+      }));
+      return created;
+    },
+    recallPosCart: (id: string) => {
+      const found = posRegister.heldCarts.find((c) => c.id === id) ?? null;
+      if (found) {
+        setPosRegister((prev) => ({
+          ...prev,
+          heldCarts: prev.heldCarts.filter((c) => c.id !== id),
+        }));
+      }
+      return found;
+    },
+    deleteHeldPosCart: (id: string) => {
+      setPosRegister((prev) => ({
+        ...prev,
+        heldCarts: prev.heldCarts.filter((c) => c.id !== id),
+      }));
+    },
+    openPosShift: (cashierName: string, branchId: string, openingCash: number) => {
+      const session: PosShiftSession = {
+        id: `SHF-${Date.now().toString(36).toUpperCase()}`,
+        isOpen: true,
+        cashierName,
+        branchId,
+        openedAt: new Date().toISOString(),
+        openingCash: Math.max(0, fromHalalas(toHalalas(openingCash))),
+      };
+      setPosRegister((prev) => ({ ...prev, shift: session }));
+      return session;
+    },
+    closePosShift: (actualClosingCash: number, notes?: string) => {
+      setPosRegister((prev) =>
+        prev.shift
+          ? {
+              ...prev,
+              shift: {
+                ...prev.shift,
+                isOpen: false,
+                closedAt: new Date().toISOString(),
+                actualClosingCash: Math.max(0, fromHalalas(toHalalas(actualClosingCash))),
+                notes,
+              },
+            }
+          : prev,
+      );
+    },
   };
 
   return {
@@ -3098,5 +3664,7 @@ export function useErpStore() {
     toastMsg,
     idbSnapshots,
     cloudBackups,
+    posHeldCarts: posRegister.heldCarts,
+    posShift: posRegister.shift,
   };
 }

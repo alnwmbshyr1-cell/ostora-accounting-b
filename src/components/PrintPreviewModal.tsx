@@ -198,6 +198,12 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                     {invoice.shiftName && (
                       <span className="px-2 py-0.5 rounded bg-slate-100">{invoice.shiftName}</span>
                     )}
+                    {invoice.invoiceDocKind && (
+                      <span className="px-2 py-0.5 rounded bg-emerald-50 text-[#0A3D2C] font-bold uppercase">{invoice.invoiceDocKind}</span>
+                    )}
+                    {invoice.referenceNumber && (
+                      <span className="px-2 py-0.5 rounded bg-slate-100 font-mono">{isAr ? 'مرجع:' : 'Ref:'} {invoice.referenceNumber}</span>
+                    )}
                   </div>
                 </div>
                 <div className="flex flex-col items-center gap-1.5">
@@ -294,11 +300,25 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                       <tbody>
                         {invoice.items && invoice.items.length > 0 ? (
                           invoice.items.map((it, idx) => {
-                            const itemVat = (it.total * effRate) / 100;
+                            const lineRate = it.taxRate ?? effRate;
+                            const itemVat = it.taxAmount ?? (it.total * lineRate) / 100;
                             return (
                               <tr key={idx} className="border-b border-slate-200">
                                 <td className="p-3">
-                                  {it.productName} × {it.qty}
+                                  <div className="font-semibold">
+                                    {it.productName} × {it.qty}
+                                    {it.unit ? <span className="text-[11px] text-slate-500 ms-1">({it.unit})</span> : null}
+                                  </div>
+                                  {it.description && (
+                                    <p className="text-[11px] text-slate-500 mt-0.5">{it.description}</p>
+                                  )}
+                                  {((it.discountPercent ?? 0) > 0 || (it.discountAmount ?? 0) > 0) && (
+                                    <p className="text-[10px] text-amber-700 font-mono">
+                                      {isAr ? 'خصم:' : 'Disc:'}{' '}
+                                      {it.discountPercent ? `${it.discountPercent}% ` : ''}
+                                      {it.discountAmount ? `(-${it.discountAmount.toFixed(2)})` : ''}
+                                    </p>
+                                  )}
                                 </td>
                                 <td className="p-3 text-end font-mono tabular-nums">{it.total.toFixed(2)}</td>
                                 <td className="p-3 text-end font-mono tabular-nums">

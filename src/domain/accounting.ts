@@ -72,13 +72,16 @@ export function computeInvoiceTotalsHalala(params: {
   let paidBaseH = 0;
   if (params.status === 'paid') {
     paidBaseH = baseTotalH;
-  } else if (params.status === 'cancelled') {
+  } else if (params.status === 'cancelled' || params.status === 'draft') {
     paidBaseH = 0;
   } else {
     const rawPaidH = Math.max(0, mulFxHalalas(toHalalas(params.paidAmount ?? 0), params.fxRate));
     paidBaseH = Math.min(baseTotalH, rawPaidH);
   }
-  const remainingBaseH = params.status === 'cancelled' ? 0 : Math.max(0, baseTotalH - paidBaseH);
+  const remainingBaseH =
+    params.status === 'cancelled' || params.status === 'draft'
+      ? 0
+      : Math.max(0, baseTotalH - paidBaseH);
 
   return {
     subtotal: fromHalalas(subtotalH),
@@ -105,7 +108,7 @@ export function buildDoubleEntryForInvoice(params: {
   remainingAmountBase: number;
   status: Invoice['status'];
 }): JournalLine[] {
-  if (params.status === 'cancelled') return [];
+  if (params.status === 'cancelled' || params.status === 'draft') return [];
   const totalH = toHalalas(params.baseTotal);
   const subH = toHalalas(params.baseSubtotal);
   const vatH = Math.max(0, totalH - subH);
@@ -217,6 +220,7 @@ export function computeTrialBalanceFromJournals(journals: JournalEntry[]): {
 } {
   const map = new Map<string, { debitH: number; creditH: number }>();
   for (const j of journals) {
+    if (j.status === 'draft') continue;
     for (const l of j.lines) {
       const key = l.account.trim();
       const prev = map.get(key) ?? { debitH: 0, creditH: 0 };
@@ -279,7 +283,7 @@ export function computeProfitAnalytics(state: PersistedState): {
   const byInvoice: ProfitBreakdownRow[] = [];
 
   for (const inv of state.invoices) {
-    if (inv.status === 'cancelled' || inv.invoiceType === 'quotation') continue;
+    if (inv.status === 'cancelled' || inv.status === 'draft' || inv.invoiceType === 'quotation') continue;
     const fx = inv.exchangeRate ?? 1;
     const revH = mulFxHalalas(toHalalas(inv.subtotal), fx);
     let invCostH = 0;

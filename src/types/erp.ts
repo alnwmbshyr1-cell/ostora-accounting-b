@@ -1,19 +1,21 @@
-export type InvoiceStatus = 'paid' | 'partial' | 'pending' | 'overdue' | 'cancelled';
+export type InvoiceStatus = 'draft' | 'paid' | 'partial' | 'pending' | 'overdue' | 'cancelled';
 export type InvoiceDocType = 'sales' | 'return' | 'quotation';
+export type InvoiceDocKind = 'cash' | 'credit' | 'tax' | 'simplified';
 export type PaymentMethodType =
   | 'cash'
   | 'credit'
   | 'pos_card'
   | 'transfer'
   | 'cheque'
-  | 'installment';
-export type UnitOfMeasure = 'piece' | 'carton' | 'kg' | 'meter';
-export type CustomerType = 'individual' | 'company' | 'VIP' | 'wholesale' | 'retail';
-export type SupplierType = 'primary' | 'secondary' | 'manufacturer' | 'importer';
-export type PartyStatus = 'active' | 'paused' | 'blocked';
+  | 'installment'
+  | 'apple_pay';
+export type UnitOfMeasure = 'piece' | 'carton' | 'kg' | 'meter' | 'liter' | 'box';
+export type CustomerType = 'individual' | 'company' | 'VIP' | 'wholesale' | 'retail' | 'distributor';
+export type SupplierType = 'primary' | 'secondary' | 'manufacturer' | 'importer' | 'local' | 'distributor' | 'services';
+export type PartyStatus = 'active' | 'paused' | 'blocked' | 'potential';
 export type AccountCategory = 'assets' | 'liabilities' | 'equity' | 'revenue' | 'expenses';
-export type VoucherType = 'receipt' | 'payment';
-export type PurchaseOrderStatus = 'ordered' | 'received';
+export type VoucherType = 'receipt' | 'payment' | 'journal';
+export type PurchaseOrderStatus = 'draft' | 'approved' | 'ordered' | 'received' | 'cancelled';
 export type CurrencyCode =
   | 'SAR'
   | 'YER'
@@ -30,7 +32,7 @@ export type CurrencyCode =
   | 'TRY';
 export type RoleId = 'owner' | 'accountant' | 'cashier' | 'salesman' | 'warehouse';
 export type ReturnType = 'sales' | 'purchase';
-export type ReturnReason = 'damaged' | 'wrong_item' | 'expired' | 'changed_mind' | 'other';
+export type ReturnReason = 'damaged' | 'wrong_item' | 'expired' | 'not_matching' | 'changed_mind' | 'other';
 export type QuotationStatus = 'draft' | 'sent' | 'accepted' | 'rejected' | 'expired';
 export type RecurringFrequency = 'weekly' | 'monthly' | 'quarterly' | 'yearly';
 export type ArchivedDocumentType =
@@ -39,6 +41,7 @@ export type ArchivedDocumentType =
   | 'tax_cert'
   | 'id_doc'
   | 'invoice_scan'
+  | 'cr_doc'
   | 'other';
 
 export type RouteId =
@@ -79,6 +82,9 @@ export interface LineItem {
   imageBase64?: string;
   category?: string;
   unit?: UnitOfMeasure;
+  description?: string;
+  receivedQty?: number;
+  availableStock?: number;
   costPrice?: number;
   wholesalePrice?: number;
   discountPercent?: number;
@@ -114,6 +120,7 @@ export interface Invoice {
   status: InvoiceStatus;
   date: string;
   invoiceType?: InvoiceDocType;
+  invoiceDocKind?: InvoiceDocKind;
   dueDate?: string;
   branchId?: string;
   branchName?: string;
@@ -122,6 +129,8 @@ export interface Invoice {
   salespersonName?: string;
   shiftName?: string;
   paymentMethod?: PaymentMethodType;
+  referenceNumber?: string;
+  invoiceDiscountPercent?: number;
   discountTotal?: number;
   shippingFee?: number;
   extraFee?: number;
@@ -149,6 +158,12 @@ export interface ReturnRecord {
   reason: ReturnReason;
   notes: string;
   date: string;
+  warehouseId?: string;
+  branchId?: string;
+  itemCondition?: 'good_restock' | 'damaged_scrap';
+  compensationMethod?: 'cash_refund' | 'replacement' | 'account_credit';
+  approved?: boolean;
+  photoBase64?: string;
 }
 
 export interface Quotation {
@@ -164,6 +179,11 @@ export interface Quotation {
   vat: number;
   total: number;
   validUntil: string;
+  validityDays?: number;
+  branchId?: string;
+  salespersonName?: string;
+  currency?: CurrencyCode;
+  terms?: string;
   status: QuotationStatus;
   notes: string;
   date: string;
@@ -180,18 +200,35 @@ export interface Customer {
   companyName?: string;
   photoBase64?: string;
   whatsapp?: string;
+  landline?: string;
+  website?: string;
   address?: string;
+  district?: string;
   city?: string;
   country?: string;
   mapUrl?: string;
+  gpsCoords?: string;
   customerType?: CustomerType;
   taxNumber?: string;
+  taxStatus?: 'taxable' | 'exempt';
   nationalId?: string;
+  crNumber?: string;
   birthDate?: string;
+  openingBalanceDebit?: number;
+  openingBalanceCredit?: number;
   creditTermDays?: number;
   preferredPaymentMethod?: PaymentMethodType;
+  priceList?: string;
+  specialDiscountPercent?: number;
+  currency?: CurrencyCode;
+  iban?: string;
   salesRep?: string;
   branchId?: string;
+  leadSource?: string;
+  firstDealDate?: string;
+  rating?: 'A' | 'B' | 'C';
+  reminderDate?: string;
+  attachmentBase64?: string;
   status?: PartyStatus;
   notes?: string;
   callLogs?: string;
@@ -207,20 +244,33 @@ export interface Supplier {
   payable: number;
   code?: string;
   companyName?: string;
+  contactPerson?: string;
   photoBase64?: string;
   whatsapp?: string;
   email?: string;
   address?: string;
   city?: string;
   country?: string;
+  mapUrl?: string;
   supplierType?: SupplierType;
   taxNumber?: string;
   crNumber?: string;
   bankAccount?: string;
   bankName?: string;
+  iban?: string;
+  openingBalance?: number;
   creditLimit?: number;
   paymentTermDays?: number;
   preferredPaymentMethod?: PaymentMethodType;
+  currency?: CurrencyCode;
+  supplyTerms?: string;
+  supplierDiscountPercent?: number;
+  leadTimeDays?: number;
+  suppliedItems?: string;
+  lastPurchasePrice?: number;
+  qualityRating?: number;
+  speedRating?: number;
+  attachmentBase64?: string;
   branchId?: string;
   repName?: string;
   status?: PartyStatus;
@@ -239,17 +289,23 @@ export interface PurchaseOrder {
   productName: string;
   quantity: number;
   unitCost: number;
+  items?: LineItem[];
   subtotal?: number;
+  discountTotal?: number;
+  shippingFee?: number;
   taxRate?: number;
   vat?: number;
   total: number;
   status: PurchaseOrderStatus;
   date: string;
+  expectedDeliveryDate?: string;
+  paymentTermDays?: number;
   branchId?: string;
   warehouseId?: string;
   paymentMethod?: PaymentMethodType;
   notes?: string;
   paidAmount?: number;
+  supplierInvoiceBase64?: string;
 }
 
 export interface Voucher {
@@ -261,12 +317,22 @@ export interface Voucher {
   reason: string;
   paymentMethod: string;
   date: string;
+  fromAccount?: string;
+  toAccount?: string;
+  partyType?: 'customer' | 'supplier' | 'employee';
+  branchId?: string;
+  bankId?: string;
+  chequeNumber?: string;
+  chequeDueDate?: string;
+  attachmentBase64?: string;
+  status?: 'draft' | 'approved';
 }
 
 export interface JournalLine {
   account: string;
   debit: number;
   credit: number;
+  description?: string;
 }
 
 export interface JournalEntry {
@@ -275,36 +341,65 @@ export interface JournalEntry {
   description: string;
   date: string;
   lines: JournalLine[];
+  entryType?: 'manual' | 'auto';
+  branchId?: string;
+  costCenter?: string;
+  status?: 'draft' | 'approved';
+  attachmentBase64?: string;
 }
 
 export interface Product {
   id: string;
   name: string;
+  nameEn?: string;
+  description?: string;
   sku: string;
   barcode: string;
   imageBase64?: string;
   qty: number;
+  openingQty?: number;
   cost: number;
   price: number;
+  retailPrice?: number;
+  vipPrice?: number;
+  minPrice?: number;
   category?: string;
+  brand?: string;
   unit?: UnitOfMeasure;
+  subUnit?: string;
+  subUnitFactor?: number;
   wholesalePrice?: number;
+  isTaxable?: boolean;
   taxRate?: number;
   minStock?: number;
   maxStock?: number;
+  shelfLocation?: string;
   expiryDate?: string;
+  batchNumber?: string;
+  serialNumber?: string;
+  status?: 'active' | 'paused' | 'service';
   supplierId?: string;
+  branchId?: string;
   warehouseId?: string;
 }
 
 export interface Employee {
   id: string;
+  code?: string;
   name: string;
   roleTitle: string;
+  department?: string;
   role: RoleId;
   permissions: RouteId[];
   phone: string;
+  email?: string;
+  nationalId?: string;
+  branchId?: string;
+  hireDate?: string;
   salary: number;
+  bankAccount?: string;
+  status?: 'active' | 'on_leave' | 'terminated';
+  notes?: string;
   lastPaidDate?: string;
 }
 
@@ -340,11 +435,15 @@ export interface Branch {
 
 export interface Warehouse {
   id: string;
+  code?: string;
   nameAr: string;
   nameEn: string;
   branchId: string;
+  city?: string;
+  address?: string;
   location: string;
   managerName: string;
+  warehouseType?: 'main' | 'sub';
   active: boolean;
 }
 
@@ -357,6 +456,7 @@ export interface StockMovement {
   fromWarehouseId?: string;
   toWarehouseId?: string;
   referenceId: string;
+  reason?: string;
   notes: string;
   date: string;
 }
@@ -371,6 +471,8 @@ export interface StocktakeRecord {
   actualQty: number;
   varianceQty: number;
   varianceValue: number;
+  countedBy?: string;
+  reason?: string;
   notes: string;
   date: string;
 }
@@ -382,6 +484,13 @@ export interface ChartAccount {
   nameEn: string;
   category: AccountCategory;
   parentCode?: string;
+  level?: number;
+  normalBalance?: 'debit' | 'credit';
+  openingBalance?: number;
+  costCenter?: string;
+  branchId?: string;
+  allowPosting?: boolean;
+  notes?: string;
   isSystem?: boolean;
 }
 
@@ -435,6 +544,7 @@ export interface SmartAlert {
 
 export interface RecurringInvoice {
   id: string;
+  templateName?: string;
   customerId: string;
   customerName: string;
   customerPhone: string;
@@ -444,10 +554,17 @@ export interface RecurringInvoice {
   taxRate: number;
   currency: CurrencyCode;
   frequency: RecurringFrequency;
+  startDate?: string;
+  endDate?: string;
+  maxOccurrences?: number;
+  issueDay?: number;
   nextRunDate: string;
   lastGeneratedDate?: string;
   targetStatus: InvoiceStatus;
   autoGenerate: boolean;
+  autoSendWhatsApp?: boolean;
+  autoSendEmail?: boolean;
+  notifyDaysBefore?: number;
   active: boolean;
   generatedCount: number;
   notes: string;
@@ -458,12 +575,14 @@ export interface ArchivedDocument {
   id: string;
   title: string;
   docType: ArchivedDocumentType;
+  partyType?: 'customer' | 'supplier' | 'employee';
   partyName: string;
   referenceId: string;
   fileName: string;
   fileType: string;
   fileSizeBytes: number;
   fileDataBase64?: string;
+  expiryDate?: string;
   notes: string;
   date: string;
 }
@@ -474,6 +593,39 @@ export interface CloudBackupMeta {
   createdAt: string;
   recordCount: number;
   sizeBytes: number;
+}
+
+export interface PosHeldCart {
+  id: string;
+  label: string;
+  createdAt: string;
+  customerId: string;
+  branchId: string;
+  warehouseId: string;
+  paymentMethod: PaymentMethodType;
+  discountPercent: number;
+  items: {
+    productId: string;
+    name: string;
+    price: number;
+    qty: number;
+    unit: UnitOfMeasure;
+    costPrice?: number;
+    barcode?: string;
+    taxRate?: number;
+  }[];
+}
+
+export interface PosShiftSession {
+  id: string;
+  isOpen: boolean;
+  cashierName: string;
+  branchId: string;
+  openedAt: string;
+  closedAt?: string;
+  openingCash: number;
+  actualClosingCash?: number;
+  notes?: string;
 }
 
 export type BatchPrintItem =

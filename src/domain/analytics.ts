@@ -31,7 +31,7 @@ export function computeDashboardTodayKpis(state: PersistedState): DashboardToday
   const prodTotals = new Map<string, { name: string; qty: number; revH: number }>();
 
   for (const inv of state.invoices) {
-    if (inv.status === 'cancelled' || inv.invoiceType === 'quotation') continue;
+    if (inv.status === 'cancelled' || inv.status === 'draft' || inv.invoiceType === 'quotation') continue;
     const fx = inv.exchangeRate ?? 1;
     const baseTotalH = mulFxHalalas(toHalalas(inv.total), fx);
     const baseSubH = mulFxHalalas(toHalalas(inv.subtotal), fx);
@@ -115,7 +115,7 @@ export function computeMonthlySummaryRich(state: PersistedState): MonthlySummary
   const prodStats = new Map<string, { qty: number; revH: number }>();
 
   for (const inv of state.invoices) {
-    if (inv.status === 'cancelled' || inv.invoiceType === 'quotation') continue;
+    if (inv.status === 'cancelled' || inv.status === 'draft' || inv.invoiceType === 'quotation') continue;
     if (inv.date.slice(0, 7) !== ym) continue;
     invoiceCount += 1;
     const fx = inv.exchangeRate ?? 1;
@@ -202,7 +202,7 @@ export function computeAdvancedInsights(state: PersistedState): AnalyticsInsight
   for (const k of last3Keys) monthRevMap.set(k, 0);
 
   for (const inv of state.invoices) {
-    if (inv.status === 'cancelled' || inv.invoiceType === 'quotation') continue;
+    if (inv.status === 'cancelled' || inv.status === 'draft' || inv.invoiceType === 'quotation') continue;
     const mk = inv.date.slice(0, 7);
     if (monthRevMap.has(mk)) {
       const fx = inv.exchangeRate ?? 1;
@@ -230,7 +230,7 @@ export function computeAdvancedInsights(state: PersistedState): AnalyticsInsight
         (inv) =>
           (inv.customerId === c.id || inv.customerName === c.name) &&
           (inv.status === 'overdue' ||
-            (inv.dueDate && inv.dueDate < now.toISOString().slice(0, 10) && inv.status !== 'paid' && inv.status !== 'cancelled')),
+            (inv.dueDate && inv.dueDate < now.toISOString().slice(0, 10) && inv.status !== 'paid' && inv.status !== 'cancelled' && inv.status !== 'draft')),
       ).length;
       const limit = c.creditLimit ?? 0;
       const utilizationPct = limit > 0 ? Math.round((c.debt / limit) * 100) : 0;
@@ -312,5 +312,115 @@ export function computeAdvancedInsights(state: PersistedState): AnalyticsInsight
     overdueRiskCustomers,
     stockAndExpiryAlerts,
     lossMakingBranches,
+  };
+}
+
+export interface TopCustomerStat {
+  customerId: string;
+  customerName: string;
+  invoiceCount: number;
+  totalSpent: number;
+}
+
+export interface DashboardExecutiveStats {
+  todaySales: number;
+  weekSales: number;
+  monthSales: number;
+  yearSales: number;
+  totalPurchases: number;
+  overdueInvoicesCount: number;
+  overdueInvoicesTotal: number;
+  top5Customers: TopCustomerStat[];
+  lowStockProducts: { id: string; name: string; qty: number; minStock: number }[];
+  expiringProducts: { id: string; name: string; expiryDate: string; expired: boolean }[];
+}
+
+export function computeDashboardExecutiveStats(state: PersistedState): DashboardExecutiveStats {
+  const now = new Date();
+  const todayKey = now.toISOString().slice(0, 10);
+  const weekCutoff = new Date(now.getTime() - 6 * 86400000).toISOString().slice(0, 10);
+  const monthKey = todayKey.slice(0, 7);
+  const yearKey = todayKey.slice(0, 4);
+  const soonIso = new Date(now.getTime() + 45 * 86400000).toISOString().slice(0, 10);
+
+  let todaySalesH = 0;
+  let weekSalesH = 0;
+  let monthSalesH = 0;
+  let yearSalesH = 0;
+  let overdueCount = 0;
+  let overdueTotalH = 0;
+
+  const custMap = new Map<string, { name: string; count: number; totalH: number }>();
+
+  for (const inv of state.invoices) {
+    if (inv.status === 'cancelled' || inv.status === 'draft' || inv.invoiceType === 'quotation') continue;
+    const fx = inv.exchangeRate ?? 1;
+    const sign = inv.invoiceType === 'return' ? -1 : 1;
+    const baseTotalH = mulFxHalalas(toHalalas(inv.total), fx) * sign;
+    const dKey = inv.date.slice(0, 10);
+
+    if (dKey === todayKey) todaySalesH += baseTotalH;
+    if (dKey >= weekCutoff) weekSalesH += baseTotalH;
+    if (dKey.slice(0, 7) === monthKey) monthSalesH += baseTotalH;
+    if (dKey.slice(0, 4) === yearKey) yearSalesH += baseTotalH;
+
+    if (
+      inv.invoiceType !== 'return' &&
+      (inv.status === 'overdue' ||
+        (inv.dueDate && inv.dueDate < todayKey && inv.status !== 'paid'))
+    ) {
+      overdueCount += 1;
+      overdueTotalH += toHalalas(inv.remainingAmount ?? inv.baseTotal ?? inv.total);
+    }
+
+    if (inv.invoiceType !== 'return') {
+      const ck = inv.customerId || inv.customerName;
+      const cur = custMap.get(ck) ?? { name: inv.customerName, count: 0, totalH: 0 };
+      cur.count += 1;
+      cur.totalH += mulFxHalalas(toHalalas(inv.total), fx);
+      custMap.set(ck, cur);
+    }
+  }
+
+  let purchasesH = 0;
+  for (const po of state.purchaseOrders) {
+    if (po.status === 'cancelled' || po.status === 'draft') continue;
+    purchasesH += toHalalas(po.total);
+  }
+
+  const top5Customers: TopCustomerStat[] = Array.from(custMap.entries())
+    .map(([customerId, v]) => ({
+      customerId,
+      customerName: v.name,
+      invoiceCount: v.count,
+      totalSpent: fromHalalas(v.totalH),
+    }))
+    .sort((a, b) => b.totalSpent - a.totalSpent)
+    .slice(0, 5);
+
+  const lowStockProducts = state.products
+    .filter((p) => p.status !== 'service' && p.qty <= (p.minStock ?? 10))
+    .map((p) => ({ id: p.id, name: p.name, qty: p.qty, minStock: p.minStock ?? 10 }));
+
+  const expiringProducts = state.products
+    .filter((p) => Boolean(p.expiryDate) && p.expiryDate! <= soonIso)
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      expiryDate: p.expiryDate!,
+      expired: p.expiryDate! < todayKey,
+    }));
+
+  return {
+    todaySales: fromHalalas(todaySalesH),
+    weekSales: fromHalalas(weekSalesH),
+    monthSales: fromHalalas(monthSalesH),
+    yearSales: fromHalalas(yearSalesH),
+    totalPurchases: fromHalalas(purchasesH),
+    overdueInvoicesCount: overdueCount,
+    overdueInvoicesTotal: fromHalalas(overdueTotalH),
+    top5Customers,
+    lowStockProducts,
+    expiringProducts,
   };
 }

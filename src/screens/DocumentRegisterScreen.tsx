@@ -1,7 +1,9 @@
 import React, { useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   CheckSquare,
   Download,
+  Edit2,
   Eye,
   FileArchive,
   FileSpreadsheet,
@@ -26,6 +28,7 @@ import { downloadTextFile } from '../utils/export';
 import { ScreenProps } from './types';
 
 type LedgerKind = 'all' | 'invoice' | 'return' | 'quotation' | 'purchase_order' | 'voucher' | 'journal';
+type ExpiryFilter = 'all' | 'valid' | 'expiring_soon' | 'expired';
 
 interface UnifiedLedgerRow {
   key: string;
@@ -39,6 +42,19 @@ interface UnifiedLedgerRow {
   status: string;
   dateIso: string;
   printable?: BatchPrintItem;
+}
+
+function getExpiryStatus(expiryDate?: string): {
+  status: 'none' | 'valid' | 'expiring_soon' | 'expired';
+  daysLeft: number | null;
+} {
+  if (!expiryDate) return { status: 'none', daysLeft: null };
+  const targetMs = new Date(expiryDate).getTime();
+  if (!Number.isFinite(targetMs)) return { status: 'none', daysLeft: null };
+  const diffDays = Math.ceil((targetMs - Date.now()) / 86400000);
+  if (diffDays <= 0) return { status: 'expired', daysLeft: diffDays };
+  if (diffDays <= 30) return { status: 'expiring_soon', daysLeft: diffDays };
+  return { status: 'valid', daysLeft: diffDays };
 }
 
 async function compressFileToDataUrl(file: File): Promise<{ dataUrl: string; type: string } | null> {
@@ -100,16 +116,19 @@ export const DocumentRegisterScreen: React.FC<ScreenProps> = ({
   const [toDate, setToDate] = useState('');
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
 
-  // Archive upload/preview state
+  // Archive upload/edit/preview state
   const [docTypeFilter, setDocTypeFilter] = useState<'all' | ArchivedDocumentType>('all');
+  const [expiryFilter, setExpiryFilter] = useState<ExpiryFilter>('all');
   const [archiveModal, setArchiveModal] = useState<{ open: boolean; editId?: string }>({ open: false });
   const [previewDoc, setPreviewDoc] = useState<ArchivedDocument | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [docForm, setDocForm] = useState({
     title: '',
     docType: 'contract' as ArchivedDocumentType,
+    partyType: 'customer' as 'customer' | 'supplier' | 'employee',
     partyName: '',
     referenceId: '',
+    expiryDate: '',
     fileName: '',
     fileType: '',
     fileSizeBytes: 0,
@@ -117,6 +136,24 @@ export const DocumentRegisterScreen: React.FC<ScreenProps> = ({
     notes: '',
   });
   const [fileError, setFileError] = useState('');
+  const [formError, setFormError] = useState('');
+
+  const nextDocIdPreview = useMemo(() => {
+    const nums = state.documents
+      .map((d) => {
+        const m = d.id.match(/(\d+)$/);
+        return m ? parseInt(m[1], 10) : 0;
+      })
+      .filter((n) => Number.isFinite(n));
+    const nextNum = Math.max(100, ...nums) + 1;
+    return `DOC-${nextNum}`;
+  }, [state.documents]);
+
+  const partySuggestions = useMemo(() => {
+    if (docForm.partyType === 'customer') return state.customers.map((c) => c.name);
+    if (docForm.partyType === 'supplier') return state.suppliers.map((s) => s.name);
+    return state.employees.map((e) => e.name);
+  }, [docForm.partyType, state.customers, state.suppliers, state.employees]);
 
   const ledgerRows = useMemo<UnifiedLedgerRow[]>(() => {
     const rows: UnifiedLedgerRow[] = [];
@@ -179,7 +216,7 @@ export const DocumentRegisterScreen: React.FC<ScreenProps> = ({
         summary: `${po.productName} ×${po.quantity}`,
         amount: po.total,
         currency: cur,
-        status: t[po.status],
+        status: po.status === 'approved' ? (isAr ? 'معتمد' : 'Approved') : t[po.status],
         dateIso: po.date,
       });
     }
@@ -189,7 +226,12 @@ export const DocumentRegisterScreen: React.FC<ScreenProps> = ({
         key: `voucher:${v.id}`,
         id: v.id,
         kind: 'voucher',
-        kindLabel: v.type === 'receipt' ? t.receiptVoucher : t.paymentVoucher,
+        kindLabel:
+          v.type === 'receipt'
+            ? t.receiptVoucher
+            : v.type === 'payment'
+              ? t.paymentVoucher
+              : t.journalVoucher,
         party: v.partyName,
         summary: v.reason || v.paymentMethod,
         amount: v.amount,
@@ -249,13 +291,33 @@ export const DocumentRegisterScreen: React.FC<ScreenProps> = ({
       tax_cert: t.docTypeTaxCert,
       id_doc: t.docTypeIdDoc,
       invoice_scan: t.docTypeInvoiceScan,
+      cr_doc: isAr ? 'سجل تجاري' : 'Commercial Register',
       other: t.docTypeOther,
     };
     return map[dt];
   };
 
+  const partyTypeLabel = (pt?: 'customer' | 'supplier' | 'employee') => {
+    if (pt === 'customer') return isAr ? 'عميل' : 'Customer';
+    if (pt === 'supplier') return isAr ? 'مورد' : 'Supplier';
+    if (pt === 'employee') return isAr ? 'موظف' : 'Employee';
+    return '';
+  };
+
+  const expiringArchiveAlerts = useMemo(
+    () =>
+      state.documents
+        .map((d) => ({ doc: d, exp: getExpiryStatus(d.expiryDate) }))
+        .filter((x) => x.exp.status === 'expired' || x.exp.status === 'expiring_soon'),
+    [state.documents],
+  );
+
   const filteredArchive = state.documents.filter((d) => {
     if (docTypeFilter !== 'all' && d.docType !== docTypeFilter) return false;
+    if (expiryFilter !== 'all') {
+      const st = getExpiryStatus(d.expiryDate).status;
+      if (st !== expiryFilter) return false;
+    }
     const q = search.trim().toLowerCase();
     if (!q) return true;
     return (
@@ -300,6 +362,44 @@ export const DocumentRegisterScreen: React.FC<ScreenProps> = ({
       fileDataBase64: result.dataUrl,
       title: f.title || file.name.replace(/\.[^.]+$/, ''),
     }));
+  };
+
+  const openNewArchiveModal = () => {
+    setFileError('');
+    setFormError('');
+    setDocForm({
+      title: '',
+      docType: 'contract',
+      partyType: 'customer',
+      partyName: '',
+      referenceId: '',
+      expiryDate: '',
+      fileName: '',
+      fileType: '',
+      fileSizeBytes: 0,
+      fileDataBase64: '',
+      notes: '',
+    });
+    setArchiveModal({ open: true });
+  };
+
+  const openEditArchiveModal = (d: ArchivedDocument) => {
+    setFileError('');
+    setFormError('');
+    setDocForm({
+      title: d.title,
+      docType: d.docType,
+      partyType: d.partyType ?? 'customer',
+      partyName: d.partyName,
+      referenceId: d.referenceId,
+      expiryDate: d.expiryDate ?? '',
+      fileName: d.fileName,
+      fileType: d.fileType,
+      fileSizeBytes: d.fileSizeBytes,
+      fileDataBase64: d.fileDataBase64 ?? '',
+      notes: d.notes,
+    });
+    setArchiveModal({ open: true, editId: d.id });
   };
 
   return (
@@ -379,21 +479,7 @@ export const DocumentRegisterScreen: React.FC<ScreenProps> = ({
             </>
           ) : (
             <button
-              onClick={() => {
-                setFileError('');
-                setDocForm({
-                  title: '',
-                  docType: 'contract',
-                  partyName: '',
-                  referenceId: '',
-                  fileName: '',
-                  fileType: '',
-                  fileSizeBytes: 0,
-                  fileDataBase64: '',
-                  notes: '',
-                });
-                setArchiveModal({ open: true });
-              }}
+              onClick={openNewArchiveModal}
               className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0A3D2C] text-white font-bold text-sm cursor-pointer"
             >
               <Plus className="w-4 h-4" />
@@ -402,6 +488,34 @@ export const DocumentRegisterScreen: React.FC<ScreenProps> = ({
           )}
         </div>
       </div>
+
+      {/* Expiry alert banner in archive tab */}
+      {activeTab === 'archive' && expiringArchiveAlerts.length > 0 && (
+        <div className="rounded-[20px] bg-amber-500/10 border border-amber-500/30 p-3.5 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-xs font-extrabold text-amber-800 dark:text-amber-300">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>
+              {isAr
+                ? `يوجد ${expiringArchiveAlerts.length} مستند رسمي منتهي أو قريب الانتهاء خلال 30 يوماً`
+                : `${expiringArchiveAlerts.length} archived document(s) expired or expiring within 30 days`}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {expiringArchiveAlerts.slice(0, 4).map(({ doc, exp }) => (
+              <span
+                key={doc.id}
+                className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                  exp.status === 'expired'
+                    ? 'bg-red-600/15 text-red-700 dark:text-red-300'
+                    : 'bg-amber-600/15 text-amber-800 dark:text-amber-300'
+                }`}
+              >
+                {doc.title} ({doc.expiryDate})
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Filters Row */}
       <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-3.5 flex flex-wrap items-center gap-3">
@@ -475,19 +589,32 @@ export const DocumentRegisterScreen: React.FC<ScreenProps> = ({
             )}
           </>
         ) : (
-          <select
-            value={docTypeFilter}
-            onChange={(e) => setDocTypeFilter(e.target.value as 'all' | ArchivedDocumentType)}
-            className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
-          >
-            <option value="all">{t.documentTypeAll}</option>
-            <option value="contract">{t.docTypeContract}</option>
-            <option value="receipt">{t.docTypeReceipt}</option>
-            <option value="tax_cert">{t.docTypeTaxCert}</option>
-            <option value="id_doc">{t.docTypeIdDoc}</option>
-            <option value="invoice_scan">{t.docTypeInvoiceScan}</option>
-            <option value="other">{t.docTypeOther}</option>
-          </select>
+          <>
+            <select
+              value={docTypeFilter}
+              onChange={(e) => setDocTypeFilter(e.target.value as 'all' | ArchivedDocumentType)}
+              className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+            >
+              <option value="all">{t.documentTypeAll}</option>
+              <option value="contract">{t.docTypeContract}</option>
+              <option value="receipt">{t.docTypeReceipt}</option>
+              <option value="tax_cert">{t.docTypeTaxCert}</option>
+              <option value="cr_doc">{isAr ? 'سجل تجاري' : 'Commercial Register'}</option>
+              <option value="id_doc">{t.docTypeIdDoc}</option>
+              <option value="invoice_scan">{t.docTypeInvoiceScan}</option>
+              <option value="other">{t.docTypeOther}</option>
+            </select>
+            <select
+              value={expiryFilter}
+              onChange={(e) => setExpiryFilter(e.target.value as ExpiryFilter)}
+              className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+            >
+              <option value="all">{isAr ? 'كل حالات الانتهاء' : 'All Expiry Status'}</option>
+              <option value="valid">{isAr ? 'ساري المفعول' : 'Valid'}</option>
+              <option value="expiring_soon">{isAr ? 'ينتهي قريباً (30 يوم)' : 'Expiring Soon'}</option>
+              <option value="expired">{isAr ? 'منتهي الصلاحية' : 'Expired'}</option>
+            </select>
+          </>
         )}
       </div>
 
@@ -561,123 +688,234 @@ export const DocumentRegisterScreen: React.FC<ScreenProps> = ({
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {filteredArchive.map((d) => (
-            <div
-              key={d.id}
-              className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-2.5"
-            >
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-mono font-bold text-slate-500">
-                  {d.id} · {docTypeLabel(d.docType)}
-                </span>
-                <span className="font-mono text-slate-400">{d.date.slice(0, 10)}</span>
-              </div>
-
-              <div className="flex items-start gap-3">
-                <div className="w-10 h-10 rounded-xl bg-[#0A3D2C]/10 dark:bg-[#C9A227]/15 text-[#0A3D2C] dark:text-[#C9A227] flex items-center justify-center shrink-0">
-                  <FileArchive className="w-5 h-5" />
+          {filteredArchive.map((d) => {
+            const exp = getExpiryStatus(d.expiryDate);
+            return (
+              <div
+                key={d.id}
+                className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-2.5"
+              >
+                <div className="flex items-center justify-between text-xs gap-2 flex-wrap">
+                  <span className="font-mono font-bold text-slate-500">
+                    {d.id} · {docTypeLabel(d.docType)}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {exp.status === 'expired' && (
+                      <span className="px-2 py-0.5 rounded-md bg-red-600/15 text-red-700 dark:text-red-300 text-[10px] font-extrabold">
+                        {isAr ? `منتهي (${d.expiryDate})` : `Expired (${d.expiryDate})`}
+                      </span>
+                    )}
+                    {exp.status === 'expiring_soon' && (
+                      <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-800 dark:text-amber-300 text-[10px] font-extrabold">
+                        {isAr ? `ينتهي خلال ${exp.daysLeft} يوم` : `Exp ${exp.daysLeft}d`}
+                      </span>
+                    )}
+                    {exp.status === 'valid' && (
+                      <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-bold">
+                        {isAr ? `ساري حتى ${d.expiryDate}` : `Valid till ${d.expiryDate}`}
+                      </span>
+                    )}
+                    <span className="font-mono text-slate-400">{d.date.slice(0, 10)}</span>
+                  </div>
                 </div>
-                <div className="min-w-0 flex-1">
-                  <h4 className="font-extrabold text-sm sm:text-base truncate">{d.title}</h4>
-                  <p className="text-xs text-slate-500 truncate">
-                    {d.partyName || '—'} {d.referenceId ? `· ${d.referenceId}` : ''}
-                  </p>
-                  {d.fileName && (
-                    <p className="text-[11px] font-mono text-slate-400 mt-0.5 truncate">
-                      {d.fileName} ({(d.fileSizeBytes / 1024).toFixed(1)} KB)
+
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-[#0A3D2C]/10 dark:bg-[#C9A227]/15 text-[#0A3D2C] dark:text-[#C9A227] flex items-center justify-center shrink-0">
+                    <FileArchive className="w-5 h-5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h4 className="font-extrabold text-sm sm:text-base truncate">{d.title}</h4>
+                    <p className="text-xs text-slate-500 truncate">
+                      {d.partyType ? `${partyTypeLabel(d.partyType)}: ` : ''}
+                      {d.partyName || '—'} {d.referenceId ? `· ${d.referenceId}` : ''}
                     </p>
-                  )}
+                    {d.fileName && (
+                      <p className="text-[11px] font-mono text-slate-400 mt-0.5 truncate">
+                        {d.fileName} ({(d.fileSizeBytes / 1024).toFixed(1)} KB)
+                      </p>
+                    )}
+                  </div>
                 </div>
-              </div>
 
-              {d.notes && <p className="text-xs text-slate-500">{d.notes}</p>}
+                {d.notes && <p className="text-xs text-slate-500">{d.notes}</p>}
 
-              <div className="pt-2 border-t border-slate-100 dark:border-[#1F332B] flex items-center gap-2">
-                {d.fileDataBase64 && (
-                  <>
+                <div className="pt-2 border-t border-slate-100 dark:border-[#1F332B] flex items-center gap-2">
+                  {d.fileDataBase64 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewDoc(d)}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#0A3D2C]/10 dark:bg-[#C9A227]/15 text-[#0A3D2C] dark:text-[#C9A227] text-xs font-bold cursor-pointer"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>{t.previewAttachment}</span>
+                      </button>
+                      <a
+                        href={d.fileDataBase64}
+                        download={d.fileName || `${d.id}.bin`}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>{t.downloadAttachment}</span>
+                      </a>
+                    </>
+                  )}
+                  <div className="ms-auto flex items-center gap-1">
                     <button
                       type="button"
-                      onClick={() => setPreviewDoc(d)}
-                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#0A3D2C]/10 dark:bg-[#C9A227]/15 text-[#0A3D2C] dark:text-[#C9A227] text-xs font-bold cursor-pointer"
+                      onClick={() => openEditArchiveModal(d)}
+                      aria-label={t.edit}
+                      className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-[#1A2C24] cursor-pointer"
                     >
-                      <Eye className="w-3.5 h-3.5" />
-                      <span>{t.previewAttachment}</span>
+                      <Edit2 className="w-4 h-4 text-slate-500" />
                     </button>
-                    <a
-                      href={d.fileDataBase64}
-                      download={d.fileName || `${d.id}.bin`}
-                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+                    <button
+                      type="button"
+                      onClick={() => {
+                        actions.deleteArchivedDocument(d.id);
+                        actions.notify(isAr ? 'تم حذف المستند من الأرشيف' : 'Document removed from archive');
+                      }}
+                      aria-label={t.delete}
+                      className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
                     >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>{t.downloadAttachment}</span>
-                    </a>
-                  </>
-                )}
-                <div className="ms-auto flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      actions.deleteArchivedDocument(d.id);
-                      actions.notify(isAr ? 'تم حذف المستند من الأرشيف' : 'Document removed from archive');
-                    }}
-                    aria-label={t.delete}
-                    className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
-                  >
-                    <Trash2 className="w-4 h-4 text-red-600" />
-                  </button>
+                      <Trash2 className="w-4 h-4 text-red-600" />
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
       {/* Archive Document Modal */}
       {archiveModal.open && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] max-w-md w-full p-6 space-y-3 my-auto">
-            <h3 className="text-lg font-extrabold">{t.uploadDocument}</h3>
-
-            <input
-              type="text"
-              maxLength={160}
-              value={docForm.title}
-              onChange={(e) => setDocForm({ ...docForm, title: e.target.value })}
-              placeholder={isAr ? 'عنوان المستند' : 'Document Title'}
-              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
-            />
-
-            <div className="grid grid-cols-2 gap-2">
-              <select
-                value={docForm.docType}
-                onChange={(e) => setDocForm({ ...docForm, docType: e.target.value as ArchivedDocumentType })}
-                className="px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] max-w-lg w-full p-6 space-y-3 my-auto">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h3 className="text-lg font-extrabold">
+                  {archiveModal.editId ? (isAr ? 'تعديل مستند مؤرشف' : 'Edit Archived Document') : t.uploadDocument}
+                </h3>
+                <p className="text-xs font-mono text-[#0A3D2C] dark:text-[#C9A227] font-bold">
+                  {archiveModal.editId ?? nextDocIdPreview}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setArchiveModal({ open: false })}
+                className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-[#1A2C24] cursor-pointer"
               >
-                <option value="contract">{t.docTypeContract}</option>
-                <option value="receipt">{t.docTypeReceipt}</option>
-                <option value="tax_cert">{t.docTypeTaxCert}</option>
-                <option value="id_doc">{t.docTypeIdDoc}</option>
-                <option value="invoice_scan">{t.docTypeInvoiceScan}</option>
-                <option value="other">{t.docTypeOther}</option>
-              </select>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {formError && (
+              <div className="p-2.5 rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 text-xs font-bold text-red-700 dark:text-red-300">
+                {formError}
+              </div>
+            )}
+
+            <div>
+              <label className="text-[11px] font-bold text-slate-500 block mb-1">
+                {isAr ? 'عنوان المستند *' : 'Document Title *'}
+              </label>
               <input
                 type="text"
-                maxLength={128}
-                value={docForm.referenceId}
-                onChange={(e) => setDocForm({ ...docForm, referenceId: e.target.value })}
-                placeholder={t.referenceIdLabel}
-                className="px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+                maxLength={160}
+                value={docForm.title}
+                onChange={(e) => {
+                  setFormError('');
+                  setDocForm({ ...docForm, title: e.target.value });
+                }}
+                placeholder={isAr ? 'مثال: عقد توريد / سجل تجاري' : 'Document Title'}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
               />
             </div>
 
-            <input
-              type="text"
-              maxLength={160}
-              value={docForm.partyName}
-              onChange={(e) => setDocForm({ ...docForm, partyName: e.target.value })}
-              placeholder={t.partyNameLabel}
-              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
-            />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div>
+                <label className="text-[11px] font-bold text-slate-500 block mb-1">
+                  {t.docTypeLabel}
+                </label>
+                <select
+                  value={docForm.docType}
+                  onChange={(e) => setDocForm({ ...docForm, docType: e.target.value as ArchivedDocumentType })}
+                  className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+                >
+                  <option value="contract">{t.docTypeContract}</option>
+                  <option value="receipt">{t.docTypeReceipt}</option>
+                  <option value="tax_cert">{t.docTypeTaxCert}</option>
+                  <option value="cr_doc">{isAr ? 'سجل تجاري' : 'Commercial Register'}</option>
+                  <option value="id_doc">{t.docTypeIdDoc}</option>
+                  <option value="invoice_scan">{t.docTypeInvoiceScan}</option>
+                  <option value="other">{t.docTypeOther}</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] font-bold text-slate-500 block mb-1">
+                  {t.referenceIdLabel}
+                </label>
+                <input
+                  type="text"
+                  maxLength={128}
+                  value={docForm.referenceId}
+                  onChange={(e) => setDocForm({ ...docForm, referenceId: e.target.value })}
+                  placeholder={isAr ? 'رقم المرجع / العقد' : 'Reference ID'}
+                  className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div>
+                <label className="text-[11px] font-bold text-slate-500 block mb-1">
+                  {isAr ? 'نوع الطرف' : 'Party Type'}
+                </label>
+                <select
+                  value={docForm.partyType}
+                  onChange={(e) =>
+                    setDocForm({ ...docForm, partyType: e.target.value as 'customer' | 'supplier' | 'employee' })
+                  }
+                  className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+                >
+                  <option value="customer">{isAr ? 'عميل' : 'Customer'}</option>
+                  <option value="supplier">{isAr ? 'مورد' : 'Supplier'}</option>
+                  <option value="employee">{isAr ? 'موظف' : 'Employee'}</option>
+                </select>
+              </div>
+              <div className="sm:col-span-2">
+                <label className="text-[11px] font-bold text-slate-500 block mb-1">
+                  {t.partyNameLabel}
+                </label>
+                <input
+                  type="text"
+                  list="archive-party-list"
+                  maxLength={160}
+                  value={docForm.partyName}
+                  onChange={(e) => setDocForm({ ...docForm, partyName: e.target.value })}
+                  placeholder={t.partyNameLabel}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
+                />
+                <datalist id="archive-party-list">
+                  {partySuggestions.map((name, idx) => (
+                    <option key={`${name}-${idx}`} value={name} />
+                  ))}
+                </datalist>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[11px] font-bold text-slate-500 block mb-1">
+                {isAr ? 'تاريخ انتهاء الصلاحية (للتنبيه المبكر)' : 'Document Expiry Date (for renewal alerts)'}
+              </label>
+              <input
+                type="date"
+                value={docForm.expiryDate}
+                onChange={(e) => setDocForm({ ...docForm, expiryDate: e.target.value })}
+                className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+              />
+            </div>
 
             <div className="border border-dashed border-slate-300 dark:border-[#1F332B] rounded-xl p-3 space-y-2">
               <input
@@ -721,13 +959,18 @@ export const DocumentRegisterScreen: React.FC<ScreenProps> = ({
               </button>
               <button
                 onClick={() => {
-                  if (!docForm.title.trim()) return;
+                  if (!docForm.title.trim()) {
+                    setFormError(isAr ? 'عنوان المستند إلزامي *' : 'Document title is required *');
+                    return;
+                  }
                   actions.saveArchivedDocument(
                     {
                       title: docForm.title.trim(),
                       docType: docForm.docType,
+                      partyType: docForm.partyType,
                       partyName: docForm.partyName.trim(),
                       referenceId: docForm.referenceId.trim(),
+                      expiryDate: docForm.expiryDate || undefined,
                       fileName: docForm.fileName.trim(),
                       fileType: docForm.fileType.trim(),
                       fileSizeBytes: docForm.fileSizeBytes,

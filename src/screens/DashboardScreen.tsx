@@ -4,8 +4,10 @@ import {
   BarChart2,
   Calendar,
   CheckCircle2,
+  Clock,
   Compass,
   FileText,
+  Landmark,
   Package,
   Plus,
   Receipt,
@@ -13,11 +15,18 @@ import {
   ShoppingBag,
   TrendingUp,
   Truck,
+  UserPlus,
   Users,
+  Wallet,
   X,
 } from 'lucide-react';
 import { strings } from '../data/translations';
-import { computeDashboardTodayKpis, computeMonthlySummaryRich } from '../domain/analytics';
+import {
+  computeDashboardExecutiveStats,
+  computeDashboardTodayKpis,
+  computeMonthlySummaryRich,
+} from '../domain/analytics';
+import { fromHalalas, mulFxHalalas, toHalalas } from '../domain/halala';
 import { RouteId } from '../types/erp';
 import { HealthScoreRing } from '../components/QrMatrix';
 import { ScreenProps } from './types';
@@ -31,6 +40,7 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
 
   const todayKpis = useMemo(() => computeDashboardTodayKpis(state), [state]);
   const richMonth = useMemo(() => computeMonthlySummaryRich(state), [state]);
+  const execStats = useMemo(() => computeDashboardExecutiveStats(state), [state]);
 
   const allKpis = [
     { label: t.totalSales, value: metrics.totalSales, icon: TrendingUp, target: 'invoices' as RouteId },
@@ -51,30 +61,39 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
       return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     };
 
-    let monthRevenue = 0;
-    let monthSalesGross = 0;
+    let monthRevenueH = 0;
+    let monthSalesGrossH = 0;
     let monthInvoicesCount = 0;
-    let prevMonthRevenue = 0;
+    let prevMonthRevenueH = 0;
 
     for (const inv of state.invoices) {
+      if (inv.status === 'cancelled' || inv.status === 'draft' || inv.invoiceType === 'quotation') continue;
       const key = toMonthKey(inv.date);
       const fx = inv.exchangeRate ?? 1;
-      const revBase = inv.subtotal * fx;
-      const grossBase = inv.baseTotal ?? inv.total * fx;
+      const sign = inv.invoiceType === 'return' ? -1 : 1;
+      const revBaseH = mulFxHalalas(toHalalas(inv.subtotal), fx) * sign;
+      const grossBaseH = mulFxHalalas(toHalalas(inv.total), fx) * sign;
       if (key === curMonthKey) {
-        monthRevenue += revBase;
-        monthSalesGross += grossBase;
+        monthRevenueH += revBaseH;
+        monthSalesGrossH += grossBaseH;
         monthInvoicesCount += 1;
       } else if (key === prevMonthKey) {
-        prevMonthRevenue += revBase;
+        prevMonthRevenueH += revBaseH;
       }
     }
 
-    const monthExpenses = state.expenses.reduce((sum, exp) => {
-      return toMonthKey(exp.date) === curMonthKey ? sum + exp.amount : sum;
-    }, 0);
+    let monthExpensesH = 0;
+    for (const exp of state.expenses) {
+      if (toMonthKey(exp.date) === curMonthKey) {
+        monthExpensesH += toHalalas(exp.amount);
+      }
+    }
 
-    const monthNet = monthRevenue - monthExpenses;
+    const monthRevenue = fromHalalas(monthRevenueH);
+    const monthSalesGross = fromHalalas(monthSalesGrossH);
+    const monthExpenses = fromHalalas(monthExpensesH);
+    const monthNet = fromHalalas(monthRevenueH - monthExpensesH);
+    const prevMonthRevenue = fromHalalas(prevMonthRevenueH);
     const goal = Math.max(1, state.settings.monthlySalesGoal || 120000);
     const goalPct = Math.min(100, Math.round((monthSalesGross / goal) * 100));
     const momDeltaPct =
@@ -98,6 +117,39 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
     };
   }, [state.invoices, state.expenses, state.settings.monthlySalesGoal, isAr]);
 
+  // Last 6 Months Sales vs Expenses Chart Data (Halala precision)
+  const chart6Months = useMemo(() => {
+    const now = new Date();
+    const months: { key: string; label: string; salesH: number; expH: number }[] = [];
+    const fmt = new Intl.DateTimeFormat(isAr ? 'ar-SA' : 'en-US', { month: 'short' });
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      months.push({ key, label: fmt.format(d), salesH: 0, expH: 0 });
+    }
+    const map = new Map(months.map((m) => [m.key, m]));
+    for (const inv of state.invoices) {
+      if (inv.status === 'cancelled' || inv.status === 'draft' || inv.invoiceType === 'quotation') continue;
+      const bucket = map.get(inv.date.slice(0, 7));
+      if (!bucket) continue;
+      const sign = inv.invoiceType === 'return' ? -1 : 1;
+      bucket.salesH += mulFxHalalas(toHalalas(inv.total), inv.exchangeRate ?? 1) * sign;
+    }
+    for (const exp of state.expenses) {
+      const bucket = map.get(exp.date.slice(0, 7));
+      if (!bucket) continue;
+      bucket.expH += toHalalas(exp.amount);
+    }
+    const rows = months.map((m) => ({
+      key: m.key,
+      label: m.label,
+      sales: Math.max(0, fromHalalas(m.salesH)),
+      expenses: Math.max(0, fromHalalas(m.expH)),
+    }));
+    const maxVal = Math.max(1, ...rows.map((r) => Math.max(r.sales, r.expenses)));
+    return { rows, maxVal };
+  }, [state.invoices, state.expenses, isAr]);
+
   const performanceInsights = useMemo(() => {
     const rev = metrics.revenueExVat;
     const netMarginPct = rev > 0 ? Math.round((metrics.netProfit / rev) * 100) : 0;
@@ -110,6 +162,7 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
     const salesByCustomer = new Map<string, number>();
     const qtyByProduct = new Map<string, number>();
     for (const inv of state.invoices) {
+      if (inv.status === 'cancelled' || inv.status === 'draft' || inv.invoiceType === 'quotation') continue;
       const baseAmt = inv.baseTotal ?? inv.total * (inv.exchangeRate ?? 1);
       salesByCustomer.set(inv.customerName, (salesByCustomer.get(inv.customerName) ?? 0) + baseAmt);
       for (const it of inv.items ?? []) {
@@ -135,7 +188,7 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
       }
     });
 
-    const lowStockCount = state.products.filter((p) => p.qty <= 10).length;
+    const lowStockCount = execStats.lowStockProducts.length;
 
     return {
       netMarginPct,
@@ -147,7 +200,15 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
       topProductQty,
       lowStockCount,
     };
-  }, [metrics.revenueExVat, metrics.netProfit, metrics.totalSales, metrics.customerDebt, metrics.totalExpenses, state.invoices, state.products]);
+  }, [
+    metrics.revenueExVat,
+    metrics.netProfit,
+    metrics.totalSales,
+    metrics.customerDebt,
+    metrics.totalExpenses,
+    state.invoices,
+    execStats.lowStockProducts.length,
+  ]);
 
   const tourSteps = [
     {
@@ -177,13 +238,14 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
     {
       title: isAr ? '5/5 النسخ الاحتياطي والمساعدة' : '5/5 Backup & Guided Help',
       desc: isAr
-        ? 'نسخ احتياطي تلقائي كل 5 دقائق + تصدير Excel متعدد الصفحات + مركز مساعدة تفاعلي.'
-        : 'Auto-save every 5 minutes, multi-sheet Excel export, and step-by-step Help guides.',
+        ? 'نسخ احتياطي تلقائي يومياً + تصدير Excel متعدد الصفحات + مزامنة Firebase.'
+        : 'Daily automatic backups, multi-sheet Excel export, and Firebase sync.',
     },
   ];
 
   return (
     <div className="space-y-5 relative">
+      {/* Executive Hero Banner */}
       <div
         className={`bg-[#0A3D2C] text-white rounded-[20px] p-5 sm:p-6 flex flex-col sm:flex-row items-center gap-5 transition-all ${
           tourStep === 0 ? 'ring-4 ring-[#C9A227]' : ''
@@ -266,38 +328,52 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
         </div>
       )}
 
-      {/* Today Live KPIs: Today Sales, Today Profit, Cash Box Balance */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
-        <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/30 rounded-[20px] p-4 flex items-center justify-between gap-3">
-          <div>
-            <span className="text-xs font-bold text-slate-500 block">{t.todaySales}</span>
-            <p className="text-lg sm:text-xl font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227] mt-1">
-              {todayKpis.todaySales.toLocaleString(undefined, { maximumFractionDigits: 2 })} {cur}
-            </p>
-          </div>
-          <TrendingUp className="w-6 h-6 text-[#0A3D2C] dark:text-[#C9A227] shrink-0" />
+      {/* Sales Period Strip: Today / Week / Month / Year + Today Profit + Total Purchases */}
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+        <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/35 rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{t.todaySales}</span>
+          <p className="text-base sm:text-lg font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227] mt-1">
+            {execStats.todaySales.toLocaleString(undefined, { maximumFractionDigits: 2 })} <span className="text-[11px]">{cur}</span>
+          </p>
         </div>
-        <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/30 rounded-[20px] p-4 flex items-center justify-between gap-3">
-          <div>
-            <span className="text-xs font-bold text-slate-500 block">{t.todayProfit}</span>
-            <p className={`text-lg sm:text-xl font-extrabold font-mono tabular-nums mt-1 ${todayKpis.todayProfit >= 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-600'}`}>
-              {todayKpis.todayProfit.toLocaleString(undefined, { maximumFractionDigits: 2 })} {cur}
-            </p>
-          </div>
-          <BarChart2 className="w-6 h-6 text-emerald-600 dark:text-emerald-400 shrink-0" />
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'مبيعات الأسبوع' : 'Week Sales'}</span>
+          <p className="text-base sm:text-lg font-extrabold font-mono tabular-nums text-slate-900 dark:text-white mt-1">
+            {execStats.weekSales.toLocaleString(undefined, { maximumFractionDigits: 0 })} <span className="text-[11px]">{cur}</span>
+          </p>
         </div>
-        <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/30 rounded-[20px] p-4 flex items-center justify-between gap-3">
-          <div>
-            <span className="text-xs font-bold text-slate-500 block">{t.cashBoxBalance}</span>
-            <p className="text-lg sm:text-xl font-extrabold font-mono tabular-nums text-slate-900 dark:text-white mt-1">
-              {todayKpis.cashBoxBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })} {cur}
-            </p>
-          </div>
-          <Receipt className="w-6 h-6 text-[#C9A227] shrink-0" />
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'مبيعات الشهر' : 'Month Sales'}</span>
+          <p className="text-base sm:text-lg font-extrabold font-mono tabular-nums text-slate-900 dark:text-white mt-1">
+            {execStats.monthSales.toLocaleString(undefined, { maximumFractionDigits: 0 })} <span className="text-[11px]">{cur}</span>
+          </p>
         </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'مبيعات السنة' : 'Year Sales'}</span>
+          <p className="text-base sm:text-lg font-extrabold font-mono tabular-nums text-slate-900 dark:text-white mt-1">
+            {execStats.yearSales.toLocaleString(undefined, { maximumFractionDigits: 0 })} <span className="text-[11px]">{cur}</span>
+          </p>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{t.todayProfit}</span>
+          <p className={`text-base sm:text-lg font-extrabold font-mono tabular-nums mt-1 ${todayKpis.todayProfit >= 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-600'}`}>
+            {todayKpis.todayProfit.toLocaleString(undefined, { maximumFractionDigits: 2 })} <span className="text-[11px]">{cur}</span>
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => hasPermission('purchase_orders') && onNavigate('purchase_orders')}
+          className="text-start bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] hover:border-[#0A3D2C] dark:hover:border-[#C9A227] rounded-[20px] p-4 cursor-pointer transition-colors"
+        >
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'إجمالي المشتريات' : 'Total Purchases'}</span>
+          <p className="text-base sm:text-lg font-extrabold font-mono tabular-nums text-amber-700 dark:text-[#C9A227] mt-1">
+            {execStats.totalPurchases.toLocaleString(undefined, { maximumFractionDigits: 0 })} <span className="text-[11px]">{cur}</span>
+          </p>
+        </button>
       </div>
 
-      <div className={`grid grid-cols-2 lg:grid-cols-4 gap-3.5 ${tourStep === 1 ? 'ring-2 ring-[#C9A227] rounded-[22px] p-1' : ''}`}>
+      {/* Core Accounting Balances + Cash Box + Banks + Overdue */}
+      <div className={`grid grid-cols-2 lg:grid-cols-6 gap-3.5 ${tourStep === 1 ? 'ring-2 ring-[#C9A227] rounded-[22px] p-1' : ''}`}>
         {allKpis.map((k) => {
           const Icon = k.icon;
           return (
@@ -310,111 +386,266 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                 <span className="truncate">{k.label}</span>
                 <Icon className="w-4 h-4 text-[#0A3D2C] dark:text-[#C9A227] shrink-0" />
               </div>
-              <p className="text-lg sm:text-xl font-extrabold tabular-nums">
+              <p className="text-base sm:text-lg font-extrabold tabular-nums font-mono">
                 {k.value.toLocaleString(undefined, { maximumFractionDigits: 0 })}{' '}
                 <span className="text-xs font-semibold text-slate-500">{cur}</span>
               </p>
             </button>
           );
         })}
+
+        <button
+          type="button"
+          onClick={() => hasPermission('banks') && onNavigate('banks')}
+          className="text-start bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 hover:border-[#0A3D2C] dark:hover:border-[#C9A227] transition-colors cursor-pointer"
+        >
+          <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-2">
+            <span className="truncate">{t.cashAndBanks}</span>
+            <Landmark className="w-4 h-4 text-[#C9A227] shrink-0" />
+          </div>
+          <p className="text-base sm:text-lg font-extrabold tabular-nums font-mono text-[#0A3D2C] dark:text-[#C9A227]">
+            {metrics.totalCashAndBanks.toLocaleString(undefined, { maximumFractionDigits: 0 })}{' '}
+            <span className="text-xs font-semibold text-slate-500">{cur}</span>
+          </p>
+          <span className="text-[10px] text-slate-500 font-mono">
+            {t.cashBoxBalance}: {todayKpis.cashBoxBalance.toLocaleString()}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => hasPermission('invoices') && onNavigate('invoices')}
+          className="text-start bg-white dark:bg-[#121E19] border border-rose-200 dark:border-rose-900/40 rounded-[20px] p-4 hover:border-rose-500 transition-colors cursor-pointer"
+        >
+          <div className="flex items-center justify-between text-rose-600 dark:text-rose-400 text-xs mb-2">
+            <span className="truncate font-bold">{t.overdueInvoices}</span>
+            <Clock className="w-4 h-4 shrink-0" />
+          </div>
+          <p className="text-base sm:text-lg font-extrabold tabular-nums font-mono text-rose-600 dark:text-rose-400">
+            {execStats.overdueInvoicesCount}{' '}
+            <span className="text-xs font-semibold">({execStats.overdueInvoicesTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur})</span>
+          </p>
+        </button>
       </div>
 
-      {/* Monthly Summary Widget */}
-      <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-[#0A3D2C]/10 dark:bg-[#C9A227]/15 flex items-center justify-center shrink-0">
-              <Calendar className="w-4 h-4 text-[#0A3D2C] dark:text-[#C9A227]" />
+      {/* Quick Actions + Stock & Expiry Alerts Strip */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-3">
+          <h3 className="text-xs font-extrabold text-slate-500 uppercase tracking-wider">
+            {t.quickActions}
+          </h3>
+          <div className="flex flex-wrap gap-2">
+            {([
+              { routeId: 'invoices' as RouteId, label: isAr ? 'فاتورة جديدة' : 'New Invoice', icon: FileText },
+              { routeId: 'customers' as RouteId, label: isAr ? 'عميل جديد' : 'New Customer', icon: UserPlus },
+              { routeId: 'vouchers' as RouteId, label: t.createReceipt, icon: Receipt },
+              { routeId: 'expenses' as RouteId, label: isAr ? 'مصروف جديد' : 'New Expense', icon: Wallet },
+              { routeId: 'pos' as RouteId, label: t.pos, icon: ShoppingBag },
+              { routeId: 'quotations' as RouteId, label: t.addQuotation, icon: Plus },
+              { routeId: 'returns' as RouteId, label: t.addReturn, icon: RotateCcw },
+            ])
+              .filter((qa) => hasPermission(qa.routeId))
+              .map((qa) => {
+                const QIcon = qa.icon;
+                return (
+                  <button
+                    key={qa.routeId}
+                    onClick={() => onNavigate(qa.routeId)}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 dark:border-[#1F332B] hover:border-[#0A3D2C] dark:hover:border-[#C9A227] text-xs font-bold cursor-pointer transition-colors"
+                  >
+                    <QIcon className="w-3.5 h-3.5 text-[#0A3D2C] dark:text-[#C9A227]" />
+                    <span>{qa.label}</span>
+                  </button>
+                );
+              })}
+          </div>
+        </div>
+
+        {/* Low Stock & Expiry Alerts Card */}
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 flex flex-col justify-between gap-2.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-extrabold text-slate-500">{isAr ? 'تنبيهات المخزون والصلاحية' : 'Inventory & Expiry'}</span>
+            {hasPermission('inventory') && (
+              <button onClick={() => onNavigate('inventory')} className="text-xs font-bold text-[#0A3D2C] dark:text-[#C9A227] cursor-pointer">
+                {t.inventory}
+              </button>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/25 border border-amber-200 dark:border-amber-900/40">
+              <span className="text-[11px] font-bold text-amber-800 dark:text-amber-300 block">{t.lowStock}</span>
+              <span className="text-lg font-extrabold font-mono tabular-nums text-amber-700 dark:text-[#C9A227]">
+                {execStats.lowStockProducts.length}
+              </span>
             </div>
-            <div>
-              <h3 className="text-sm sm:text-base font-extrabold">{t.monthlySummaryTitle}</h3>
-              <p className="text-xs text-slate-500">
-                {monthlySummary.monthLabel} · {monthlySummary.monthInvoicesCount} {t.thisMonthInvoices}
+            <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/25 border border-rose-200 dark:border-rose-900/40">
+              <span className="text-[11px] font-bold text-rose-700 dark:text-rose-300 block">{t.expiryAlerts}</span>
+              <span className="text-lg font-extrabold font-mono tabular-nums text-rose-700 dark:text-rose-400">
+                {execStats.expiringProducts.length}
+              </span>
+            </div>
+          </div>
+          {execStats.expiringProducts[0] ? (
+            <p className="text-[11px] text-rose-600 truncate">
+              {execStats.expiringProducts[0].name} ({execStats.expiringProducts[0].expiryDate})
+            </p>
+          ) : execStats.lowStockProducts[0] ? (
+            <p className="text-[11px] text-amber-700 dark:text-amber-300 truncate">
+              {execStats.lowStockProducts[0].name} ({execStats.lowStockProducts[0].qty}/{execStats.lowStockProducts[0].minStock})
+            </p>
+          ) : (
+            <p className="text-[11px] text-emerald-700 dark:text-emerald-400">{t.insightHealthy}</p>
+          )}
+        </div>
+      </div>
+
+      {/* Monthly Summary & Sales vs Expenses 6M Chart */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        <div className="lg:col-span-7 bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-[#0A3D2C]/10 dark:bg-[#C9A227]/15 flex items-center justify-center shrink-0">
+                <Calendar className="w-4 h-4 text-[#0A3D2C] dark:text-[#C9A227]" />
+              </div>
+              <div>
+                <h3 className="text-sm sm:text-base font-extrabold">{t.monthlySummaryTitle}</h3>
+                <p className="text-xs text-slate-500">
+                  {monthlySummary.monthLabel} · {monthlySummary.monthInvoicesCount} {t.thisMonthInvoices}
+                </p>
+              </div>
+            </div>
+            {hasPermission('reports') && (
+              <button
+                onClick={() => onNavigate('reports')}
+                className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-[#1F332B] hover:border-[#0A3D2C] dark:hover:border-[#C9A227] text-xs font-bold text-[#0A3D2C] dark:text-[#C9A227] cursor-pointer transition-colors"
+              >
+                {t.viewFullReports}
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-slate-500">{t.thisMonthRevenue}</span>
+                {monthlySummary.momDeltaPct !== null && (
+                  <span
+                    className={`text-[11px] font-mono font-bold ${
+                      monthlySummary.momDeltaPct >= 0
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : 'text-red-600 dark:text-red-400'
+                    }`}
+                  >
+                    {monthlySummary.momDeltaPct >= 0 ? '+' : ''}
+                    {monthlySummary.momDeltaPct}% {t.vsLastMonth}
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 text-base sm:text-lg font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-emerald-400">
+                {monthlySummary.monthRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B]">
+              <span className="text-xs font-bold text-slate-500 block">{t.thisMonthExpenses}</span>
+              <p className="mt-1 text-base sm:text-lg font-extrabold font-mono tabular-nums text-amber-700 dark:text-[#C9A227]">
+                {monthlySummary.monthExpenses.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B]">
+              <span className="text-xs font-bold text-slate-500 block">{t.thisMonthNet}</span>
+              <p
+                className={`mt-1 text-base sm:text-lg font-extrabold font-mono tabular-nums ${
+                  monthlySummary.monthNet >= 0
+                    ? 'text-emerald-700 dark:text-emerald-400'
+                    : 'text-red-600 dark:text-red-400'
+                }`}
+              >
+                {monthlySummary.monthNet >= 0 ? '+' : ''}
+                {monthlySummary.monthNet.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
               </p>
             </div>
           </div>
-          {hasPermission('reports') && (
-            <button
-              onClick={() => onNavigate('reports')}
-              className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-[#1F332B] hover:border-[#0A3D2C] dark:hover:border-[#C9A227] text-xs font-bold text-[#0A3D2C] dark:text-[#C9A227] cursor-pointer transition-colors"
-            >
-              {t.viewFullReports}
-            </button>
-          )}
-        </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B]">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-bold text-slate-500">{t.thisMonthRevenue}</span>
-              {monthlySummary.momDeltaPct !== null && (
-                <span
-                  className={`text-[11px] font-mono font-bold ${
-                    monthlySummary.momDeltaPct >= 0
-                      ? 'text-emerald-600 dark:text-emerald-400'
-                      : 'text-red-600 dark:text-red-400'
-                  }`}
-                >
-                  {monthlySummary.momDeltaPct >= 0 ? '+' : ''}
-                  {monthlySummary.momDeltaPct}% {t.vsLastMonth}
-                </span>
-              )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+            <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] flex items-center justify-between text-xs">
+              <span className="font-bold text-slate-500">{isAr ? 'أفضل عميل هذا الشهر' : 'Best Customer This Month'}</span>
+              <span className="font-extrabold text-[#0A3D2C] dark:text-[#C9A227]">
+                {richMonth.bestCustomer ? `${richMonth.bestCustomer.name} (${richMonth.bestCustomer.revenue.toLocaleString()} ${cur})` : '—'}
+              </span>
             </div>
-            <p className="mt-1 text-base sm:text-lg font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-emerald-400">
-              {monthlySummary.monthRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
-            </p>
+            <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] flex items-center justify-between text-xs">
+              <span className="font-bold text-slate-500">{isAr ? 'أكثر منتج طلباً هذا الشهر' : 'Top Product This Month'}</span>
+              <span className="font-extrabold text-[#0A3D2C] dark:text-[#C9A227]">
+                {richMonth.topProduct ? `${richMonth.topProduct.name} (${richMonth.topProduct.qty})` : '—'}
+              </span>
+            </div>
           </div>
 
-          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B]">
-            <span className="text-xs font-bold text-slate-500 block">{t.thisMonthExpenses}</span>
-            <p className="mt-1 text-base sm:text-lg font-extrabold font-mono tabular-nums text-amber-700 dark:text-[#C9A227]">
-              {monthlySummary.monthExpenses.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
-            </p>
-          </div>
-
-          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B]">
-            <span className="text-xs font-bold text-slate-500 block">{t.thisMonthNet}</span>
-            <p
-              className={`mt-1 text-base sm:text-lg font-extrabold font-mono tabular-nums ${
-                monthlySummary.monthNet >= 0
-                  ? 'text-emerald-700 dark:text-emerald-400'
-                  : 'text-red-600 dark:text-red-400'
-              }`}
-            >
-              {monthlySummary.monthNet >= 0 ? '+' : ''}
-              {monthlySummary.monthNet.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
-            </p>
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-bold text-slate-600 dark:text-slate-300">{t.salesGoalProgress}</span>
+              <span className="font-mono font-extrabold tabular-nums text-[#0A3D2C] dark:text-[#C9A227]">
+                {monthlySummary.monthSalesGross.toLocaleString(undefined, { maximumFractionDigits: 0 })} /{' '}
+                {monthlySummary.goal.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur} ({monthlySummary.goalPct}%)
+              </span>
+            </div>
+            <div className="h-2.5 w-full rounded-full bg-slate-100 dark:bg-[#0A120F] overflow-hidden">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-[#0A3D2C] to-[#C9A227] transition-all duration-300"
+                style={{ width: `${monthlySummary.goalPct}%` }}
+              />
+            </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-          <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] flex items-center justify-between text-xs">
-            <span className="font-bold text-slate-500">{isAr ? 'أفضل عميل هذا الشهر' : 'Best Customer This Month'}</span>
-            <span className="font-extrabold text-[#0A3D2C] dark:text-[#C9A227]">
-              {richMonth.bestCustomer ? `${richMonth.bestCustomer.name} (${richMonth.bestCustomer.revenue.toLocaleString()} ${cur})` : '—'}
-            </span>
+        {/* 6-Month Sales vs Expenses Chart */}
+        <div className="lg:col-span-5 bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 flex flex-col justify-between gap-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm sm:text-base font-extrabold">{t.monthlyRevVsExp}</h3>
+              <p className="text-xs text-slate-500">{t.last6Months}</p>
+            </div>
+            <div className="flex items-center gap-3 text-[11px] font-bold">
+              <span className="flex items-center gap-1">
+                <span className="w-2.5 h-2.5 rounded-sm bg-[#0A3D2C] dark:bg-emerald-500 inline-block" />
+                {t.revenueLabel}
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-2.5 h-2.5 rounded-sm bg-[#C9A227] inline-block" />
+                {t.expensesLabel}
+              </span>
+            </div>
           </div>
-          <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] flex items-center justify-between text-xs">
-            <span className="font-bold text-slate-500">{isAr ? 'أكثر منتج طلباً هذا الشهر' : 'Top Product This Month'}</span>
-            <span className="font-extrabold text-[#0A3D2C] dark:text-[#C9A227]">
-              {richMonth.topProduct ? `${richMonth.topProduct.name} (${richMonth.topProduct.qty})` : '—'}
-            </span>
-          </div>
-        </div>
 
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between text-xs">
-            <span className="font-bold text-slate-600 dark:text-slate-300">{t.salesGoalProgress}</span>
-            <span className="font-mono font-extrabold tabular-nums text-[#0A3D2C] dark:text-[#C9A227]">
-              {monthlySummary.monthSalesGross.toLocaleString(undefined, { maximumFractionDigits: 0 })} /{' '}
-              {monthlySummary.goal.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur} ({monthlySummary.goalPct}%)
-            </span>
+          <div className="grid grid-cols-6 gap-2 items-end h-44 pt-4">
+            {chart6Months.rows.map((m) => {
+              const salesH = Math.max(4, Math.round((m.sales / chart6Months.maxVal) * 100));
+              const expH = Math.max(4, Math.round((m.expenses / chart6Months.maxVal) * 100));
+              return (
+                <div key={m.key} className="flex flex-col items-center gap-1.5 h-full justify-end">
+                  <div className="w-full flex items-end justify-center gap-1 h-32">
+                    <div
+                      title={`${t.revenueLabel}: ${m.sales.toLocaleString()} ${cur}`}
+                      className="w-3 sm:w-4 rounded-t-md bg-[#0A3D2C] dark:bg-emerald-500 transition-all"
+                      style={{ height: `${salesH}%` }}
+                    />
+                    <div
+                      title={`${t.expensesLabel}: ${m.expenses.toLocaleString()} ${cur}`}
+                      className="w-3 sm:w-4 rounded-t-md bg-[#C9A227] transition-all"
+                      style={{ height: `${expH}%` }}
+                    />
+                  </div>
+                  <span className="text-[10px] font-bold text-slate-500 truncate max-w-full">{m.label}</span>
+                </div>
+              );
+            })}
           </div>
-          <div className="h-2.5 w-full rounded-full bg-slate-100 dark:bg-[#0A120F] overflow-hidden">
-            <div
-              className="h-full rounded-full bg-gradient-to-r from-[#0A3D2C] to-[#C9A227] transition-all duration-300"
-              style={{ width: `${monthlySummary.goalPct}%` }}
-            />
+
+          <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-100 dark:border-[#1F332B] font-mono tabular-nums">
+            <span className="text-slate-500">{t.vat15}: {metrics.vatOutput.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}</span>
+            <span className="text-[#0A3D2C] dark:text-[#C9A227] font-bold">{t.expenses}: {metrics.totalExpenses.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}</span>
           </div>
         </div>
       </div>
@@ -497,47 +728,6 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-3">
-          <h3 className="text-xs font-extrabold text-slate-500 uppercase tracking-wider">
-            {isAr ? 'إجراءات سريعة' : 'Quick Actions'}
-          </h3>
-          <div className="flex flex-wrap gap-2">
-            {([
-              { routeId: 'invoices' as RouteId, label: t.addInvoice, icon: FileText },
-              { routeId: 'quotations' as RouteId, label: t.addQuotation, icon: Plus },
-              { routeId: 'vouchers' as RouteId, label: t.addVoucher, icon: Receipt },
-              { routeId: 'returns' as RouteId, label: t.addReturn, icon: RotateCcw },
-              { routeId: 'expenses' as RouteId, label: t.addExpense, icon: ShoppingBag },
-            ])
-              .filter((qa) => hasPermission(qa.routeId))
-              .map((qa) => {
-                const QIcon = qa.icon;
-                return (
-                  <button
-                    key={qa.routeId}
-                    onClick={() => onNavigate(qa.routeId)}
-                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 dark:border-[#1F332B] hover:border-[#0A3D2C] dark:hover:border-[#C9A227] text-xs font-bold cursor-pointer transition-colors"
-                  >
-                    <QIcon className="w-3.5 h-3.5 text-[#0A3D2C] dark:text-[#C9A227]" />
-                    <span>{qa.label}</span>
-                  </button>
-                );
-              })}
-          </div>
-        </div>
-
-        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 flex flex-col justify-between gap-2">
-          <span className="text-xs font-extrabold text-slate-500">{t.banks}</span>
-          <p className="text-xl font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227]">
-            {metrics.totalCashAndBanks.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
-          </p>
-          <p className="text-[11px] text-slate-500 font-mono tabular-nums">
-            {t.vat15}: {metrics.vatOutput.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur} · {t.expenses}: {metrics.totalExpenses.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-          </p>
-        </div>
-      </div>
-
       {metrics.smartAlerts.length > 0 && (
         <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-2.5">
           <div className="flex items-center justify-between">
@@ -575,39 +765,86 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
         </div>
       )}
 
-      {/* Top 5 Selling Products */}
-      {todayKpis.top5Products.length > 0 && (
-        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-base font-extrabold">{t.top5Products}</h3>
-            {hasPermission('inventory') && (
-              <button
-                onClick={() => onNavigate('inventory')}
-                className="text-xs font-bold text-[#0A3D2C] dark:text-[#C9A227] hover:underline cursor-pointer"
-              >
-                {t.inventory}
-              </button>
-            )}
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
-            {todayKpis.top5Products.map((tp, idx) => (
-              <div
-                key={tp.productId}
-                className="p-3 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] space-y-1"
-              >
-                <div className="flex items-center justify-between text-[11px] font-mono text-[#C9A227] font-bold">
-                  <span>#{idx + 1}</span>
-                  <span>{tp.qtySold} {t.qty}</span>
+      {/* Top 5 Customers & Top 5 Selling Products */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {execStats.top5Customers.length > 0 && (
+          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-extrabold">{t.top5Customers}</h3>
+              {hasPermission('customers') && (
+                <button
+                  onClick={() => onNavigate('customers')}
+                  className="text-xs font-bold text-[#0A3D2C] dark:text-[#C9A227] hover:underline cursor-pointer"
+                >
+                  {t.customers}
+                </button>
+              )}
+            </div>
+            <div className="space-y-2">
+              {execStats.top5Customers.map((tc, idx) => (
+                <div
+                  key={tc.customerId}
+                  className="p-3 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] flex items-center justify-between gap-3"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span className="w-6 h-6 rounded-lg bg-[#0A3D2C] text-[#C9A227] font-mono text-xs font-extrabold flex items-center justify-center shrink-0">
+                      {idx + 1}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-extrabold truncate">{tc.customerName}</p>
+                      <p className="text-[11px] text-slate-500 font-mono">
+                        {tc.invoiceCount} {t.invoices}
+                      </p>
+                    </div>
+                  </div>
+                  <span className="text-xs font-mono font-extrabold text-[#0A3D2C] dark:text-[#C9A227] tabular-nums shrink-0">
+                    {tc.totalSpent.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+                  </span>
                 </div>
-                <p className="text-xs font-extrabold truncate">{tp.productName}</p>
-                <p className="text-xs font-mono font-bold text-[#0A3D2C] dark:text-emerald-400 tabular-nums">
-                  {tp.revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
-                </p>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+
+        {todayKpis.top5Products.length > 0 && (
+          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-extrabold">{t.top5Products}</h3>
+              {hasPermission('inventory') && (
+                <button
+                  onClick={() => onNavigate('inventory')}
+                  className="text-xs font-bold text-[#0A3D2C] dark:text-[#C9A227] hover:underline cursor-pointer"
+                >
+                  {t.inventory}
+                </button>
+              )}
+            </div>
+            <div className="space-y-2">
+              {todayKpis.top5Products.map((tp, idx) => (
+                <div
+                  key={tp.productId}
+                  className="p-3 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] flex items-center justify-between gap-3"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span className="w-6 h-6 rounded-lg bg-[#C9A227]/20 text-[#0A3D2C] dark:text-[#C9A227] font-mono text-xs font-extrabold flex items-center justify-center shrink-0">
+                      {idx + 1}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-extrabold truncate">{tp.productName}</p>
+                      <p className="text-[11px] text-slate-500 font-mono">
+                        {tp.qtySold} {t.qty}
+                      </p>
+                    </div>
+                  </div>
+                  <span className="text-xs font-mono font-extrabold text-[#0A3D2C] dark:text-emerald-400 tabular-nums shrink-0">
+                    {tp.revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
 
       {hasPermission('invoices') && (
         <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5">

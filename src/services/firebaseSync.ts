@@ -144,7 +144,10 @@ function sanitizeLineItems(items: Invoice['items'] | undefined) {
     if (it.barcode) row.barcode = clampString(it.barcode, 64);
     if (it.imageBase64 && it.imageBase64.length <= 250000) row.imageBase64 = it.imageBase64;
     if (it.category) row.category = clampString(it.category, 80);
-    if (it.unit && ['piece', 'carton', 'kg', 'meter'].includes(it.unit)) row.unit = it.unit;
+    if (it.unit && ['piece', 'carton', 'kg', 'meter', 'liter', 'box'].includes(it.unit)) row.unit = it.unit;
+    if (it.description) row.description = clampString(it.description, 200);
+    if (typeof it.receivedQty === 'number' && Number.isFinite(it.receivedQty) && it.receivedQty >= 0) row.receivedQty = it.receivedQty;
+    if (typeof it.availableStock === 'number' && Number.isFinite(it.availableStock) && it.availableStock >= 0) row.availableStock = it.availableStock;
     if (typeof it.costPrice === 'number' && Number.isFinite(it.costPrice) && it.costPrice >= 0) row.costPrice = it.costPrice;
     if (typeof it.wholesalePrice === 'number' && Number.isFinite(it.wholesalePrice) && it.wholesalePrice >= 0) row.wholesalePrice = it.wholesalePrice;
     if (typeof it.discountPercent === 'number' && Number.isFinite(it.discountPercent)) row.discountPercent = clampNum(it.discountPercent, 0, 100);
@@ -227,6 +230,7 @@ function sanitizeEntityForWrite(
   defaultPurchaseTaxRate: number,
   baseCurrency: CurrencyCode,
 ): Record<string, unknown> {
+  const validPayMethods = ['cash', 'credit', 'pos_card', 'transfer', 'cheque', 'installment', 'apple_pay'];
   switch (sub) {
     case 'invoices': {
       const inv = item as Invoice;
@@ -253,10 +257,11 @@ function sanitizeEntityForWrite(
         currency: invCurrency,
         exchangeRate,
         baseTotal,
-        status: ['paid', 'partial', 'pending', 'overdue', 'cancelled'].includes(inv.status) ? inv.status : 'pending',
+        status: ['draft', 'paid', 'partial', 'pending', 'overdue', 'cancelled'].includes(inv.status) ? inv.status : 'pending',
         date: clampNonEmpty(inv.date, 64, new Date().toISOString()),
       };
       if (inv.invoiceType && ['sales', 'return', 'quotation'].includes(inv.invoiceType)) out.invoiceType = inv.invoiceType;
+      if (inv.invoiceDocKind && ['cash', 'credit', 'tax', 'simplified'].includes(inv.invoiceDocKind)) out.invoiceDocKind = inv.invoiceDocKind;
       if (inv.dueDate) out.dueDate = clampString(inv.dueDate, 64);
       if (inv.branchId) out.branchId = clampString(inv.branchId, 128);
       if (inv.branchName) out.branchName = clampString(inv.branchName, 120);
@@ -264,9 +269,11 @@ function sanitizeEntityForWrite(
       if (inv.warehouseName) out.warehouseName = clampString(inv.warehouseName, 120);
       if (inv.salespersonName) out.salespersonName = clampString(inv.salespersonName, 120);
       if (inv.shiftName) out.shiftName = clampString(inv.shiftName, 80);
-      if (inv.paymentMethod && ['cash', 'credit', 'pos_card', 'transfer', 'cheque', 'installment'].includes(inv.paymentMethod)) {
+      if (inv.paymentMethod && validPayMethods.includes(inv.paymentMethod)) {
         out.paymentMethod = inv.paymentMethod;
       }
+      if (inv.referenceNumber) out.referenceNumber = clampString(inv.referenceNumber, 80);
+      if (typeof inv.invoiceDiscountPercent === 'number') out.invoiceDiscountPercent = clampNum(inv.invoiceDiscountPercent, 0, 100);
       if (typeof inv.discountTotal === 'number') out.discountTotal = clampNum(inv.discountTotal, 0);
       if (typeof inv.shippingFee === 'number') out.shippingFee = clampNum(inv.shippingFee, 0);
       if (typeof inv.extraFee === 'number') out.extraFee = clampNum(inv.extraFee, 0);
@@ -286,7 +293,7 @@ function sanitizeEntityForWrite(
     }
     case 'returns': {
       const ret = item as ReturnRecord;
-      return {
+      const out: Record<string, unknown> = {
         id: sanitizeId(ret.id, 'RET'),
         ownerId: uid,
         type: ret.type === 'purchase' ? 'purchase' : 'sales',
@@ -298,12 +305,21 @@ function sanitizeEntityForWrite(
         qty: clampNum(ret.qty, 0),
         unitPrice: clampNum(ret.unitPrice, 0),
         amount: clampNum(ret.amount, 0),
-        reason: ['damaged', 'wrong_item', 'expired', 'changed_mind', 'other'].includes(ret.reason)
+        reason: ['damaged', 'wrong_item', 'expired', 'not_matching', 'changed_mind', 'other'].includes(ret.reason)
           ? ret.reason
           : 'other',
         notes: clampString(ret.notes, 500),
         date: clampNonEmpty(ret.date, 64, new Date().toISOString()),
       };
+      if (ret.warehouseId) out.warehouseId = clampString(ret.warehouseId, 128);
+      if (ret.branchId) out.branchId = clampString(ret.branchId, 128);
+      if (ret.itemCondition && ['good_restock', 'damaged_scrap'].includes(ret.itemCondition)) out.itemCondition = ret.itemCondition;
+      if (ret.compensationMethod && ['cash_refund', 'replacement', 'account_credit'].includes(ret.compensationMethod)) {
+        out.compensationMethod = ret.compensationMethod;
+      }
+      if (typeof ret.approved === 'boolean') out.approved = ret.approved;
+      if (ret.photoBase64 && ret.photoBase64.length <= 250000) out.photoBase64 = ret.photoBase64;
+      return out;
     }
     case 'quotations': {
       const qt = item as Quotation;
@@ -311,7 +327,7 @@ function sanitizeEntityForWrite(
       if (items.length === 0) {
         items.push({ productId: '', productName: 'Item', qty: 1, unitPrice: 0, total: 0 });
       }
-      return {
+      const out: Record<string, unknown> = {
         id: sanitizeId(qt.id, 'QT'),
         ownerId: uid,
         customerId: clampString(qt.customerId, 128),
@@ -331,6 +347,12 @@ function sanitizeEntityForWrite(
         notes: clampString(qt.notes, 500),
         date: clampNonEmpty(qt.date, 64, new Date().toISOString()),
       };
+      if (typeof qt.validityDays === 'number') out.validityDays = clampNum(qt.validityDays, 0, 3650);
+      if (qt.branchId) out.branchId = clampString(qt.branchId, 128);
+      if (qt.salespersonName) out.salespersonName = clampString(qt.salespersonName, 120);
+      if (qt.currency) out.currency = sanitizeCurrencyCode(qt.currency, baseCurrency);
+      if (qt.terms) out.terms = clampString(qt.terms, 500);
+      return out;
     }
     case 'customers': {
       const c = item as Customer;
@@ -349,23 +371,40 @@ function sanitizeEntityForWrite(
       if (c.companyName) out.companyName = clampString(c.companyName, 160);
       if (c.photoBase64 && c.photoBase64.length <= 250000) out.photoBase64 = c.photoBase64;
       if (c.whatsapp) out.whatsapp = clampString(c.whatsapp, 40);
+      if (c.landline) out.landline = clampString(c.landline, 40);
+      if (c.website) out.website = clampString(c.website, 200);
       if (c.address) out.address = clampString(c.address, 300);
+      if (c.district) out.district = clampString(c.district, 80);
       if (c.city) out.city = clampString(c.city, 80);
       if (c.country) out.country = clampString(c.country, 80);
       if (c.mapUrl) out.mapUrl = clampString(c.mapUrl, 300);
-      if (c.customerType && ['individual', 'company', 'VIP', 'wholesale', 'retail'].includes(c.customerType)) {
+      if (c.gpsCoords) out.gpsCoords = clampString(c.gpsCoords, 80);
+      if (c.customerType && ['individual', 'company', 'VIP', 'wholesale', 'retail', 'distributor'].includes(c.customerType)) {
         out.customerType = c.customerType;
       }
       if (c.taxNumber) out.taxNumber = clampString(c.taxNumber, 64);
+      if (c.taxStatus && ['taxable', 'exempt'].includes(c.taxStatus)) out.taxStatus = c.taxStatus;
       if (c.nationalId) out.nationalId = clampString(c.nationalId, 64);
+      if (c.crNumber) out.crNumber = clampString(c.crNumber, 64);
       if (c.birthDate) out.birthDate = clampString(c.birthDate, 32);
+      if (typeof c.openingBalanceDebit === 'number') out.openingBalanceDebit = clampNum(c.openingBalanceDebit, 0);
+      if (typeof c.openingBalanceCredit === 'number') out.openingBalanceCredit = clampNum(c.openingBalanceCredit, 0);
       if (typeof c.creditTermDays === 'number') out.creditTermDays = clampNum(c.creditTermDays, 0);
-      if (c.preferredPaymentMethod && ['cash', 'credit', 'pos_card', 'transfer', 'cheque', 'installment'].includes(c.preferredPaymentMethod)) {
+      if (c.preferredPaymentMethod && validPayMethods.includes(c.preferredPaymentMethod)) {
         out.preferredPaymentMethod = c.preferredPaymentMethod;
       }
+      if (c.priceList) out.priceList = clampString(c.priceList, 64);
+      if (typeof c.specialDiscountPercent === 'number') out.specialDiscountPercent = clampNum(c.specialDiscountPercent, 0, 100);
+      if (c.currency) out.currency = sanitizeCurrencyCode(c.currency, baseCurrency);
+      if (c.iban) out.iban = clampString(c.iban, 80);
       if (c.salesRep) out.salesRep = clampString(c.salesRep, 120);
       if (c.branchId) out.branchId = clampString(c.branchId, 128);
-      if (c.status && ['active', 'paused', 'blocked'].includes(c.status)) out.status = c.status;
+      if (c.leadSource) out.leadSource = clampString(c.leadSource, 80);
+      if (c.firstDealDate) out.firstDealDate = clampString(c.firstDealDate, 32);
+      if (c.rating && ['A', 'B', 'C'].includes(c.rating)) out.rating = c.rating;
+      if (c.reminderDate) out.reminderDate = clampString(c.reminderDate, 32);
+      if (c.attachmentBase64 && c.attachmentBase64.length <= 250000) out.attachmentBase64 = c.attachmentBase64;
+      if (c.status && ['active', 'paused', 'blocked', 'potential'].includes(c.status)) out.status = c.status;
       if (c.notes) out.notes = clampString(c.notes, 500);
       if (c.callLogs) out.callLogs = clampString(c.callLogs, 1000);
       if (c.createdAtDate) out.createdAtDate = clampString(c.createdAtDate, 64);
@@ -384,27 +423,40 @@ function sanitizeEntityForWrite(
       };
       if (s.code) out.code = clampString(s.code, 64);
       if (s.companyName) out.companyName = clampString(s.companyName, 160);
+      if (s.contactPerson) out.contactPerson = clampString(s.contactPerson, 120);
       if (s.photoBase64 && s.photoBase64.length <= 250000) out.photoBase64 = s.photoBase64;
       if (s.whatsapp) out.whatsapp = clampString(s.whatsapp, 40);
       if (s.email) out.email = clampString(s.email, 160);
       if (s.address) out.address = clampString(s.address, 300);
       if (s.city) out.city = clampString(s.city, 80);
       if (s.country) out.country = clampString(s.country, 80);
-      if (s.supplierType && ['primary', 'secondary', 'manufacturer', 'importer'].includes(s.supplierType)) {
+      if (s.mapUrl) out.mapUrl = clampString(s.mapUrl, 300);
+      if (s.supplierType && ['primary', 'secondary', 'manufacturer', 'importer', 'local', 'distributor', 'services'].includes(s.supplierType)) {
         out.supplierType = s.supplierType;
       }
       if (s.taxNumber) out.taxNumber = clampString(s.taxNumber, 64);
       if (s.crNumber) out.crNumber = clampString(s.crNumber, 64);
       if (s.bankAccount) out.bankAccount = clampString(s.bankAccount, 80);
       if (s.bankName) out.bankName = clampString(s.bankName, 120);
+      if (s.iban) out.iban = clampString(s.iban, 80);
+      if (typeof s.openingBalance === 'number') out.openingBalance = clampNum(s.openingBalance, 0);
       if (typeof s.creditLimit === 'number') out.creditLimit = clampNum(s.creditLimit, 0);
       if (typeof s.paymentTermDays === 'number') out.paymentTermDays = clampNum(s.paymentTermDays, 0);
-      if (s.preferredPaymentMethod && ['cash', 'credit', 'pos_card', 'transfer', 'cheque', 'installment'].includes(s.preferredPaymentMethod)) {
+      if (s.preferredPaymentMethod && validPayMethods.includes(s.preferredPaymentMethod)) {
         out.preferredPaymentMethod = s.preferredPaymentMethod;
       }
+      if (s.currency) out.currency = sanitizeCurrencyCode(s.currency, baseCurrency);
+      if (s.supplyTerms) out.supplyTerms = clampString(s.supplyTerms, 300);
+      if (typeof s.supplierDiscountPercent === 'number') out.supplierDiscountPercent = clampNum(s.supplierDiscountPercent, 0, 100);
+      if (typeof s.leadTimeDays === 'number') out.leadTimeDays = clampNum(s.leadTimeDays, 0, 3650);
+      if (s.suppliedItems) out.suppliedItems = clampString(s.suppliedItems, 400);
+      if (typeof s.lastPurchasePrice === 'number') out.lastPurchasePrice = clampNum(s.lastPurchasePrice, 0);
+      if (typeof s.qualityRating === 'number') out.qualityRating = clampNum(s.qualityRating, 1, 5);
+      if (typeof s.speedRating === 'number') out.speedRating = clampNum(s.speedRating, 1, 5);
+      if (s.attachmentBase64 && s.attachmentBase64.length <= 250000) out.attachmentBase64 = s.attachmentBase64;
       if (s.branchId) out.branchId = clampString(s.branchId, 128);
       if (s.repName) out.repName = clampString(s.repName, 120);
-      if (s.status && ['active', 'paused', 'blocked'].includes(s.status)) out.status = s.status;
+      if (s.status && ['active', 'paused', 'blocked', 'potential'].includes(s.status)) out.status = s.status;
       if (s.notes) out.notes = clampString(s.notes, 500);
       if (s.contractsNotes) out.contractsNotes = clampString(s.contractsNotes, 500);
       if (s.createdAtDate) out.createdAtDate = clampString(s.createdAtDate, 64);
@@ -430,24 +482,30 @@ function sanitizeEntityForWrite(
         taxRate,
         vat,
         total: clampNum(po.total, 0),
-        status: po.status === 'received' ? 'received' : 'ordered',
+        status: ['draft', 'approved', 'ordered', 'received', 'cancelled'].includes(po.status) ? po.status : 'ordered',
         date: clampNonEmpty(po.date, 64, new Date().toISOString()),
       };
+      if (Array.isArray(po.items) && po.items.length > 0) out.items = sanitizeLineItems(po.items);
+      if (typeof po.discountTotal === 'number') out.discountTotal = clampNum(po.discountTotal, 0);
+      if (typeof po.shippingFee === 'number') out.shippingFee = clampNum(po.shippingFee, 0);
+      if (po.expectedDeliveryDate) out.expectedDeliveryDate = clampString(po.expectedDeliveryDate, 64);
+      if (typeof po.paymentTermDays === 'number') out.paymentTermDays = clampNum(po.paymentTermDays, 0);
       if (po.branchId) out.branchId = clampString(po.branchId, 128);
       if (po.warehouseId) out.warehouseId = clampString(po.warehouseId, 128);
-      if (po.paymentMethod && ['cash', 'credit', 'pos_card', 'transfer', 'cheque', 'installment'].includes(po.paymentMethod)) {
+      if (po.paymentMethod && validPayMethods.includes(po.paymentMethod)) {
         out.paymentMethod = po.paymentMethod;
       }
       if (po.notes) out.notes = clampString(po.notes, 500);
       if (typeof po.paidAmount === 'number') out.paidAmount = clampNum(po.paidAmount, 0);
+      if (po.supplierInvoiceBase64 && po.supplierInvoiceBase64.length <= 250000) out.supplierInvoiceBase64 = po.supplierInvoiceBase64;
       return out;
     }
     case 'vouchers': {
       const v = item as Voucher;
-      return {
+      const out: Record<string, unknown> = {
         id: sanitizeId(v.id, 'VCH'),
         ownerId: uid,
-        type: v.type === 'payment' ? 'payment' : 'receipt',
+        type: ['receipt', 'payment', 'journal'].includes(v.type) ? v.type : 'receipt',
         partyName: clampNonEmpty(v.partyName, 160, 'Party'),
         partyPhone: clampString(v.partyPhone, 40),
         amount: clampNum(v.amount, 0),
@@ -455,18 +513,32 @@ function sanitizeEntityForWrite(
         paymentMethod: clampString(v.paymentMethod, 80),
         date: clampNonEmpty(v.date, 64, new Date().toISOString()),
       };
+      if (v.fromAccount) out.fromAccount = clampString(v.fromAccount, 160);
+      if (v.toAccount) out.toAccount = clampString(v.toAccount, 160);
+      if (v.partyType && ['customer', 'supplier', 'employee'].includes(v.partyType)) out.partyType = v.partyType;
+      if (v.branchId) out.branchId = clampString(v.branchId, 128);
+      if (v.bankId) out.bankId = clampString(v.bankId, 128);
+      if (v.chequeNumber) out.chequeNumber = clampString(v.chequeNumber, 64);
+      if (v.chequeDueDate) out.chequeDueDate = clampString(v.chequeDueDate, 32);
+      if (v.attachmentBase64 && v.attachmentBase64.length <= 250000) out.attachmentBase64 = v.attachmentBase64;
+      if (v.status && ['draft', 'approved'].includes(v.status)) out.status = v.status;
+      return out;
     }
     case 'journals': {
       const j = item as JournalEntry;
-      const lines = (j.lines ?? []).slice(0, 50).map((l) => ({
-        account: clampNonEmpty(l.account, 160, 'Account'),
-        debit: clampNum(l.debit, 0),
-        credit: clampNum(l.credit, 0),
-      }));
+      const lines = (j.lines ?? []).slice(0, 50).map((l) => {
+        const line: Record<string, unknown> = {
+          account: clampNonEmpty(l.account, 160, 'Account'),
+          debit: clampNum(l.debit, 0),
+          credit: clampNum(l.credit, 0),
+        };
+        if (l.description) line.description = clampString(l.description, 200);
+        return line;
+      });
       if (lines.length === 0) {
         lines.push({ account: 'General', debit: 0, credit: 0 });
       }
-      return {
+      const out: Record<string, unknown> = {
         id: sanitizeId(j.id, 'JRN'),
         ownerId: uid,
         reference: clampString(j.reference, 120),
@@ -474,6 +546,12 @@ function sanitizeEntityForWrite(
         date: clampNonEmpty(j.date, 64, new Date().toISOString()),
         lines,
       };
+      if (j.entryType && ['manual', 'auto'].includes(j.entryType)) out.entryType = j.entryType;
+      if (j.branchId) out.branchId = clampString(j.branchId, 128);
+      if (j.costCenter) out.costCenter = clampString(j.costCenter, 120);
+      if (j.status && ['draft', 'approved'].includes(j.status)) out.status = j.status;
+      if (j.attachmentBase64 && j.attachmentBase64.length <= 250000) out.attachmentBase64 = j.attachmentBase64;
+      return out;
     }
     case 'products': {
       const p = item as Product;
@@ -487,15 +565,30 @@ function sanitizeEntityForWrite(
         cost: clampNum(p.cost, 0),
         price: clampNum(p.price, 0),
       };
+      if (p.nameEn) out.nameEn = clampString(p.nameEn, 160);
+      if (p.description) out.description = clampString(p.description, 400);
       if (p.imageBase64 && p.imageBase64.length <= 250000) out.imageBase64 = p.imageBase64;
+      if (typeof p.openingQty === 'number') out.openingQty = clampNum(p.openingQty, 0);
+      if (typeof p.retailPrice === 'number') out.retailPrice = clampNum(p.retailPrice, 0);
+      if (typeof p.vipPrice === 'number') out.vipPrice = clampNum(p.vipPrice, 0);
+      if (typeof p.minPrice === 'number') out.minPrice = clampNum(p.minPrice, 0);
       if (p.category) out.category = clampString(p.category, 80);
-      if (p.unit && ['piece', 'carton', 'kg', 'meter'].includes(p.unit)) out.unit = p.unit;
+      if (p.brand) out.brand = clampString(p.brand, 80);
+      if (p.unit && ['piece', 'carton', 'kg', 'meter', 'liter', 'box'].includes(p.unit)) out.unit = p.unit;
+      if (p.subUnit) out.subUnit = clampString(p.subUnit, 40);
+      if (typeof p.subUnitFactor === 'number') out.subUnitFactor = clampNum(p.subUnitFactor, 0);
       if (typeof p.wholesalePrice === 'number') out.wholesalePrice = clampNum(p.wholesalePrice, 0);
+      if (typeof p.isTaxable === 'boolean') out.isTaxable = p.isTaxable;
       if (typeof p.taxRate === 'number') out.taxRate = clampNum(p.taxRate, 0, 100);
       if (typeof p.minStock === 'number') out.minStock = clampNum(p.minStock, 0);
       if (typeof p.maxStock === 'number') out.maxStock = clampNum(p.maxStock, 0);
+      if (p.shelfLocation) out.shelfLocation = clampString(p.shelfLocation, 64);
       if (p.expiryDate) out.expiryDate = clampString(p.expiryDate, 32);
+      if (p.batchNumber) out.batchNumber = clampString(p.batchNumber, 64);
+      if (p.serialNumber) out.serialNumber = clampString(p.serialNumber, 64);
+      if (p.status && ['active', 'paused', 'service'].includes(p.status)) out.status = p.status;
       if (p.supplierId) out.supplierId = clampString(p.supplierId, 128);
+      if (p.branchId) out.branchId = clampString(p.branchId, 128);
       if (p.warehouseId) out.warehouseId = clampString(p.warehouseId, 128);
       return out;
     }
@@ -513,6 +606,15 @@ function sanitizeEntityForWrite(
         phone: clampString(e.phone, 40),
         salary: clampNum(e.salary, 0),
       };
+      if (e.code) out.code = clampString(e.code, 64);
+      if (e.department) out.department = clampString(e.department, 100);
+      if (e.email) out.email = clampString(e.email, 160);
+      if (e.nationalId) out.nationalId = clampString(e.nationalId, 64);
+      if (e.branchId) out.branchId = clampString(e.branchId, 128);
+      if (e.hireDate) out.hireDate = clampString(e.hireDate, 32);
+      if (e.bankAccount) out.bankAccount = clampString(e.bankAccount, 80);
+      if (e.status && ['active', 'on_leave', 'terminated'].includes(e.status)) out.status = e.status;
+      if (e.notes) out.notes = clampString(e.notes, 400);
       if (e.lastPaidDate) {
         out.lastPaidDate = clampString(e.lastPaidDate, 64);
       }
@@ -563,7 +665,7 @@ function sanitizeEntityForWrite(
           ? rec.frequency
           : 'monthly',
         nextRunDate: clampNonEmpty(rec.nextRunDate, 64, new Date().toISOString().slice(0, 10)),
-        targetStatus: ['paid', 'partial', 'pending', 'overdue', 'cancelled'].includes(rec.targetStatus)
+        targetStatus: ['draft', 'paid', 'partial', 'pending', 'overdue', 'cancelled'].includes(rec.targetStatus)
           ? rec.targetStatus
           : 'pending',
         autoGenerate: Boolean(rec.autoGenerate),
@@ -572,6 +674,14 @@ function sanitizeEntityForWrite(
         notes: clampString(rec.notes, 500),
         date: clampNonEmpty(rec.date, 64, new Date().toISOString()),
       };
+      if (rec.templateName) out.templateName = clampString(rec.templateName, 160);
+      if (rec.startDate) out.startDate = clampString(rec.startDate, 32);
+      if (rec.endDate) out.endDate = clampString(rec.endDate, 32);
+      if (typeof rec.maxOccurrences === 'number') out.maxOccurrences = clampNum(rec.maxOccurrences, 0, 10000);
+      if (typeof rec.issueDay === 'number') out.issueDay = clampNum(rec.issueDay, 1, 31);
+      if (typeof rec.autoSendWhatsApp === 'boolean') out.autoSendWhatsApp = rec.autoSendWhatsApp;
+      if (typeof rec.autoSendEmail === 'boolean') out.autoSendEmail = rec.autoSendEmail;
+      if (typeof rec.notifyDaysBefore === 'number') out.notifyDaysBefore = clampNum(rec.notifyDaysBefore, 0, 90);
       if (rec.lastGeneratedDate) {
         out.lastGeneratedDate = clampString(rec.lastGeneratedDate, 64);
       }
@@ -583,7 +693,7 @@ function sanitizeEntityForWrite(
         id: sanitizeId(d.id, 'DOC'),
         ownerId: uid,
         title: clampNonEmpty(d.title, 160, 'Document'),
-        docType: ['contract', 'receipt', 'tax_cert', 'id_doc', 'invoice_scan', 'other'].includes(d.docType)
+        docType: ['contract', 'receipt', 'tax_cert', 'id_doc', 'invoice_scan', 'cr_doc', 'other'].includes(d.docType)
           ? d.docType
           : 'other',
         partyName: clampString(d.partyName, 160),
@@ -594,6 +704,8 @@ function sanitizeEntityForWrite(
         notes: clampString(d.notes, 500),
         date: clampNonEmpty(d.date, 64, new Date().toISOString()),
       };
+      if (d.partyType && ['customer', 'supplier', 'employee'].includes(d.partyType)) out.partyType = d.partyType;
+      if (d.expiryDate) out.expiryDate = clampString(d.expiryDate, 32);
       if (d.fileDataBase64 && d.fileDataBase64.length <= 250000) {
         out.fileDataBase64 = d.fileDataBase64;
       }
@@ -616,7 +728,7 @@ function sanitizeEntityForWrite(
     }
     case 'warehouses': {
       const w = item as Warehouse;
-      return {
+      const out: Record<string, unknown> = {
         id: sanitizeId(w.id, 'WH'),
         ownerId: uid,
         nameAr: clampNonEmpty(w.nameAr, 120, 'المستودع الرئيسي'),
@@ -626,6 +738,11 @@ function sanitizeEntityForWrite(
         managerName: clampString(w.managerName, 120),
         active: Boolean(w.active),
       };
+      if (w.code) out.code = clampString(w.code, 64);
+      if (w.city) out.city = clampString(w.city, 80);
+      if (w.address) out.address = clampString(w.address, 200);
+      if (w.warehouseType && ['main', 'sub'].includes(w.warehouseType)) out.warehouseType = w.warehouseType;
+      return out;
     }
     case 'chartOfAccounts': {
       const a = item as ChartAccount;
@@ -640,6 +757,13 @@ function sanitizeEntityForWrite(
           : 'assets',
       };
       if (a.parentCode) out.parentCode = clampString(a.parentCode, 32);
+      if (typeof a.level === 'number') out.level = clampNum(a.level, 1, 10);
+      if (a.normalBalance && ['debit', 'credit'].includes(a.normalBalance)) out.normalBalance = a.normalBalance;
+      if (typeof a.openingBalance === 'number' && Number.isFinite(a.openingBalance)) out.openingBalance = a.openingBalance;
+      if (a.costCenter) out.costCenter = clampString(a.costCenter, 120);
+      if (a.branchId) out.branchId = clampString(a.branchId, 128);
+      if (typeof a.allowPosting === 'boolean') out.allowPosting = a.allowPosting;
+      if (a.notes) out.notes = clampString(a.notes, 300);
       if (typeof a.isSystem === 'boolean') out.isSystem = a.isSystem;
       return out;
     }
@@ -660,11 +784,12 @@ function sanitizeEntityForWrite(
       };
       if (m.fromWarehouseId) out.fromWarehouseId = clampString(m.fromWarehouseId, 128);
       if (m.toWarehouseId) out.toWarehouseId = clampString(m.toWarehouseId, 128);
+      if (m.reason) out.reason = clampString(m.reason, 200);
       return out;
     }
     case 'stocktakes': {
       const st = item as StocktakeRecord;
-      return {
+      const out: Record<string, unknown> = {
         id: sanitizeId(st.id, 'STK'),
         ownerId: uid,
         warehouseId: clampString(st.warehouseId, 128),
@@ -678,6 +803,9 @@ function sanitizeEntityForWrite(
         notes: clampString(st.notes, 400),
         date: clampNonEmpty(st.date, 64, new Date().toISOString()),
       };
+      if (st.countedBy) out.countedBy = clampString(st.countedBy, 120);
+      if (st.reason) out.reason = clampString(st.reason, 200);
+      return out;
     }
     case 'auditLogs': {
       const log = item as AuditLogEntry;
@@ -1051,19 +1179,10 @@ export async function syncStateDiffToFirestore(
           const patch: Record<string, unknown> = { ...nextSanitized };
           delete patch.id;
           delete patch.ownerId;
-          if (
-            sub === 'customers' &&
-            prevSanitized.creditLimit !== undefined &&
-            nextSanitized.creditLimit === undefined
-          ) {
-            patch.creditLimit = deleteField();
-          }
-          if (
-            sub === 'documents' &&
-            prevSanitized.fileDataBase64 !== undefined &&
-            nextSanitized.fileDataBase64 === undefined
-          ) {
-            patch.fileDataBase64 = deleteField();
+          for (const prevKey of Object.keys(prevSanitized)) {
+            if (prevKey !== 'id' && prevKey !== 'ownerId' && nextSanitized[prevKey] === undefined) {
+              patch[prevKey] = deleteField();
+            }
           }
           try {
             await updateDoc(doc(db, 'workspaces', uid, sub, id), {

@@ -33,6 +33,7 @@ import {
   Truck,
   Users,
   Wallet,
+  Wifi,
   X,
 } from 'lucide-react';
 import { strings } from './data/translations';
@@ -790,9 +791,17 @@ export default function App() {
 
       {/* Global Toast Banner */}
       {toastMsg && (
-        <div className="no-print fixed bottom-20 lg:bottom-6 end-4 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold shadow-xl border border-[#C9A227]/60">
-          <CheckCircle2 className="w-4 h-4 text-[#C9A227] shrink-0" />
-          <span>{toastMsg}</span>
+        <div
+          role="status"
+          aria-live="polite"
+          className="no-print fixed bottom-20 lg:bottom-6 end-4 z-50 flex items-center gap-2.5 px-4 py-3 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold shadow-xl border border-[#C9A227]/70 max-w-sm"
+        >
+          {toastMsg.includes('Firestore') ? (
+            <Wifi className="w-4 h-4 text-[#C9A227] shrink-0" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4 text-[#C9A227] shrink-0" />
+          )}
+          <span className="leading-relaxed">{toastMsg}</span>
         </div>
       )}
 
