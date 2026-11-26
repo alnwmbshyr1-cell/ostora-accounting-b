@@ -1,6 +1,7 @@
 import {
   BankAccount,
   ChartAccount,
+  Expense,
   Invoice,
   JournalEntry,
   JournalLine,
@@ -12,6 +13,18 @@ import {
   mulFxHalalas,
   toHalalas,
 } from './halala';
+
+export function getExpenseBaseHalalas(exp: Expense): number {
+  if (typeof exp.baseAmount === 'number' && Number.isFinite(exp.baseAmount)) {
+    return toHalalas(exp.baseAmount);
+  }
+  const fx = typeof exp.exchangeRate === 'number' && Number.isFinite(exp.exchangeRate) && exp.exchangeRate > 0 ? exp.exchangeRate : 1;
+  return mulFxHalalas(toHalalas(exp.amount), fx);
+}
+
+export function getExpenseBaseAmount(exp: Expense): number {
+  return fromHalalas(getExpenseBaseHalalas(exp));
+}
 
 export const DEFAULT_CHART_OF_ACCOUNTS: ChartAccount[] = [
   // 1xxx Assets

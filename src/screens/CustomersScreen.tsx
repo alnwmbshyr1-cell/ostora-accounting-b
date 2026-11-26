@@ -4,6 +4,7 @@ import { DataImportModal } from '../components/DataImportModal';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { strings } from '../data/translations';
 import { CurrencyCode, Customer, CustomerType, PartyStatus, PaymentMethodType } from '../types/erp';
+import { formatCurrency } from '../utils/currencies';
 import { downloadTextFile } from '../utils/export';
 import { compressImageToBase64 } from '../utils/image';
 import { buildWhatsAppLink } from '../utils/messaging';
@@ -301,10 +302,10 @@ export const CustomersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                   </div>
                   <div className="text-end">
                     <span className={`font-mono font-extrabold text-sm tabular-nums block ${c.debt > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                      {c.debt.toLocaleString()} {c.currency ?? cur}
+                      {formatCurrency(c.debt, c.currency ?? cur, { isAr })}
                     </span>
                     <span className="text-[11px] text-slate-500 font-mono tabular-nums">
-                      {t.creditLimit}: {hasLimit ? `${limitVal.toLocaleString()} ${cur}` : t.unlimitedCredit}
+                      {t.creditLimit}: {hasLimit ? formatCurrency(limitVal, cur, { isAr }) : t.unlimitedCredit}
                     </span>
                   </div>
                 </div>
@@ -316,7 +317,7 @@ export const CustomersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                   </div>
                   <div>
                     <span className="text-slate-400 block">{isAr ? 'إجمالي المشتريات' : 'Total Sales'}</span>
-                    <span className="font-mono font-bold">{totalPurchases.toLocaleString()}</span>
+                    <span className="font-mono font-bold">{formatCurrency(totalPurchases, cur, { isAr })}</span>
                   </div>
                   <div>
                     <span className="text-slate-400 block">{t.status}</span>
@@ -330,7 +331,7 @@ export const CustomersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                   <div className="space-y-1">
                     <div className="flex items-center justify-between text-[11px] font-mono tabular-nums">
                       <span className={isOverOrAtLimit ? 'text-red-600 font-bold' : 'text-slate-500'}>
-                        {t.availableCredit}: {(avail ?? 0).toLocaleString()} {cur}
+                        {t.availableCredit}: {formatCurrency(avail ?? 0, cur, { isAr })}
                       </span>
                       <span className={pct >= 90 ? 'text-red-600 font-bold' : 'text-slate-500'}>{pct}%</span>
                     </div>
@@ -357,8 +358,8 @@ export const CustomersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                     href={buildWhatsAppLink(
                       c.whatsapp || c.phone,
                       isAr
-                        ? `السلام عليكم ${c.name}، تذكير بالرصيد المستحق ${c.debt.toFixed(2)} ${cur} لدى ${state.settings.companyName}.`
-                        : `Dear ${c.name}, reminder of balance ${c.debt.toFixed(2)} ${cur} with ${state.settings.companyName}.`,
+                        ? `السلام عليكم ${c.name}، تذكير بالرصيد المستحق ${formatCurrency(c.debt, c.currency ?? cur, { isAr })} لدى ${state.settings.companyName}.`
+                        : `Dear ${c.name}, reminder of balance ${formatCurrency(c.debt, c.currency ?? cur, { isAr })} with ${state.settings.companyName}.`,
                     )}
                     target="_blank"
                     rel="noreferrer"
@@ -775,7 +776,7 @@ export const CustomersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
               <div>
                 <h3 className="text-base font-extrabold">{t.customerStatement}: {stmtCustomer.name}</h3>
                 <p className="text-xs text-slate-500 font-mono">
-                  {stmtCustomer.code ?? stmtCustomer.id} · {stmtCustomer.phone} · {t.debt}: {stmtCustomer.debt.toLocaleString()} {cur}
+                  {stmtCustomer.code ?? stmtCustomer.id} · {stmtCustomer.phone} · {t.debt}: {formatCurrency(stmtCustomer.debt, stmtCustomer.currency ?? cur, { isAr })}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -803,8 +804,8 @@ export const CustomersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                       <tr key={i.id}>
                         <td className="p-2 font-mono">{i.date.slice(0, 10)}</td>
                         <td className="p-2">{i.id} · {i.description || t.invoices}</td>
-                        <td className="p-2 text-end font-mono font-bold">{i.total.toFixed(2)}</td>
-                        <td className="p-2 text-end font-mono text-emerald-600">{(i.paidAmount ?? 0).toFixed(2)}</td>
+                        <td className="p-2 text-end font-mono font-bold">{formatCurrency(i.total, i.currency ?? cur, { isAr })}</td>
+                        <td className="p-2 text-end font-mono text-emerald-600">{formatCurrency(i.paidAmount ?? 0, i.currency ?? cur, { isAr })}</td>
                       </tr>
                     ))}
                   {state.vouchers
@@ -813,8 +814,8 @@ export const CustomersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                       <tr key={v.id}>
                         <td className="p-2 font-mono">{v.date.slice(0, 10)}</td>
                         <td className="p-2">{v.id} · {v.reason}</td>
-                        <td className="p-2 text-end font-mono">0.00</td>
-                        <td className="p-2 text-end font-mono font-bold text-emerald-600">{v.amount.toFixed(2)}</td>
+                        <td className="p-2 text-end font-mono">{formatCurrency(0, cur, { isAr })}</td>
+                        <td className="p-2 text-end font-mono font-bold text-emerald-600">{formatCurrency(v.amount, cur, { isAr })}</td>
                       </tr>
                     ))}
                 </tbody>

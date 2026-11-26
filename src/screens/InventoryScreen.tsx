@@ -22,6 +22,7 @@ import { computeProfitAnalytics } from '../domain/accounting';
 import { toHalalas } from '../domain/halala';
 import { Product, UnitOfMeasure } from '../types/erp';
 import { generateEan13 } from '../utils/barcode';
+import { formatCurrency } from '../utils/currencies';
 import { downloadTextFile } from '../utils/export';
 import { compressImageToBase64 } from '../utils/image';
 import { ScreenProps } from './types';
@@ -434,16 +435,16 @@ export const InventoryScreen: React.FC<ScreenProps> = ({ store }) => {
                         {t.qty}: {p.qty} {unitLabel(p.unit)}
                       </span>
                       <span className="font-mono font-extrabold text-[#0A3D2C] dark:text-[#C9A227] tabular-nums">
-                        {p.price.toFixed(0)} {cur}
+                        {formatCurrency(p.price, cur, { isAr })}
                       </span>
                     </div>
                     <div className="flex items-center justify-between text-[11px] text-slate-500 font-mono tabular-nums">
                       <span>
-                        {isAr ? 'جملة' : 'Wholesale'}: {(p.wholesalePrice ?? p.price).toFixed(0)} {cur}
+                        {isAr ? 'جملة' : 'Wholesale'}: {formatCurrency(p.wholesalePrice ?? p.price, cur, { isAr })}
                       </span>
                       {itemProfit && (
                         <span className={itemProfit.profit >= 0 ? 'text-emerald-600 font-bold' : 'text-red-600 font-bold'}>
-                          {isAr ? 'ربح:' : 'Profit:'} {itemProfit.profit.toFixed(0)} {cur}
+                          {isAr ? 'ربح:' : 'Profit:'} {formatCurrency(itemProfit.profit, cur, { isAr })}
                         </span>
                       )}
                     </div>
@@ -1111,13 +1112,13 @@ export const InventoryScreen: React.FC<ScreenProps> = ({ store }) => {
               <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0A120F]">
                 <p className="text-slate-500 font-bold">{isAr ? 'إيرادات الصنف' : 'Item Revenue'}</p>
                 <p className="text-base font-extrabold font-mono tabular-nums mt-0.5 text-[#0A3D2C] dark:text-[#C9A227]">
-                  {(ledgerProfit?.revenue ?? 0).toFixed(2)} {cur}
+                  {formatCurrency(ledgerProfit?.revenue ?? 0, cur, { isAr })}
                 </p>
               </div>
               <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0A120F]">
                 <p className="text-slate-500 font-bold">{isAr ? 'ربح الصنف' : 'Item Profit'}</p>
                 <p className="text-base font-extrabold font-mono tabular-nums mt-0.5 text-emerald-600">
-                  {(ledgerProfit?.profit ?? 0).toFixed(2)} {cur} ({ledgerProfit?.marginPercent ?? 0}%)
+                  {formatCurrency(ledgerProfit?.profit ?? 0, cur, { isAr })} ({ledgerProfit?.marginPercent ?? 0}%)
                 </p>
               </div>
             </div>

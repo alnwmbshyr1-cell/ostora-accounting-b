@@ -9,6 +9,7 @@ import {
   computeBankReconciliationDiff,
   computeInvoiceTotalsHalala,
   DEFAULT_CHART_OF_ACCOUNTS,
+  getExpenseBaseHalalas,
   isDateFiscalLocked,
 } from '../domain/accounting';
 import {
@@ -41,6 +42,8 @@ import {
   buildDefaultRatesForBase,
   DEFAULT_ENABLED_CURRENCIES,
   fetchLiveExchangeRates,
+  formatCurrency,
+  setCurrencyDisplayPreferences,
 } from '../utils/currencies';
 import {
   ArchivedDocument,
@@ -71,7 +74,9 @@ import {
   SmartAlert,
   StockMovement,
   StocktakeRecord,
+  SubscriptionMeta,
   Supplier,
+  SupportTicket,
   Voucher,
   Warehouse,
 } from '../types/erp';
@@ -116,6 +121,22 @@ function nextSequentialId(prefix: string, startBase: number, existingIds: string
   return `${prefix}-${maxNum + 1}`;
 }
 
+function getCompactDeviceInfo(): string {
+  if (typeof navigator === 'undefined') return 'Web App';
+  const ua = navigator.userAgent || '';
+  const platform = /Mobile|Android|iPhone|iPad/i.test(ua) ? 'Mobile' : 'Desktop';
+  const browser = /Edg\//i.test(ua)
+    ? 'Edge'
+    : /Chrome\//i.test(ua)
+    ? 'Chrome'
+    : /Firefox\//i.test(ua)
+    ? 'Firefox'
+    : /Safari\//i.test(ua)
+    ? 'Safari'
+    : 'Browser';
+  return `${platform} · ${browser}`;
+}
+
 function makeAuditEntry(
   p: PersistedState,
   actorName: string,
@@ -123,6 +144,12 @@ function makeAuditEntry(
   entity: string,
   entityId: string,
   summary: string,
+  opts?: {
+    screenName?: string;
+    oldValue?: string;
+    newValue?: string;
+    deviceInfo?: string;
+  },
 ): AuditLogEntry {
   return {
     id: `AUD-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -132,6 +159,10 @@ function makeAuditEntry(
     entity,
     entityId,
     summary,
+    screenName: opts?.screenName ?? entity,
+    oldValue: opts?.oldValue,
+    newValue: opts?.newValue,
+    deviceInfo: opts?.deviceInfo ?? getCompactDeviceInfo(),
     timestamp: new Date().toISOString(),
   };
 }
@@ -349,6 +380,15 @@ function createDemoState(prevSettings?: CompanySettings): PersistedState {
     currentRole: 'owner',
     activePlan: 'trial',
     trialStartIso: new Date().toISOString(),
+    subscriptionMeta: {
+      planId: 'pro',
+      billingCycle: 'yearly',
+      startDate: new Date().toISOString().slice(0, 10),
+      endDate: new Date(now + 365 * 86400000).toISOString().slice(0, 10),
+      status: 'active',
+      paymentMethod: 'مدى / البطاقة الائتمانية',
+      autoRenew: true,
+    },
     permissionsMatrix: structuredClone(DEFAULT_PERMISSIONS_MATRIX),
     settings: prevSettings ?? {
       companyName: 'مؤسسة الأسطورة للتجارة والمقاولات',
@@ -357,9 +397,16 @@ function createDemoState(prevSettings?: CompanySettings): PersistedState {
       phone: '0501234567',
       email: 'finance@ostora.systems',
       address: 'الرياض، حي العليا، المملكة العربية السعودية',
+      city: 'الرياض',
       currency: 'SAR',
       enabledCurrencies: [...DEFAULT_ENABLED_CURRENCIES],
       exchangeRates: buildDefaultRatesForBase('SAR'),
+      autoUpdateExchangeRates: true,
+      fxAutoIntervalHours: 6,
+      displayCurrency: 'SAR',
+      currencyDisplayStyle: 'symbol',
+      currencyNumberLocale: 'auto',
+      currencyDecimalMode: 'auto',
       isArabic: true,
       isDarkMode: false,
       monthlySalesGoal: 120000,
@@ -371,6 +418,14 @@ function createDemoState(prevSettings?: CompanySettings): PersistedState {
       autoSyncIntervalMinutes: 0,
       defaultBranchId: 'BR-1',
       defaultWarehouseId: 'WH-1',
+      invoicePrefix: 'INV',
+      invoiceNumberFormat: 'INV-YYYY-####',
+      invoiceTerms: 'تُستحق الفاتورة وفق شروط السداد المتفق عليها. تخضع لضريبة القيمة المضافة 15%.',
+      printPaperSize: 'a4',
+      showQrOnPrint: true,
+      showLogoOnPrint: true,
+      whatsappTemplate: 'مرحباً {customer}، مرفق فاتورتكم رقم {invoice} بمبلغ {total} {currency}. شكراً لتعاملكم معنا.',
+      senderEmail: 'finance@ostora.systems',
     },
     branches: [
       { id: 'BR-1', nameAr: 'الفرع الرئيسي - الرياض', nameEn: 'Main Branch - Riyadh', city: 'الرياض', phone: '0501234567', managerName: 'سارة القحطاني', isMain: true, active: true },
@@ -650,41 +705,108 @@ function createDemoState(prevSettings?: CompanySettings): PersistedState {
     employees: [
       {
         id: 'E-01',
+        code: 'EMP-001',
         name: 'خالد العتيبي',
         roleTitle: 'محاسب مالي',
+        department: 'المالية والمحاسبة',
         role: 'accountant',
         permissions: [...DEFAULT_PERMISSIONS_MATRIX.accountant],
         phone: '0509981234',
+        whatsapp: '966509981234',
+        email: 'khaled@ostora.systems',
+        branchId: 'BR-1',
+        hireDate: '2024-01-15',
         salary: 8500,
+        allowances: 1200,
+        deductions: 0,
+        workShift: 'صباحي 8 ص - 4 م',
+        status: 'active',
       },
       {
         id: 'E-02',
+        code: 'EMP-002',
         name: 'سارة القحطاني',
         roleTitle: 'مديرة مبيعات',
+        department: 'المبيعات',
         role: 'salesman',
         permissions: [...DEFAULT_PERMISSIONS_MATRIX.salesman],
         phone: '0552218743',
+        whatsapp: '966552218743',
+        email: 'sara@ostora.systems',
+        branchId: 'BR-1',
+        hireDate: '2024-03-01',
         salary: 9200,
+        allowances: 1500,
+        deductions: 0,
+        workShift: 'صباحي 9 ص - 5 م',
+        status: 'active',
       },
       {
         id: 'E-03',
+        code: 'EMP-003',
         name: 'فيصل الشمري',
         roleTitle: 'أمين صندوق وكاشير POS',
+        department: 'نقاط البيع',
         role: 'cashier',
         permissions: [...DEFAULT_PERMISSIONS_MATRIX.cashier],
         phone: '0543321980',
+        whatsapp: '966543321980',
+        email: 'faisal@ostora.systems',
+        branchId: 'BR-2',
+        hireDate: '2024-06-10',
         salary: 5800,
+        allowances: 700,
+        deductions: 0,
+        workShift: 'مسائي 4 م - 12 ص',
+        status: 'active',
       },
     ],
     expenses: [
-      { id: 'EXP-901', title: 'إيجار المكتب الرئيسي', category: 'إيجارات', amount: 12000, paidFromBankId: 'alrajhi', date: isoDaysAgo(10), branchId: 'BR-1' },
-      { id: 'EXP-902', title: 'فواتير الكهرباء والإنترنت', category: 'مرافق', amount: 1450, paidFromBankId: 'cash', date: isoDaysAgo(6), branchId: 'BR-1' },
+      {
+        id: 'EXP-901',
+        expenseNumber: 'EXP-2025-0901',
+        title: 'إيجار المكتب الرئيسي',
+        category: 'إيجارات',
+        expenseType: 'rent',
+        beneficiary: 'شركة العقارات المتحدة',
+        costCenter: 'CC-MAIN',
+        amount: 12000,
+        currency: 'SAR',
+        exchangeRate: 1,
+        baseAmount: 12000,
+        paymentMethod: 'transfer',
+        paidFromBankId: 'alrajhi',
+        status: 'paid',
+        date: isoDaysAgo(10),
+        branchId: 'BR-1',
+        isRecurringMonthly: true,
+      },
+      {
+        id: 'EXP-902',
+        expenseNumber: 'EXP-2025-0902',
+        title: 'فواتير الكهرباء والإنترنت',
+        category: 'مرافق',
+        expenseType: 'electricity',
+        beneficiary: 'الشركة السعودية للكهرباء',
+        costCenter: 'CC-MAIN',
+        amount: 1450,
+        currency: 'SAR',
+        exchangeRate: 1,
+        baseAmount: 1450,
+        paymentMethod: 'cash',
+        paidFromBankId: 'cash',
+        status: 'paid',
+        date: isoDaysAgo(6),
+        branchId: 'BR-1',
+        isRecurringMonthly: true,
+      },
     ],
     banks: [
-      { id: 'alrajhi', nameAr: 'مصرف الراجحي', nameEn: 'AlRajhi Bank', accountNumber: 'SA44 8000 0219 6080 1044', balance: 142500 },
-      { id: 'alahli', nameAr: 'البنك الأهلي السعودي', nameEn: 'AlAhli (SNB)', accountNumber: 'SA19 1000 0011 8920 3310', balance: 68900 },
-      { id: 'cash', nameAr: 'الصندوق النقدي', nameEn: 'Main Cash Box', accountNumber: 'CASH-01', balance: 19450 },
+      { id: 'alrajhi', accountType: 'bank', bankName: 'مصرف الراجحي', nameAr: 'مصرف الراجحي', nameEn: 'AlRajhi Bank', accountNumber: 'SA44 8000 0219 6080 1044', iban: 'SA4480000219608010441234', branchId: 'BR-1', currency: 'SAR', openingBalance: 125000, balance: 142500, custodianName: 'خالد العتيبي', status: 'active' },
+      { id: 'alahli', accountType: 'bank', bankName: 'البنك الأهلي السعودي', nameAr: 'البنك الأهلي السعودي', nameEn: 'AlAhli (SNB)', accountNumber: 'SA19 1000 0011 8920 3310', iban: 'SA1910000011892033105678', branchId: 'BR-2', currency: 'SAR', openingBalance: 73100, balance: 68900, custodianName: 'سارة القحطاني', status: 'active' },
+      { id: 'cash', accountType: 'cash', bankName: 'الخزينة الرئيسية', nameAr: 'الصندوق النقدي', nameEn: 'Main Cash Box', accountNumber: 'CASH-01', branchId: 'BR-1', currency: 'SAR', openingBalance: 20900, balance: 19450, custodianName: 'فيصل الشمري', status: 'active' },
     ],
+    supportTickets: [],
   };
 }
 
@@ -761,7 +883,23 @@ function hydrateState(rawObj: Partial<PersistedState>): PersistedState {
       autoSyncIntervalMinutes: Number.isFinite(rawObj.settings?.autoSyncIntervalMinutes)
         ? Math.max(0, Number(rawObj.settings!.autoSyncIntervalMinutes))
         : 0,
+      autoUpdateExchangeRates:
+        typeof rawObj.settings?.autoUpdateExchangeRates === 'boolean'
+          ? rawObj.settings.autoUpdateExchangeRates
+          : true,
+      fxAutoIntervalHours: Number.isFinite(rawObj.settings?.fxAutoIntervalHours)
+        ? Math.max(1, Math.min(168, Number(rawObj.settings!.fxAutoIntervalHours)))
+        : 6,
+      displayCurrency:
+        rawObj.settings?.displayCurrency && ALL_CURRENCY_CODES.includes(rawObj.settings.displayCurrency)
+          ? rawObj.settings.displayCurrency
+          : (rawObj.settings?.currency ?? demo.settings.currency),
+      currencyDisplayStyle: rawObj.settings?.currencyDisplayStyle ?? 'symbol',
+      currencyNumberLocale: rawObj.settings?.currencyNumberLocale ?? 'auto',
+      currencyDecimalMode: rawObj.settings?.currencyDecimalMode ?? 'auto',
     },
+    subscriptionMeta: rawObj.subscriptionMeta ?? demo.subscriptionMeta,
+    supportTickets: rawObj.supportTickets ?? demo.supportTickets,
   };
 }
 
@@ -1214,6 +1352,78 @@ export function useErpStore() {
     return () => clearTimeout(timer);
   }, [state.isLoggedIn, state.recurringInvoices, user, notify]);
 
+  useMemo(() => {
+    setCurrencyDisplayPreferences({
+      displayStyle: state.settings.currencyDisplayStyle ?? 'symbol',
+      numberLocale: state.settings.currencyNumberLocale ?? 'auto',
+      decimalMode: state.settings.currencyDecimalMode ?? 'auto',
+    });
+  }, [
+    state.settings.currencyDisplayStyle,
+    state.settings.currencyNumberLocale,
+    state.settings.currencyDecimalMode,
+  ]);
+
+  const lastAutoFxBaseRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!state.isLoggedIn) return;
+    if (!(state.settings.autoUpdateExchangeRates ?? true)) return;
+
+    const base = state.settings.currency;
+    const intervalHours = Math.max(1, Math.min(168, state.settings.fxAutoIntervalHours ?? 6));
+    const intervalMs = intervalHours * 60 * 60 * 1000;
+    let cancelled = false;
+
+    const syncRatesIfNeeded = (forceWhenFallback = false) => {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+      const current = latestStateRef.current.settings;
+      const lastTs = current.lastRatesUpdate ? new Date(current.lastRatesUpdate).getTime() : 0;
+      const isStale = !lastTs || Date.now() - lastTs >= intervalMs;
+      const isFallback = forceWhenFallback && current.lastRatesSource === 'fallback';
+      if (lastAutoFxBaseRef.current === base && !isStale && !isFallback) return;
+      lastAutoFxBaseRef.current = base;
+
+      fetchLiveExchangeRates(base)
+        .then((res) => {
+          if (cancelled) return;
+          setState((p) => ({
+            ...p,
+            settings: {
+              ...p.settings,
+              exchangeRates: {
+                ...(p.settings.exchangeRates ?? {}),
+                ...res.rates,
+                [base]: 1,
+              },
+              lastRatesUpdate: res.updatedAt,
+              lastRatesSource: res.source,
+            },
+          }));
+        })
+        .catch(() => {
+          // Keep existing cached exchange rates if offline/unreachable
+        });
+    };
+
+    syncRatesIfNeeded(false);
+
+    const timer = window.setInterval(() => syncRatesIfNeeded(false), 15 * 60 * 1000);
+    const handleOnline = () => syncRatesIfNeeded(true);
+    window.addEventListener('online', handleOnline);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [
+    state.isLoggedIn,
+    state.settings.currency,
+    state.settings.autoUpdateExchangeRates,
+    state.settings.fxAutoIntervalHours,
+    state.settings.lastRatesUpdate,
+  ]);
+
   const allowedRoutes = useMemo(() => {
     return state.permissionsMatrix[state.currentRole] ?? DEFAULT_PERMISSIONS_MATRIX.owner;
   }, [state.permissionsMatrix, state.currentRole]);
@@ -1239,7 +1449,10 @@ export function useErpStore() {
     let stockValueH = 0;
     for (const p of state.products) stockValueH += Math.round(toHalalas(p.cost) * p.qty);
     let totalExpensesH = 0;
-    for (const e of state.expenses) totalExpensesH += toHalalas(e.amount);
+    for (const e of state.expenses) {
+      if (e.status === 'draft') continue;
+      totalExpensesH += getExpenseBaseHalalas(e);
+    }
     let totalBanksH = 0;
     for (const b of state.banks) totalBanksH += toHalalas(b.balance);
 
@@ -1278,12 +1491,16 @@ export function useErpStore() {
     }
     const overdue = state.invoices.filter((i) => i.status === 'overdue');
     if (overdue.length > 0) {
+      const overdueTotalBase = overdue.reduce(
+        (s, i) => s + (i.baseTotal ?? i.total * (i.exchangeRate ?? 1)),
+        0,
+      );
       alerts.push({
         id: 'alert_overdue',
         titleAr: `${overdue.length} فواتير متأخرة السداد تحتاج متابعة`,
         titleEn: `${overdue.length} overdue invoices require collection`,
-        subtitleAr: `إجمالي المتأخرات ${overdue.reduce((s, i) => s + i.total, 0).toFixed(0)} ${state.settings.currency}`,
-        subtitleEn: `Overdue total ${overdue.reduce((s, i) => s + i.total, 0).toFixed(0)} ${state.settings.currency}`,
+        subtitleAr: `إجمالي المتأخرات ${formatCurrency(overdueTotalBase, state.settings.currency, { isAr: true })}`,
+        subtitleEn: `Overdue total ${formatCurrency(overdueTotalBase, state.settings.currency, { isAr: false })}`,
         actionRoute: 'invoices',
         severity: 'danger',
       });
@@ -1347,6 +1564,13 @@ export function useErpStore() {
           }
           nextRates = rebased;
         }
+        let nextDisplay = patch.displayCurrency ?? p.settings.displayCurrency ?? nextCurrency;
+        if (patch.currency && patch.currency !== p.settings.currency && (!p.settings.displayCurrency || p.settings.displayCurrency === p.settings.currency)) {
+          nextDisplay = nextCurrency;
+        }
+        if (!nextEnabled.includes(nextDisplay)) {
+          nextDisplay = nextCurrency;
+        }
         return {
           ...p,
           settings: {
@@ -1354,6 +1578,7 @@ export function useErpStore() {
             ...patch,
             enabledCurrencies: nextEnabled,
             exchangeRates: nextRates,
+            displayCurrency: nextDisplay,
           },
         };
       }),
@@ -1388,9 +1613,24 @@ export function useErpStore() {
             [base]: 1,
           },
           lastRatesUpdate: result.updatedAt,
+          lastRatesSource: result.source,
         },
       }));
       return result;
+    },
+    resetDefaultExchangeRates: (targetBase?: CurrencyCode) => {
+      setState((p) => {
+        const base = targetBase ?? p.settings.currency;
+        return {
+          ...p,
+          settings: {
+            ...p.settings,
+            exchangeRates: buildDefaultRatesForBase(base),
+            lastRatesUpdate: new Date().toISOString(),
+            lastRatesSource: 'fallback',
+          },
+        };
+      });
     },
     setLoggedIn: (v: boolean) => setState((p) => ({ ...p, isLoggedIn: v })),
     setCurrentRole: (role: RoleId) => setState((p) => ({ ...p, currentRole: role })),
@@ -1443,6 +1683,72 @@ export function useErpStore() {
     },
     setOnboardingSeen: (v: boolean) => setState((p) => ({ ...p, onboardingSeen: v })),
     setActivePlan: (plan: string) => setState((p) => ({ ...p, activePlan: plan })),
+    updateSubscriptionMeta: (patch: Partial<SubscriptionMeta>) =>
+      setState((p) => {
+        const nextMeta: SubscriptionMeta = {
+          ...(p.subscriptionMeta ?? {
+            planId: 'pro',
+            billingCycle: 'yearly',
+            startDate: new Date().toISOString().slice(0, 10),
+            endDate: new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10),
+            status: 'active',
+            paymentMethod: 'مدى / البطاقة الائتمانية',
+            autoRenew: true,
+          }),
+          ...patch,
+        };
+        return {
+          ...p,
+          activePlan: nextMeta.planId === 'free' ? 'free' : nextMeta.planId,
+          subscriptionMeta: nextMeta,
+          auditLogs: [
+            makeAuditEntry(
+              p,
+              actorLabel,
+              'update',
+              'Subscription',
+              nextMeta.planId,
+              `تحديث الاشتراك: ${nextMeta.planId} (${nextMeta.billingCycle}) - ${nextMeta.status}`,
+              { screenName: 'الاشتراك' },
+            ),
+            ...p.auditLogs,
+          ],
+        };
+      }),
+    saveSupportTicket: (ticket: Omit<SupportTicket, 'id' | 'createdAt' | 'status'>) =>
+      setState((p) => {
+        const id = nextSequentialId('TKT', 100, (p.supportTickets ?? []).map((t) => t.id));
+        const created: SupportTicket = {
+          ...ticket,
+          id,
+          status: 'open',
+          createdAt: new Date().toISOString(),
+        };
+        return {
+          ...p,
+          supportTickets: [created, ...(p.supportTickets ?? [])],
+          auditLogs: [
+            makeAuditEntry(p, actorLabel, 'create', 'SupportTicket', id, `تذكرة دعم فني: ${ticket.title}`, { screenName: 'المساعدة' }),
+            ...p.auditLogs,
+          ],
+        };
+      }),
+    updateSupportTicketStatus: (id: string, status: SupportTicket['status']) =>
+      setState((p) => ({
+        ...p,
+        supportTickets: (p.supportTickets ?? []).map((t) => (t.id === id ? { ...t, status } : t)),
+      })),
+    logAuditEvent: (
+      action: AuditLogEntry['action'],
+      entity: string,
+      entityId: string,
+      summary: string,
+      opts?: { screenName?: string; oldValue?: string; newValue?: string },
+    ) =>
+      setState((p) => ({
+        ...p,
+        auditLogs: [makeAuditEntry(p, actorLabel, action, entity, entityId, summary, opts), ...p.auditLogs],
+      })),
     dismissAlert: (id: string) => setDismissedAlerts((prev) => [...prev, id]),
 
     toggleRolePermission: (role: RoleId, route: RouteId) =>
@@ -3295,12 +3601,32 @@ export function useErpStore() {
     },
 
     saveEmployee: (emp: Omit<Employee, 'id'>, editId?: string) =>
-      setState((p) => ({
-        ...p,
-        employees: editId
-          ? p.employees.map((x) => (x.id === editId ? { ...emp, id: editId } : x))
-          : [{ ...emp, id: nextSequentialId('E', 10, p.employees.map((x) => x.id)) }, ...p.employees],
-      })),
+      setState((p) => {
+        const id = editId ?? nextSequentialId('E', 10, p.employees.map((x) => x.id));
+        const prevEmp = editId ? p.employees.find((x) => x.id === editId) : undefined;
+        return {
+          ...p,
+          employees: editId
+            ? p.employees.map((x) => (x.id === editId ? { ...emp, id } : x))
+            : [{ ...emp, id }, ...p.employees],
+          auditLogs: [
+            makeAuditEntry(
+              p,
+              actorLabel,
+              editId ? 'update' : 'create',
+              'Employee',
+              id,
+              editId ? `تعديل بيانات الموظف ${emp.name}` : `إضافة موظف ${emp.name}`,
+              {
+                screenName: 'الموظفون',
+                oldValue: prevEmp ? `${prevEmp.roleTitle} | ${prevEmp.salary}` : undefined,
+                newValue: `${emp.roleTitle} | ${emp.salary}`,
+              },
+            ),
+            ...p.auditLogs,
+          ],
+        };
+      }),
     paySalary: (id: string) => {
       const nowIso = new Date().toISOString();
       if (!guardFiscalOpen(nowIso)) return;
@@ -3313,21 +3639,35 @@ export function useErpStore() {
           p.banks[0];
         const bankId = targetBank?.id ?? 'alrajhi';
         const expId = nextSequentialId('EXP', 900, p.expenses.map((x) => x.id));
-        const salH = toHalalas(emp.salary);
+        const salH = Math.max(
+          0,
+          toHalalas(emp.salary) + toHalalas(emp.allowances ?? 0) - toHalalas(emp.deductions ?? 0),
+        );
         const cleanSalary = fromHalalas(salH);
         const newExp: Expense = {
           id: expId,
+          expenseNumber: `EXP-${new Date().getFullYear()}-${expId.replace(/\D/g, '').padStart(4, '0')}`,
           title: p.settings.isArabic ? `راتب ${emp.name}` : `Salary - ${emp.name}`,
           category: p.settings.isArabic ? 'الرواتب والأجور' : 'Payroll',
+          expenseType: 'salaries',
+          beneficiary: emp.name,
           amount: cleanSalary,
+          currency: p.settings.currency,
+          exchangeRate: 1,
+          baseAmount: cleanSalary,
+          paymentMethod: 'transfer',
           paidFromBankId: bankId,
+          status: 'paid',
           date: nowIso,
+          branchId: emp.branchId,
         };
         const autoJournal: JournalEntry = {
           id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
           reference: expId,
           description: p.settings.isArabic ? `صرف راتب ${emp.name}` : `Salary payment - ${emp.name}`,
           date: nowIso,
+          entryType: 'auto',
+          branchId: emp.branchId,
           lines: [
             { account: '5030 - الرواتب والأجور', debit: cleanSalary, credit: 0 },
             {
@@ -3345,7 +3685,10 @@ export function useErpStore() {
             : p.banks,
           expenses: [newExp, ...p.expenses],
           journals: [autoJournal, ...p.journals],
-          auditLogs: [makeAuditEntry(p, actorLabel, 'pay', 'Employee', id, `صرف راتب ${emp.name} (${cleanSalary})`), ...p.auditLogs],
+          auditLogs: [
+            makeAuditEntry(p, actorLabel, 'pay', 'Employee', id, `صرف صافي راتب ${emp.name} (${cleanSalary})`, { screenName: 'الموظفون' }),
+            ...p.auditLogs,
+          ],
         };
       });
     },
@@ -3357,50 +3700,138 @@ export function useErpStore() {
     saveExpense: (exp: Omit<Expense, 'id'>, editId?: string) => {
       if (!guardFiscalOpen(exp.date)) return;
       setState((p) => {
+        const nextStatus = exp.status ?? 'paid';
+        const expCur = exp.currency ?? p.settings.currency;
+        const fx = expCur === p.settings.currency ? 1 : exp.exchangeRate && exp.exchangeRate > 0 ? exp.exchangeRate : 1;
+        const rawAmtH = toHalalas(exp.amount);
+        const baseAmtH = expCur === p.settings.currency ? rawAmtH : mulFxHalalas(rawAmtH, fx);
+        const cleanAmt = fromHalalas(rawAmtH);
+        const cleanBaseAmt = fromHalalas(baseAmtH);
+
         if (editId) {
           const prevExp = p.expenses.find((x) => x.id === editId);
+          const prevWasActive = prevExp && (prevExp.status ?? 'paid') !== 'draft';
+          const nextIsActive = nextStatus !== 'draft';
+          const prevBaseH = prevExp ? getExpenseBaseHalalas(prevExp) : 0;
+
           const updatedBanks = p.banks.map((b) => {
             let deltaH = 0;
-            if (prevExp && prevExp.paidFromBankId === b.id) deltaH += toHalalas(prevExp.amount);
-            if (exp.paidFromBankId === b.id) deltaH -= toHalalas(exp.amount);
+            if (prevWasActive && prevExp && prevExp.paidFromBankId === b.id) deltaH += prevBaseH;
+            if (nextIsActive && exp.paidFromBankId === b.id) deltaH -= baseAmtH;
             return deltaH !== 0 ? { ...b, balance: fromHalalas(toHalalas(b.balance) + deltaH) } : b;
           });
+
+          const hasJournal = p.journals.some((j) => j.reference === editId);
+          const paidBank = p.banks.find((b) => b.id === exp.paidFromBankId);
+          const nextJournals =
+            nextIsActive && !hasJournal
+              ? [
+                  {
+                    id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
+                    reference: editId,
+                    description: `${exp.title} (${exp.category || (p.settings.isArabic ? 'مصروف' : 'Expense')})`,
+                    date: exp.date,
+                    entryType: 'auto' as const,
+                    branchId: exp.branchId,
+                    costCenter: exp.costCenter,
+                    lines: [
+                      { account: `5010 - مصروفات (${exp.category || 'تشغيل'})`, debit: cleanBaseAmt, credit: 0 },
+                      {
+                        account: `1010 - ${paidBank ? (p.settings.isArabic ? paidBank.nameAr : paidBank.nameEn) : exp.paidFromBankId}`,
+                        debit: 0,
+                        credit: cleanBaseAmt,
+                      },
+                    ],
+                  },
+                  ...p.journals,
+                ]
+              : p.journals;
+
+          const savedExp: Expense = {
+            ...exp,
+            id: editId,
+            expenseNumber: exp.expenseNumber || prevExp?.expenseNumber || `EXP-${new Date().getFullYear()}-${editId.replace(/\D/g, '').padStart(4, '0')}`,
+            amount: cleanAmt,
+            currency: expCur,
+            exchangeRate: fx,
+            baseAmount: cleanBaseAmt,
+            status: nextStatus,
+          };
+
           return {
             ...p,
-            expenses: p.expenses.map((x) => (x.id === editId ? { ...exp, id: editId } : x)),
+            expenses: p.expenses.map((x) => (x.id === editId ? savedExp : x)),
             banks: updatedBanks,
-            auditLogs: [makeAuditEntry(p, actorLabel, 'update', 'Expense', editId, `تعديل مصروف ${exp.title}`), ...p.auditLogs],
+            journals: nextJournals,
+            auditLogs: [
+              makeAuditEntry(p, actorLabel, 'update', 'Expense', editId, `تعديل مصروف ${exp.title}`, {
+                screenName: 'المصروفات',
+                oldValue: prevExp ? `${prevExp.amount} (${prevExp.status ?? 'paid'})` : undefined,
+                newValue: `${cleanAmt} ${expCur} (${nextStatus})`,
+              }),
+              ...p.auditLogs,
+            ],
           };
         }
+
         const newId = nextSequentialId('EXP', 900, p.expenses.map((x) => x.id));
-        const expH = toHalalas(exp.amount);
-        const cleanAmt = fromHalalas(expH);
+        const expenseNumber =
+          exp.expenseNumber || `EXP-${new Date().getFullYear()}-${newId.replace(/\D/g, '').padStart(4, '0')}`;
         const paidBank = p.banks.find((b) => b.id === exp.paidFromBankId);
-        const updatedBanks = paidBank
-          ? p.banks.map((b) =>
-              b.id === paidBank.id ? { ...b, balance: fromHalalas(toHalalas(b.balance) - expH) } : b,
-            )
-          : p.banks;
-        const autoJournal: JournalEntry = {
-          id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
-          reference: newId,
-          description: `${exp.title} (${exp.category || (p.settings.isArabic ? 'مصروف' : 'Expense')})`,
-          date: exp.date,
-          lines: [
-            { account: `5010 - مصروفات (${exp.category || 'تشغيل'})`, debit: cleanAmt, credit: 0 },
-            {
-              account: `1010 - ${paidBank ? (p.settings.isArabic ? paidBank.nameAr : paidBank.nameEn) : exp.paidFromBankId}`,
-              debit: 0,
-              credit: cleanAmt,
-            },
-          ],
+        const isActive = nextStatus !== 'draft';
+        const updatedBanks =
+          isActive && paidBank
+            ? p.banks.map((b) =>
+                b.id === paidBank.id ? { ...b, balance: fromHalalas(toHalalas(b.balance) - baseAmtH) } : b,
+              )
+            : p.banks;
+
+        const nextJournals = isActive
+          ? [
+              {
+                id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
+                reference: newId,
+                description: `${exp.title} (${exp.category || (p.settings.isArabic ? 'مصروف' : 'Expense')})`,
+                date: exp.date,
+                entryType: 'auto' as const,
+                branchId: exp.branchId,
+                costCenter: exp.costCenter,
+                lines: [
+                  { account: `5010 - مصروفات (${exp.category || 'تشغيل'})`, debit: cleanBaseAmt, credit: 0 },
+                  {
+                    account: `1010 - ${paidBank ? (p.settings.isArabic ? paidBank.nameAr : paidBank.nameEn) : exp.paidFromBankId}`,
+                    debit: 0,
+                    credit: cleanBaseAmt,
+                  },
+                ],
+              },
+              ...p.journals,
+            ]
+          : p.journals;
+
+        const createdExp: Expense = {
+          ...exp,
+          id: newId,
+          expenseNumber,
+          amount: cleanAmt,
+          currency: expCur,
+          exchangeRate: fx,
+          baseAmount: cleanBaseAmt,
+          status: nextStatus,
         };
+
         return {
           ...p,
-          expenses: [{ ...exp, id: newId, amount: cleanAmt }, ...p.expenses],
+          expenses: [createdExp, ...p.expenses],
           banks: updatedBanks,
-          journals: [autoJournal, ...p.journals],
-          auditLogs: [makeAuditEntry(p, actorLabel, 'create', 'Expense', newId, `مصروف ${exp.title} (${cleanAmt})`), ...p.auditLogs],
+          journals: nextJournals,
+          auditLogs: [
+            makeAuditEntry(p, actorLabel, 'create', 'Expense', newId, `مصروف ${exp.title} (${cleanAmt} ${expCur})`, {
+              screenName: 'المصروفات',
+              newValue: `${cleanBaseAmt} ${p.settings.currency} (${nextStatus})`,
+            }),
+            ...p.auditLogs,
+          ],
         };
       });
     },
@@ -3409,7 +3840,7 @@ export function useErpStore() {
       setState((p) => ({
         ...p,
         expenses: p.expenses.filter((e) => e.id !== id),
-        auditLogs: [makeAuditEntry(p, actorLabel, 'delete', 'Expense', id, `حذف المصروف ${id}`), ...p.auditLogs],
+        auditLogs: [makeAuditEntry(p, actorLabel, 'delete', 'Expense', id, `حذف المصروف ${id}`, { screenName: 'المصروفات' }), ...p.auditLogs],
       }));
     },
 
@@ -3419,12 +3850,28 @@ export function useErpStore() {
         banks: p.banks.map((b) => (b.id === id ? { ...b, balance: fromHalalas(toHalalas(balance)) } : b)),
       })),
     saveBankAccount: (account: Omit<BankAccount, 'id'>, editId?: string) =>
-      setState((p) => ({
-        ...p,
-        banks: editId
-          ? p.banks.map((b) => (b.id === editId ? { ...account, id: editId } : b))
-          : [{ ...account, id: `BNK-${Date.now().toString(36)}` }, ...p.banks],
-      })),
+      setState((p) => {
+        const id = editId ?? `BNK-${Date.now().toString(36)}`;
+        const cleanBal = fromHalalas(toHalalas(account.balance));
+        const cleanOpen = account.openingBalance !== undefined ? fromHalalas(toHalalas(account.openingBalance)) : cleanBal;
+        const normalized: BankAccount = {
+          ...account,
+          id,
+          balance: cleanBal,
+          openingBalance: cleanOpen,
+          status: account.status ?? 'active',
+        };
+        return {
+          ...p,
+          banks: editId
+            ? p.banks.map((b) => (b.id === editId ? normalized : b))
+            : [normalized, ...p.banks],
+          auditLogs: [
+            makeAuditEntry(p, actorLabel, editId ? 'update' : 'create', 'BankAccount', id, `${editId ? 'تعديل' : 'إضافة'} حساب ${account.nameAr}`, { screenName: 'البنوك والصناديق' }),
+            ...p.auditLogs,
+          ],
+        };
+      }),
     deleteBankAccount: (id: string) => {
       if (!guardDeleteAllowed()) return;
       setState((p) => ({
@@ -3451,6 +3898,7 @@ export function useErpStore() {
                     ? `تسوية تلقائية لحساب ${bankLabel} (فرق ${diff.variance})`
                     : `Auto-reconciliation for ${bankLabel} (variance ${diff.variance})`,
                   date: nowIso,
+                  entryType: 'auto' as const,
                   lines:
                     diff.variance > 0
                       ? [
@@ -3475,19 +3923,23 @@ export function useErpStore() {
           ),
           journals: nextJournals,
           auditLogs: [
-            makeAuditEntry(p, actorLabel, 'reconcile', 'BankAccount', bankId, `تسوية ${bankLabel} من ${diff.systemBalance} إلى ${diff.statementBalance}`),
+            makeAuditEntry(p, actorLabel, 'reconcile', 'BankAccount', bankId, `تسوية ${bankLabel} من ${diff.systemBalance} إلى ${diff.statementBalance}`, {
+              screenName: 'البنوك والصناديق',
+              oldValue: String(diff.systemBalance),
+              newValue: String(diff.statementBalance),
+            }),
             ...p.auditLogs,
           ],
         };
       });
       return true;
     },
-    transferBetweenBanks: (fromId: string, toId: string, amount: number, notes?: string) => {
+    transferBetweenBanks: (fromId: string, toId: string, amount: number, notes?: string, dateIso?: string) => {
       if (!fromId || !toId || fromId === toId || !Number.isFinite(amount) || amount <= 0) {
         return false;
       }
-      const nowIso = new Date().toISOString();
-      if (!guardFiscalOpen(nowIso)) return false;
+      const txIso = dateIso ? new Date(dateIso).toISOString() : new Date().toISOString();
+      if (!guardFiscalOpen(txIso)) return false;
       const amtH = toHalalas(amount);
       const cleanAmt = fromHalalas(amtH);
       setState((p) => {
@@ -3505,7 +3957,8 @@ export function useErpStore() {
             : p.settings.isArabic
             ? `تحويل نقدي من ${fromLabel} إلى ${toLabel}`
             : `Funds transfer from ${fromLabel} to ${toLabel}`,
-          date: nowIso,
+          date: txIso,
+          entryType: 'auto',
           lines: [
             { account: `1010 - ${toLabel}`, debit: cleanAmt, credit: 0 },
             { account: `1010 - ${fromLabel}`, debit: 0, credit: cleanAmt },
@@ -3520,7 +3973,7 @@ export function useErpStore() {
           }),
           journals: [autoJournal, ...p.journals],
           auditLogs: [
-            makeAuditEntry(p, actorLabel, 'transfer', 'BankAccount', refId, `تحويل ${cleanAmt} من ${fromLabel} إلى ${toLabel}`),
+            makeAuditEntry(p, actorLabel, 'transfer', 'BankAccount', refId, `تحويل ${cleanAmt} من ${fromLabel} إلى ${toLabel}`, { screenName: 'البنوك والصناديق' }),
             ...p.auditLogs,
           ],
         };

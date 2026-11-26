@@ -24,6 +24,7 @@ import {
   ArchivedDocumentType,
   BatchPrintItem,
 } from '../types/erp';
+import { formatCurrency, formatCurrencyNumber } from '../utils/currencies';
 import { downloadTextFile } from '../utils/export';
 import { ScreenProps } from './types';
 
@@ -199,7 +200,7 @@ export const DocumentRegisterScreen: React.FC<ScreenProps> = ({
         party: qt.customerName,
         summary: `${qt.items.length} ${isAr ? 'أصناف' : 'items'}`,
         amount: qt.total,
-        currency: cur,
+        currency: qt.currency ?? cur,
         status: t[qt.status],
         dateIso: qt.date,
         printable: { kind: 'quotation', data: qt },
@@ -439,7 +440,7 @@ export const DocumentRegisterScreen: React.FC<ScreenProps> = ({
                       r.kindLabel,
                       r.party,
                       r.summary,
-                      r.amount.toFixed(2),
+                      formatCurrencyNumber(r.amount, r.currency),
                       r.currency,
                       r.status,
                       r.dateIso.slice(0, 10),
@@ -660,7 +661,7 @@ export const DocumentRegisterScreen: React.FC<ScreenProps> = ({
                       <td className="p-3 font-semibold">{row.party}</td>
                       <td className="p-3 text-slate-500 max-w-[220px] truncate">{row.summary}</td>
                       <td className="p-3 text-end font-mono font-extrabold tabular-nums">
-                        {row.amount.toFixed(2)} {row.currency}
+                        {formatCurrency(row.amount, row.currency, { isAr })}
                       </td>
                       <td className="p-3 font-mono text-xs text-slate-500">{row.dateIso.slice(0, 10)}</td>
                       <td className="p-3 text-end">

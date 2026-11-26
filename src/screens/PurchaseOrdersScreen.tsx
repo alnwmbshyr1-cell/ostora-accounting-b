@@ -5,6 +5,7 @@ import { strings } from '../data/translations';
 import { computeInvoiceTotalsHalala } from '../domain/accounting';
 import { fromHalalas, toHalalas } from '../domain/halala';
 import { LineItem, PaymentMethodType, PurchaseOrder, PurchaseOrderStatus } from '../types/erp';
+import { formatCurrency, formatCurrencyNumber } from '../utils/currencies';
 import { compressImageToBase64 } from '../utils/image';
 import { buildWhatsAppLink } from '../utils/messaging';
 import { ScreenProps } from './types';
@@ -227,11 +228,11 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
                 {po.items && po.items.length > 1
                   ? `${po.items.length} ${isAr ? 'أصناف' : 'items'} (${po.productName}...)`
                   : `${po.productName} × ${po.quantity}`}{' '}
-                · <span className="font-mono font-bold tabular-nums">{po.total.toFixed(2)} {cur}</span>
+                · <span className="font-mono font-bold tabular-nums">{formatCurrency(po.total, cur, { isAr })}</span>
               </p>
               {po.vat !== undefined && (
                 <p className="text-xs text-slate-500 font-mono tabular-nums">
-                  {t.subtotal}: {(po.subtotal ?? po.quantity * po.unitCost).toFixed(2)} · {t.vat} ({po.taxRate ?? defaultPurchaseTaxRate}%): {po.vat.toFixed(2)}
+                  {t.subtotal}: {formatCurrency(po.subtotal ?? po.quantity * po.unitCost, cur, { isAr })} · {t.vat} ({po.taxRate ?? defaultPurchaseTaxRate}%): {formatCurrency(po.vat, cur, { isAr })}
                 </p>
               )}
               <div className="flex flex-wrap gap-1.5 pt-2 border-t border-slate-100 dark:border-[#1F332B]">
@@ -274,8 +275,8 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
                   href={buildWhatsAppLink(
                     po.supplierPhone,
                     isAr
-                      ? `أمر شراء ${po.id} من ${state.settings.companyName}: ${po.productName} الكمية ${po.quantity} الإجمالي ${po.total} ${cur}.`
-                      : `Purchase Order ${po.id} from ${state.settings.companyName}: ${po.productName} x ${po.quantity} (${po.total} ${cur}).`,
+                      ? `أمر شراء ${po.id} من ${state.settings.companyName}: ${po.productName} الكمية ${po.quantity} الإجمالي ${formatCurrency(po.total, cur, { isAr })}.`
+                      : `Purchase Order ${po.id} from ${state.settings.companyName}: ${po.productName} x ${po.quantity} (${formatCurrency(po.total, cur, { isAr })}).`,
                   )}
                   target="_blank"
                   rel="noreferrer"
@@ -449,7 +450,7 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
                       <p className="font-bold truncate">{p.name}</p>
                       <p className="font-mono text-[10px] opacity-75">{p.barcode}</p>
                     </div>
-                    <span className="font-mono font-bold shrink-0">{p.cost} {cur}</span>
+                    <span className="font-mono font-bold shrink-0">{formatCurrency(p.cost, cur, { isAr })}</span>
                   </button>
                 ))}
               </div>
@@ -515,7 +516,7 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
                           <td className="p-1">
                             <input type="number" min={0} max={100} value={it.discountPercent ?? 0} onChange={(e) => updateLine(idx, { discountPercent: Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)) })} className="w-full px-1.5 py-1 rounded bg-slate-50 dark:bg-[#0A120F] border text-center font-mono" />
                           </td>
-                          <td className="p-1.5 text-end font-mono font-bold tabular-nums">{it.total.toFixed(2)}</td>
+                          <td className="p-1.5 text-end font-mono font-bold tabular-nums">{formatCurrency(it.total, cur, { isAr })}</td>
                           <td className="p-1.5 text-center">
                             <button type="button" onClick={() => setPoForm({ ...poForm, items: poForm.items.filter((_, i) => i !== idx) })} className="text-red-600 font-bold cursor-pointer">×</button>
                           </td>
@@ -575,10 +576,10 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
             <input value={poForm.notes} onChange={(e) => setPoForm({ ...poForm, notes: e.target.value })} placeholder={t.notes} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
 
             <div className="p-3 rounded-xl bg-slate-100 dark:bg-[#0A120F] flex flex-wrap justify-between gap-2 text-xs font-bold tabular-nums">
-              <span>{t.subtotal}: {calc.subtotal.toFixed(2)}</span>
-              <span>{t.vat} ({poTaxRate}%): {calc.vat.toFixed(2)}</span>
-              <span className="text-sm text-[#0A3D2C] dark:text-[#C9A227]">{t.total}: {calc.total.toFixed(2)} {cur}</span>
-              <span>{isAr ? 'المتبقي:' : 'Due:'} {calc.remainingAmount.toFixed(2)} {cur}</span>
+              <span>{t.subtotal}: {formatCurrency(calc.subtotal, cur, { isAr })}</span>
+              <span>{t.vat} ({poTaxRate}%): {formatCurrency(calc.vat, cur, { isAr })}</span>
+              <span className="text-sm text-[#0A3D2C] dark:text-[#C9A227]">{t.total}: {formatCurrency(calc.total, cur, { isAr })}</span>
+              <span>{isAr ? 'المتبقي:' : 'Due:'} {formatCurrency(calc.remainingAmount, cur, { isAr })}</span>
             </div>
 
             {formError && <p className="text-xs font-bold text-red-600">{formError}</p>}
@@ -715,15 +716,15 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
                   <tr key={i} className="border-t">
                     <td className="p-2">{it.productName}</td>
                     <td className="p-2 text-end font-mono">{it.qty}</td>
-                    <td className="p-2 text-end font-mono">{it.unitPrice.toFixed(2)}</td>
-                    <td className="p-2 text-end font-mono font-bold">{it.total.toFixed(2)}</td>
+                    <td className="p-2 text-end font-mono">{formatCurrencyNumber(it.unitPrice, cur)}</td>
+                    <td className="p-2 text-end font-mono font-bold">{formatCurrencyNumber(it.total, cur)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
             <div className="flex justify-end gap-6 text-xs font-bold pt-2 border-t">
-              <span>{t.vat}: {(previewPo.vat ?? 0).toFixed(2)} {cur}</span>
-              <span className="text-base text-[#0A3D2C]">{t.total}: {previewPo.total.toFixed(2)} {cur}</span>
+              <span>{t.vat}: {formatCurrency(previewPo.vat ?? 0, cur, { isAr })}</span>
+              <span className="text-base text-[#0A3D2C]">{t.total}: {formatCurrency(previewPo.total, cur, { isAr })}</span>
             </div>
           </div>
         </div>

@@ -42,6 +42,7 @@ import { useFirebase } from './contexts/FirebaseContext';
 import { useErpStore } from './store/useErpStore';
 import { AuthOnboardingFlow } from './components/AuthOnboardingFlow';
 import { ROLE_LABELS } from './constants/permissions';
+import { formatCurrency } from './utils/currencies';
 import { ErpScreenRouter } from './screens';
 import { BatchPrintModal } from './components/BatchPrintModal';
 import { PrintPreviewModal } from './components/PrintPreviewModal';
@@ -214,7 +215,7 @@ export default function App() {
             category: t.invoices,
             title: `${inv.id} · ${inv.customerName}`,
             subtitle: inv.description || t[inv.status],
-            badge: `${inv.total.toFixed(0)} ${inv.currency ?? cur}`,
+            badge: formatCurrency(inv.total, inv.currency ?? cur, { isAr }),
             invoiceObj: inv,
           });
         }
@@ -235,7 +236,7 @@ export default function App() {
             category: t.customers,
             title: c.name,
             subtitle: `${c.id} · ${c.phone || c.email || '—'}`,
-            badge: `${c.debt.toLocaleString()} ${cur}`,
+            badge: formatCurrency(c.debt, c.currency ?? cur, { isAr }),
           });
         }
       }
@@ -255,7 +256,7 @@ export default function App() {
             category: t.suppliers,
             title: s.name,
             subtitle: `${s.id} · ${s.category || s.phone || '—'}`,
-            badge: `${s.payable.toLocaleString()} ${cur}`,
+            badge: formatCurrency(s.payable, s.currency ?? cur, { isAr }),
           });
         }
       }
@@ -275,7 +276,7 @@ export default function App() {
             category: t.inventory,
             title: p.name,
             subtitle: `${p.sku} · ${p.barcode}`,
-            badge: `${p.qty} × ${p.price} ${cur}`,
+            badge: `${p.qty} × ${formatCurrency(p.price, cur, { isAr })}`,
           });
         }
       }
@@ -509,6 +510,9 @@ export default function App() {
                 <p className="text-xs font-extrabold truncate">{state.settings.companyName}</p>
                 <p className="text-[11px] text-[#C9A227] font-mono truncate">
                   {roleText} · {state.settings.currency}
+                  {state.settings.displayCurrency && state.settings.displayCurrency !== state.settings.currency
+                    ? ` → ${state.settings.displayCurrency}`
+                    : ''}
                 </p>
               </div>
             </div>

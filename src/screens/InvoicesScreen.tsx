@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import {
   AlertTriangle,
@@ -39,7 +39,12 @@ import {
   PaymentMethodType,
   UnitOfMeasure,
 } from '../types/erp';
-import { DEFAULT_ENABLED_CURRENCIES, getCurrencyMeta } from '../utils/currencies';
+import {
+  DEFAULT_ENABLED_CURRENCIES,
+  formatCurrency,
+  formatCurrencyNumber,
+  getCurrencyMeta,
+} from '../utils/currencies';
 import { buildWhatsAppLink } from '../utils/messaging';
 import { buildZatcaTlvBase64, validateZatcaPhase1 } from '../utils/zatca';
 import { ScreenProps } from './types';
@@ -121,6 +126,18 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
   const [qrInvoice, setQrInvoice] = useState<Invoice | null>(null);
   const [copiedQrTlv, setCopiedQrTlv] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!invModal.open || invModal.edit) return;
+    if (invForm.currency === cur) {
+      setInvForm((f) => (f.exchangeRate === '1' ? f : { ...f, exchangeRate: '1' }));
+      return;
+    }
+    const latestRate = ratesMap[invForm.currency];
+    if (latestRate && latestRate > 0) {
+      setInvForm((f) => ({ ...f, exchangeRate: String(latestRate) }));
+    }
+  }, [invModal.open, invModal.edit, invForm.currency, cur, ratesMap]);
 
   const salesmanCustomerNames = new Set(
     state.customers
@@ -533,21 +550,29 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
                   <p className="text-xs text-slate-500 mt-0.5">{inv.description || '—'}</p>
                 </div>
                 <div className="flex items-baseline justify-between text-xs pt-1">
-                  <span className="text-slate-500 font-mono tabular-nums">
-                    {t.subtotal}: {inv.subtotal.toFixed(2)} · {t.vat} (
-                    {inv.taxRate ?? (inv.subtotal > 0 ? Number(((inv.vat / inv.subtotal) * 100).toFixed(1)) : defaultSalesTaxRate)}
-                    %): {inv.vat.toFixed(2)}
-                  </span>
-                  <div className="text-end">
-                    <span className="text-lg font-extrabold text-[#0A3D2C] dark:text-[#C9A227] font-mono tabular-nums block">
-                      {inv.total.toFixed(2)} {inv.currency ?? cur}
-                    </span>
-                    {inv.currency && inv.currency !== cur && (
-                      <span className="text-[11px] font-mono text-slate-500 tabular-nums">
-                        ≈ {(inv.baseTotal ?? inv.total * (inv.exchangeRate ?? 1)).toFixed(2)} {cur}
-                      </span>
-                    )}
-                  </div>
+                  {(() => {
+                    const invCur = inv.currency ?? cur;
+                    const invTaxPct =
+                      inv.taxRate ??
+                      (inv.subtotal > 0 ? Number(((inv.vat / inv.subtotal) * 100).toFixed(1)) : defaultSalesTaxRate);
+                    return (
+                      <>
+                        <span className="text-slate-500 font-mono tabular-nums">
+                          {t.subtotal}: {formatCurrencyNumber(inv.subtotal, invCur)} · {t.vat} ({invTaxPct}%): {formatCurrencyNumber(inv.vat, invCur)}
+                        </span>
+                        <div className="text-end">
+                          <span className="text-lg font-extrabold text-[#0A3D2C] dark:text-[#C9A227] font-mono tabular-nums block">
+                            {formatCurrency(inv.total, invCur, { isAr })}
+                          </span>
+                          {inv.currency && inv.currency !== cur && (
+                            <span className="text-[11px] font-mono text-slate-500 tabular-nums">
+                              ≈ {formatCurrency(inv.baseTotal ?? inv.total * (inv.exchangeRate ?? 1), cur, { isAr })}
+                            </span>
+                          )}
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
                 <div className="pt-3 border-t border-slate-100 dark:border-[#1F332B] flex flex-wrap items-center gap-2">
                   {inv.status !== 'paid' && inv.status !== 'cancelled' && inv.status !== 'draft' && (
@@ -598,8 +623,8 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
                     href={buildWhatsAppLink(
                       inv.customerPhone,
                       isAr
-                        ? `السلام عليكم ${inv.customerName}، الفاتورة الضريبية رقم ${inv.id} بإجمالي ${inv.total.toFixed(2)} ${inv.currency ?? cur} (شامل ${inv.taxRate ?? (inv.subtotal > 0 ? Number(((inv.vat / inv.subtotal) * 100).toFixed(1)) : defaultSalesTaxRate)}% ضريبة) من ${state.settings.companyName}.`
-                        : `Hello ${inv.customerName}, Tax Invoice ${inv.id} total ${inv.total.toFixed(2)} ${inv.currency ?? cur} from ${state.settings.companyName}.`,
+                        ? `السلام عليكم ${inv.customerName}، الفاتورة الضريبية رقم ${inv.id} بإجمالي ${formatCurrency(inv.total, inv.currency ?? cur, { isAr: true })} (شامل ${inv.taxRate ?? (inv.subtotal > 0 ? Number(((inv.vat / inv.subtotal) * 100).toFixed(1)) : defaultSalesTaxRate)}% ضريبة) من ${state.settings.companyName}.`
+                        : `Hello ${inv.customerName}, Tax Invoice ${inv.id} total ${formatCurrency(inv.total, inv.currency ?? cur, { isAr: false })} from ${state.settings.companyName}.`,
                     )}
                     target="_blank"
                     rel="noreferrer"
@@ -609,7 +634,7 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
                     <span>{t.whatsapp}</span>
                   </a>
                   <a
-                    href={`mailto:?subject=${encodeURIComponent(`Invoice ${inv.id}`)}&body=${encodeURIComponent(`Total: ${inv.total.toFixed(2)} ${inv.currency ?? cur}`)}`}
+                    href={`mailto:?subject=${encodeURIComponent(`Invoice ${inv.id}`)}&body=${encodeURIComponent(`Total: ${formatCurrency(inv.total, inv.currency ?? cur, { isAr })}`)}`}
                     className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-[#1A2C24]"
                     title={t.emailShare}
                   >
@@ -862,7 +887,7 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
                         {p.barcode} · {isAr ? 'متوفر:' : 'Avail:'} {p.qty}
                       </p>
                     </div>
-                    <span className="font-mono font-bold">{p.price} {cur}</span>
+                    <span className="font-mono font-bold">{formatCurrency(p.price, cur, { isAr })}</span>
                   </button>
                 ))}
               </div>
@@ -939,7 +964,7 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
                         {showCostMargin && it.costPrice !== undefined ? ` (${t.cost}: ${it.costPrice})` : ''}
                       </span>
                       <div className="flex items-center gap-2 shrink-0">
-                        <span className="font-mono font-bold tabular-nums">{it.total.toFixed(2)} {cur}</span>
+                        <span className="font-mono font-bold tabular-nums">{formatCurrency(it.total, invForm.currency, { isAr })}</span>
                         <button
                           type="button"
                           onClick={() => {
@@ -1210,14 +1235,14 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
             {/* Summary Box */}
             <div className="p-3 rounded-xl bg-slate-100 dark:bg-[#0A120F] space-y-1 text-xs font-bold tabular-nums">
               <div className="flex flex-wrap justify-between gap-2">
-                <span>{t.vat} ({activeTaxRate}%): {vatNum.toFixed(2)} {invForm.currency}</span>
-                <span>{isAr ? 'المتبقي:' : 'Remaining:'} {calc.remainingAmount.toFixed(2)} {cur}</span>
-                <span className="text-[#0A3D2C] dark:text-[#C9A227]">{t.total}: {totalNum.toFixed(2)} {invForm.currency}</span>
+                <span>{t.vat} ({activeTaxRate}%): {formatCurrency(vatNum, invForm.currency, { isAr })}</span>
+                <span>{isAr ? 'المتبقي:' : 'Remaining:'} {formatCurrency(calc.remainingAmount, invForm.currency, { isAr })}</span>
+                <span className="text-[#0A3D2C] dark:text-[#C9A227]">{t.total}: {formatCurrency(totalNum, invForm.currency, { isAr })}</span>
               </div>
               {invForm.currency !== cur && (
                 <div className="flex justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-200 dark:border-[#1F332B]">
                   <span>{t.equivalentBase}</span>
-                  <span className="font-mono">{convertedBaseTotal.toFixed(2)} {cur} (×{activeFxRate})</span>
+                  <span className="font-mono">{formatCurrency(convertedBaseTotal, cur, { isAr })} (×{activeFxRate})</span>
                 </div>
               )}
             </div>
@@ -1233,14 +1258,14 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
                 <div className="flex items-center justify-between font-bold">
                   <span className="flex items-center gap-1.5">
                     {!creditCheck.allowed && <AlertTriangle className="w-4 h-4 shrink-0" />}
-                    <span>{t.creditLimit}: {creditCheck.creditLimit.toLocaleString()} {cur}</span>
+                    <span>{t.creditLimit}: {formatCurrency(creditCheck.creditLimit, cur, { isAr })}</span>
                   </span>
-                  <span className="font-mono tabular-nums">{t.debt}: {creditCheck.currentDebt.toLocaleString()} {cur}</span>
+                  <span className="font-mono tabular-nums">{t.debt}: {formatCurrency(creditCheck.currentDebt, cur, { isAr })}</span>
                 </div>
                 <div className="flex items-center justify-between font-mono text-[11px] tabular-nums">
-                  <span>{t.projectedBalance}: {creditCheck.projectedDebt.toLocaleString()} {cur}</span>
+                  <span>{t.projectedBalance}: {formatCurrency(creditCheck.projectedDebt, cur, { isAr })}</span>
                   {!creditCheck.allowed && (
-                    <span className="font-extrabold">{t.exceededBy}: +{creditCheck.exceededBy.toLocaleString()} {cur}</span>
+                    <span className="font-extrabold">{t.exceededBy}: +{formatCurrency(creditCheck.exceededBy, cur, { isAr })}</span>
                   )}
                 </div>
               </div>
@@ -1347,7 +1372,8 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
           <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] max-w-sm w-full p-6 space-y-3">
             <h3 className="text-base font-extrabold">{isAr ? `تحصيل دفعة · ${payModalInv.id}` : `Record Payment · ${payModalInv.id}`}</h3>
             <p className="text-xs text-slate-500">
-              {payModalInv.customerName} · {isAr ? 'المتبقي:' : 'Remaining:'} {(payModalInv.remainingAmount ?? payModalInv.total).toLocaleString()} {cur}
+              {payModalInv.customerName} · {isAr ? 'المتبقي:' : 'Remaining:'}{' '}
+              {formatCurrency(payModalInv.remainingAmount ?? payModalInv.total, payModalInv.currency ?? cur, { isAr })}
             </p>
             <input
               type="number"
@@ -1441,10 +1467,10 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
                 <QrMatrix data={tlvBase64} size={200} />
                 <div className="text-center space-y-0.5">
                   <p className="text-base font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227]">
-                    {qrInvoice.total.toFixed(2)} {qrInvoice.currency ?? cur}
+                    {formatCurrency(qrInvoice.total, qrInvoice.currency ?? cur, { isAr })}
                   </p>
                   <p className="text-[11px] text-slate-500 font-mono tabular-nums">
-                    {t.vat}: {qrInvoice.vat.toFixed(2)} {qrInvoice.currency ?? cur}
+                    {t.vat}: {formatCurrency(qrInvoice.vat, qrInvoice.currency ?? cur, { isAr })}
                   </p>
                 </div>
                 <div className={`flex items-center gap-1.5 text-xs font-bold ${zatcaCheck.isCompliant ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}`}>

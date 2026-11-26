@@ -3,6 +3,7 @@ import { CheckCircle2, Edit2, Layers, MessageCircle, Paperclip, Plus, Printer, S
 import { strings } from '../data/translations';
 import { fromHalalas, toHalalas } from '../domain/halala';
 import { VoucherType } from '../types/erp';
+import { formatCurrency } from '../utils/currencies';
 import { compressImageToBase64 } from '../utils/image';
 import { buildWhatsAppLink } from '../utils/messaging';
 import { ScreenProps } from './types';
@@ -230,7 +231,7 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, o
                   )}
                 </label>
                 <span className={`font-mono text-lg font-extrabold tabular-nums ${v.type === 'receipt' ? 'text-emerald-600' : v.type === 'payment' ? 'text-red-600' : 'text-[#0A3D2C] dark:text-[#C9A227]'}`}>
-                  {v.amount.toFixed(2)} {cur}
+                  {formatCurrency(v.amount, cur, { isAr })}
                 </span>
               </div>
               <h4 className="font-extrabold text-base">{v.partyName}</h4>
@@ -251,7 +252,7 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, o
                 <a
                   href={buildWhatsAppLink(
                     v.partyPhone,
-                    `${v.type === 'receipt' ? t.receiptVoucher : v.type === 'payment' ? t.paymentVoucher : t.journalVoucher} ${v.id}: ${v.amount.toFixed(2)} ${cur} - ${v.reason}`,
+                    `${v.type === 'receipt' ? t.receiptVoucher : v.type === 'payment' ? t.paymentVoucher : t.journalVoucher} ${v.id}: ${formatCurrency(v.amount, cur, { isAr })} - ${v.reason}`,
                   )}
                   target="_blank"
                   rel="noreferrer"

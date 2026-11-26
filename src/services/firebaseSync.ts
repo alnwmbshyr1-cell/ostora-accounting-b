@@ -46,7 +46,9 @@ import {
   RouteId,
   StockMovement,
   StocktakeRecord,
+  SubscriptionMeta,
   Supplier,
+  SupportTicket,
   Voucher,
   Warehouse,
 } from '../types/erp';
@@ -73,6 +75,7 @@ const SUBCOLLECTIONS = [
   'stockMovements',
   'stocktakes',
   'auditLogs',
+  'supportTickets',
 ] as const;
 
 type SubcollectionName = (typeof SUBCOLLECTIONS)[number];
@@ -197,11 +200,35 @@ function sanitizeWorkspaceFields(uid: string, state: PersistedState) {
     permissionsMatrix: sanitizePermissionsMatrix(state.permissionsMatrix),
   };
 
+  if (state.settings.city) {
+    payload.city = clampString(state.settings.city, 80);
+  }
+  if (typeof state.settings.autoUpdateExchangeRates === 'boolean') {
+    payload.autoUpdateExchangeRates = state.settings.autoUpdateExchangeRates;
+  }
+  if (typeof state.settings.fxAutoIntervalHours === 'number' && Number.isFinite(state.settings.fxAutoIntervalHours)) {
+    payload.fxAutoIntervalHours = clampNum(state.settings.fxAutoIntervalHours, 1, 168);
+  }
+  if (state.settings.displayCurrency && ALL_CURRENCY_CODES.includes(state.settings.displayCurrency)) {
+    payload.displayCurrency = state.settings.displayCurrency;
+  }
+  if (state.settings.currencyDisplayStyle && ['symbol', 'code', 'both'].includes(state.settings.currencyDisplayStyle)) {
+    payload.currencyDisplayStyle = state.settings.currencyDisplayStyle;
+  }
+  if (state.settings.currencyNumberLocale && ['auto', 'en-US', 'ar-SA'].includes(state.settings.currencyNumberLocale)) {
+    payload.currencyNumberLocale = state.settings.currencyNumberLocale;
+  }
+  if (state.settings.currencyDecimalMode && ['auto', '0', '2', '3'].includes(state.settings.currencyDecimalMode)) {
+    payload.currencyDecimalMode = state.settings.currencyDecimalMode;
+  }
   if (state.settings.lastBackupDate) {
     payload.lastBackupDate = clampString(state.settings.lastBackupDate, 64);
   }
   if (state.settings.lastRatesUpdate) {
     payload.lastRatesUpdate = clampString(state.settings.lastRatesUpdate, 64);
+  }
+  if (state.settings.lastRatesSource && ['live', 'fallback'].includes(state.settings.lastRatesSource)) {
+    payload.lastRatesSource = state.settings.lastRatesSource;
   }
   if (state.settings.logoBase64 && state.settings.logoBase64.length <= 250000) {
     payload.logoBase64 = state.settings.logoBase64;
@@ -217,6 +244,42 @@ function sanitizeWorkspaceFields(uid: string, state: PersistedState) {
   }
   if (state.settings.receiptFooter) {
     payload.receiptFooter = clampString(state.settings.receiptFooter, 300);
+  }
+  if (state.settings.invoicePrefix) {
+    payload.invoicePrefix = clampString(state.settings.invoicePrefix, 20);
+  }
+  if (state.settings.invoiceNumberFormat) {
+    payload.invoiceNumberFormat = clampString(state.settings.invoiceNumberFormat, 40);
+  }
+  if (state.settings.invoiceTerms) {
+    payload.invoiceTerms = clampString(state.settings.invoiceTerms, 500);
+  }
+  if (state.settings.printPaperSize && ['a4', 'thermal_80', 'thermal_58'].includes(state.settings.printPaperSize)) {
+    payload.printPaperSize = state.settings.printPaperSize;
+  }
+  if (typeof state.settings.showQrOnPrint === 'boolean') {
+    payload.showQrOnPrint = state.settings.showQrOnPrint;
+  }
+  if (typeof state.settings.showLogoOnPrint === 'boolean') {
+    payload.showLogoOnPrint = state.settings.showLogoOnPrint;
+  }
+  if (state.settings.whatsappTemplate) {
+    payload.whatsappTemplate = clampString(state.settings.whatsappTemplate, 500);
+  }
+  if (state.settings.senderEmail) {
+    payload.senderEmail = clampString(state.settings.senderEmail, 160);
+  }
+  if (state.subscriptionMeta) {
+    const sm = state.subscriptionMeta;
+    payload.subscriptionMeta = {
+      planId: ['free', 'basic', 'pro', 'enterprise'].includes(sm.planId) ? sm.planId : 'pro',
+      billingCycle: sm.billingCycle === 'monthly' ? 'monthly' : 'yearly',
+      startDate: clampString(sm.startDate, 32),
+      endDate: clampString(sm.endDate, 32),
+      status: ['active', 'expired', 'cancelled'].includes(sm.status) ? sm.status : 'active',
+      paymentMethod: clampString(sm.paymentMethod, 80),
+      autoRenew: Boolean(sm.autoRenew),
+    };
   }
 
   return payload;
@@ -608,11 +671,21 @@ function sanitizeEntityForWrite(
       };
       if (e.code) out.code = clampString(e.code, 64);
       if (e.department) out.department = clampString(e.department, 100);
+      if (e.whatsapp) out.whatsapp = clampString(e.whatsapp, 40);
       if (e.email) out.email = clampString(e.email, 160);
       if (e.nationalId) out.nationalId = clampString(e.nationalId, 64);
+      if (e.birthDate) out.birthDate = clampString(e.birthDate, 32);
       if (e.branchId) out.branchId = clampString(e.branchId, 128);
       if (e.hireDate) out.hireDate = clampString(e.hireDate, 32);
+      if (typeof e.allowances === 'number' && Number.isFinite(e.allowances)) out.allowances = clampNum(e.allowances, 0);
+      if (typeof e.deductions === 'number' && Number.isFinite(e.deductions)) out.deductions = clampNum(e.deductions, 0);
       if (e.bankAccount) out.bankAccount = clampString(e.bankAccount, 80);
+      if (e.workShift) out.workShift = clampString(e.workShift, 80);
+      if (e.username) out.username = clampString(e.username, 64);
+      if (e.password) out.password = clampString(e.password, 128);
+      if (e.photoBase64 && e.photoBase64.length <= 250000) out.photoBase64 = e.photoBase64;
+      if (e.attachmentBase64 && e.attachmentBase64.length <= 250000) out.attachmentBase64 = e.attachmentBase64;
+      if (e.idAttachmentBase64 && e.idAttachmentBase64.length <= 250000) out.idAttachmentBase64 = e.idAttachmentBase64;
       if (e.status && ['active', 'on_leave', 'terminated'].includes(e.status)) out.status = e.status;
       if (e.notes) out.notes = clampString(e.notes, 400);
       if (e.lastPaidDate) {
@@ -631,7 +704,24 @@ function sanitizeEntityForWrite(
         paidFromBankId: clampString(ex.paidFromBankId, 128),
         date: clampNonEmpty(ex.date, 64, new Date().toISOString()),
       };
+      if (ex.expenseNumber) out.expenseNumber = clampString(ex.expenseNumber, 64);
+      if (ex.expenseType && ['rent', 'electricity', 'salaries', 'maintenance', 'marketing', 'other'].includes(ex.expenseType)) {
+        out.expenseType = ex.expenseType;
+      }
+      if (ex.beneficiary) out.beneficiary = clampString(ex.beneficiary, 160);
+      if (ex.costCenter) out.costCenter = clampString(ex.costCenter, 120);
+      if (ex.currency) out.currency = sanitizeCurrencyCode(ex.currency, baseCurrency);
+      if (typeof ex.exchangeRate === 'number' && Number.isFinite(ex.exchangeRate) && ex.exchangeRate > 0) {
+        out.exchangeRate = ex.exchangeRate;
+      }
+      if (typeof ex.baseAmount === 'number' && Number.isFinite(ex.baseAmount)) out.baseAmount = clampNum(ex.baseAmount, 0);
+      if (ex.paymentMethod && validPayMethods.includes(ex.paymentMethod)) out.paymentMethod = ex.paymentMethod;
+      if (ex.status && ['draft', 'approved', 'paid'].includes(ex.status)) out.status = ex.status;
       if (ex.branchId) out.branchId = clampString(ex.branchId, 128);
+      if (ex.attachmentBase64 && ex.attachmentBase64.length <= 250000) out.attachmentBase64 = ex.attachmentBase64;
+      if (ex.notes) out.notes = clampString(ex.notes, 500);
+      if (typeof ex.isRecurringMonthly === 'boolean') out.isRecurringMonthly = ex.isRecurringMonthly;
+      if (ex.reminderDate) out.reminderDate = clampString(ex.reminderDate, 32);
       return out;
     }
     case 'banks': {
@@ -644,6 +734,14 @@ function sanitizeEntityForWrite(
         accountNumber: clampString(b.accountNumber, 64),
         balance: typeof b.balance === 'number' && Number.isFinite(b.balance) ? b.balance : 0,
       };
+      if (b.accountType && ['bank', 'cash'].includes(b.accountType)) out.accountType = b.accountType;
+      if (b.bankName) out.bankName = clampString(b.bankName, 120);
+      if (b.iban) out.iban = clampString(b.iban, 80);
+      if (b.branchId) out.branchId = clampString(b.branchId, 128);
+      if (b.currency) out.currency = sanitizeCurrencyCode(b.currency, baseCurrency);
+      if (typeof b.openingBalance === 'number' && Number.isFinite(b.openingBalance)) out.openingBalance = b.openingBalance;
+      if (b.custodianName) out.custodianName = clampString(b.custodianName, 120);
+      if (b.status && ['active', 'closed'].includes(b.status)) out.status = b.status;
       if (b.lastReconciledDate) out.lastReconciledDate = clampString(b.lastReconciledDate, 64);
       return out;
     }
@@ -809,14 +907,14 @@ function sanitizeEntityForWrite(
     }
     case 'auditLogs': {
       const log = item as AuditLogEntry;
-      return {
+      const out: Record<string, unknown> = {
         id: sanitizeId(log.id, 'AUD'),
         ownerId: uid,
         actor: clampNonEmpty(log.actor, 160, 'User'),
         actorRole: ['owner', 'accountant', 'cashier', 'salesman', 'warehouse'].includes(log.actorRole)
           ? log.actorRole
           : 'owner',
-        action: ['create', 'update', 'delete', 'pay', 'receive', 'transfer', 'reconcile', 'stocktake', 'fiscal_lock', 'backup'].includes(log.action)
+        action: ['create', 'update', 'delete', 'pay', 'receive', 'transfer', 'reconcile', 'stocktake', 'fiscal_lock', 'backup', 'print'].includes(log.action)
           ? log.action
           : 'update',
         entity: clampNonEmpty(log.entity, 80, 'Record'),
@@ -824,6 +922,26 @@ function sanitizeEntityForWrite(
         summary: clampNonEmpty(log.summary, 400, 'Action logged'),
         timestamp: clampNonEmpty(log.timestamp, 64, new Date().toISOString()),
       };
+      if (log.screenName) out.screenName = clampString(log.screenName, 120);
+      if (log.oldValue) out.oldValue = clampString(log.oldValue, 300);
+      if (log.newValue) out.newValue = clampString(log.newValue, 300);
+      if (log.deviceInfo) out.deviceInfo = clampString(log.deviceInfo, 120);
+      return out;
+    }
+    case 'supportTickets': {
+      const t = item as SupportTicket;
+      const out: Record<string, unknown> = {
+        id: sanitizeId(t.id, 'TKT'),
+        ownerId: uid,
+        title: clampNonEmpty(t.title, 160, 'Support Ticket'),
+        description: clampNonEmpty(t.description, 1000, 'Ticket description'),
+        status: ['open', 'in_progress', 'resolved'].includes(t.status) ? t.status : 'open',
+        submittedAt: clampNonEmpty(t.createdAt, 64, new Date().toISOString()),
+      };
+      if (t.screenshotBase64 && t.screenshotBase64.length <= 250000) {
+        out.screenshotBase64 = t.screenshotBase64;
+      }
+      return out;
     }
   }
 }
@@ -899,6 +1017,7 @@ export async function loadOrSeedWorkspace(
     currentRole: (wsData.currentRole as RoleId) ?? localState.currentRole,
     activePlan: (wsData.activePlan as string) ?? localState.activePlan,
     trialStartIso: (wsData.trialStartIso as string) ?? localState.trialStartIso,
+    subscriptionMeta: (wsData.subscriptionMeta as SubscriptionMeta | undefined) ?? localState.subscriptionMeta,
     permissionsMatrix: (wsData.permissionsMatrix as PermissionsMatrix) ?? localState.permissionsMatrix,
     settings: {
       ...localState.settings,
@@ -908,6 +1027,7 @@ export async function loadOrSeedWorkspace(
       phone: (wsData.phone as string) ?? localState.settings.phone,
       email: (wsData.email as string) ?? localState.settings.email,
       address: (wsData.address as string) ?? localState.settings.address,
+      city: (wsData.city as string | undefined) ?? localState.settings.city,
       currency: (wsData.currency as PersistedState['settings']['currency']) ?? localState.settings.currency,
       enabledCurrencies:
         (wsData.enabledCurrencies as CurrencyCode[] | undefined) ?? localState.settings.enabledCurrencies,
@@ -915,6 +1035,29 @@ export async function loadOrSeedWorkspace(
         (wsData.exchangeRates as Record<string, number> | undefined) ?? localState.settings.exchangeRates,
       lastRatesUpdate:
         (wsData.lastRatesUpdate as string | undefined) ?? localState.settings.lastRatesUpdate,
+      lastRatesSource:
+        (wsData.lastRatesSource as 'live' | 'fallback' | undefined) ?? localState.settings.lastRatesSource,
+      autoUpdateExchangeRates:
+        typeof wsData.autoUpdateExchangeRates === 'boolean'
+          ? wsData.autoUpdateExchangeRates
+          : (localState.settings.autoUpdateExchangeRates ?? true),
+      fxAutoIntervalHours: Number(
+        wsData.fxAutoIntervalHours ?? localState.settings.fxAutoIntervalHours ?? 6,
+      ),
+      displayCurrency:
+        (wsData.displayCurrency as CurrencyCode | undefined) ?? localState.settings.displayCurrency,
+      currencyDisplayStyle:
+        (wsData.currencyDisplayStyle as PersistedState['settings']['currencyDisplayStyle']) ??
+        localState.settings.currencyDisplayStyle ??
+        'symbol',
+      currencyNumberLocale:
+        (wsData.currencyNumberLocale as PersistedState['settings']['currencyNumberLocale']) ??
+        localState.settings.currencyNumberLocale ??
+        'auto',
+      currencyDecimalMode:
+        (wsData.currencyDecimalMode as PersistedState['settings']['currencyDecimalMode']) ??
+        localState.settings.currencyDecimalMode ??
+        'auto',
       isArabic: typeof wsData.isArabic === 'boolean' ? wsData.isArabic : localState.settings.isArabic,
       isDarkMode: typeof wsData.isDarkMode === 'boolean' ? wsData.isDarkMode : localState.settings.isDarkMode,
       monthlySalesGoal: Number(wsData.monthlySalesGoal ?? localState.settings.monthlySalesGoal),
@@ -937,6 +1080,14 @@ export async function loadOrSeedWorkspace(
       defaultBranchId: (wsData.defaultBranchId as string | undefined) ?? localState.settings.defaultBranchId,
       defaultWarehouseId: (wsData.defaultWarehouseId as string | undefined) ?? localState.settings.defaultWarehouseId,
       receiptFooter: (wsData.receiptFooter as string | undefined) ?? localState.settings.receiptFooter,
+      invoicePrefix: (wsData.invoicePrefix as string | undefined) ?? localState.settings.invoicePrefix,
+      invoiceNumberFormat: (wsData.invoiceNumberFormat as string | undefined) ?? localState.settings.invoiceNumberFormat,
+      invoiceTerms: (wsData.invoiceTerms as string | undefined) ?? localState.settings.invoiceTerms,
+      printPaperSize: (wsData.printPaperSize as PersistedState['settings']['printPaperSize']) ?? localState.settings.printPaperSize,
+      showQrOnPrint: typeof wsData.showQrOnPrint === 'boolean' ? wsData.showQrOnPrint : localState.settings.showQrOnPrint,
+      showLogoOnPrint: typeof wsData.showLogoOnPrint === 'boolean' ? wsData.showLogoOnPrint : localState.settings.showLogoOnPrint,
+      whatsappTemplate: (wsData.whatsappTemplate as string | undefined) ?? localState.settings.whatsappTemplate,
+      senderEmail: (wsData.senderEmail as string | undefined) ?? localState.settings.senderEmail,
     },
   };
 
@@ -1000,11 +1151,15 @@ async function seedAllSubcollections(uid: string, state: PersistedState): Promis
 }
 
 function stripFirestoreMeta<T extends Record<string, unknown>>(docData: T): T {
-  const copy = { ...docData };
+  const copy: Record<string, unknown> = { ...docData };
   delete copy.ownerId;
   delete copy.createdAt;
   delete copy.updatedAt;
-  return copy;
+  if (typeof copy.submittedAt === 'string') {
+    copy.createdAt = copy.submittedAt;
+    delete copy.submittedAt;
+  }
+  return copy as T;
 }
 
 export function subscribeWorkspace(
@@ -1025,6 +1180,7 @@ export function subscribeWorkspace(
           currentRole: wsData.currentRole as RoleId,
           activePlan: wsData.activePlan as string,
           trialStartIso: wsData.trialStartIso as string,
+          subscriptionMeta: wsData.subscriptionMeta as SubscriptionMeta | undefined,
           permissionsMatrix: wsData.permissionsMatrix as PermissionsMatrix,
           settings: {
             companyName: wsData.companyName as string,
@@ -1033,10 +1189,22 @@ export function subscribeWorkspace(
             phone: wsData.phone as string,
             email: wsData.email as string,
             address: wsData.address as string,
+            city: wsData.city as string | undefined,
             currency: wsData.currency as PersistedState['settings']['currency'],
             enabledCurrencies: wsData.enabledCurrencies as CurrencyCode[] | undefined,
             exchangeRates: wsData.exchangeRates as Record<string, number> | undefined,
             lastRatesUpdate: wsData.lastRatesUpdate as string | undefined,
+            lastRatesSource: wsData.lastRatesSource as 'live' | 'fallback' | undefined,
+            autoUpdateExchangeRates:
+              typeof wsData.autoUpdateExchangeRates === 'boolean' ? wsData.autoUpdateExchangeRates : true,
+            fxAutoIntervalHours: Number(wsData.fxAutoIntervalHours ?? 6),
+            displayCurrency: wsData.displayCurrency as CurrencyCode | undefined,
+            currencyDisplayStyle:
+              (wsData.currencyDisplayStyle as PersistedState['settings']['currencyDisplayStyle']) ?? 'symbol',
+            currencyNumberLocale:
+              (wsData.currencyNumberLocale as PersistedState['settings']['currencyNumberLocale']) ?? 'auto',
+            currencyDecimalMode:
+              (wsData.currencyDecimalMode as PersistedState['settings']['currencyDecimalMode']) ?? 'auto',
             isArabic: Boolean(wsData.isArabic),
             isDarkMode: Boolean(wsData.isDarkMode),
             monthlySalesGoal: Number(wsData.monthlySalesGoal ?? 120000),
@@ -1052,6 +1220,14 @@ export function subscribeWorkspace(
             defaultBranchId: wsData.defaultBranchId as string | undefined,
             defaultWarehouseId: wsData.defaultWarehouseId as string | undefined,
             receiptFooter: wsData.receiptFooter as string | undefined,
+            invoicePrefix: wsData.invoicePrefix as string | undefined,
+            invoiceNumberFormat: wsData.invoiceNumberFormat as string | undefined,
+            invoiceTerms: wsData.invoiceTerms as string | undefined,
+            printPaperSize: wsData.printPaperSize as PersistedState['settings']['printPaperSize'],
+            showQrOnPrint: typeof wsData.showQrOnPrint === 'boolean' ? wsData.showQrOnPrint : undefined,
+            showLogoOnPrint: typeof wsData.showLogoOnPrint === 'boolean' ? wsData.showLogoOnPrint : undefined,
+            whatsappTemplate: wsData.whatsappTemplate as string | undefined,
+            senderEmail: wsData.senderEmail as string | undefined,
           },
         });
       },
@@ -1119,7 +1295,22 @@ export async function syncStateDiffToFirestore(
   if (!stableEqual(prevWs, nextWs)) {
     const wsPath = `workspaces/${uid}`;
     const wsPatch: Record<string, unknown> = { ...nextWs, updatedAt: serverTimestamp() };
-    for (const optKey of ['logoBase64', 'fiscalLockDate', 'defaultBranchId', 'defaultWarehouseId', 'receiptFooter']) {
+    for (const optKey of [
+      'city',
+      'logoBase64',
+      'fiscalLockDate',
+      'defaultBranchId',
+      'defaultWarehouseId',
+      'receiptFooter',
+      'invoicePrefix',
+      'invoiceNumberFormat',
+      'invoiceTerms',
+      'printPaperSize',
+      'showQrOnPrint',
+      'showLogoOnPrint',
+      'whatsappTemplate',
+      'senderEmail',
+    ]) {
       if (prevWs[optKey] !== undefined && nextWs[optKey] === undefined) {
         wsPatch[optKey] = deleteField();
       }

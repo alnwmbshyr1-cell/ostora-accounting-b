@@ -1,8 +1,22 @@
 import React, { useMemo } from 'react';
-import { AlertTriangle, Building2, Package, TrendingUp, Users } from 'lucide-react';
+import {
+  AlertTriangle,
+  ArrowDownRight,
+  ArrowUpRight,
+  Award,
+  Building2,
+  Lightbulb,
+  Package,
+  Sparkles,
+  Timer,
+  TrendingDown,
+  TrendingUp,
+  Users,
+} from 'lucide-react';
 import { HealthScoreRing } from '../components/QrMatrix';
 import { strings } from '../data/translations';
-import { computeAdvancedInsights } from '../domain/analytics';
+import { computeAdvancedInsights, computeDetailedAiInsights } from '../domain/analytics';
+import { formatCurrency, formatCurrencyNumber } from '../utils/currencies';
 import { ScreenProps } from './types';
 
 export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) => {
@@ -12,14 +26,17 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
   const t = strings[isAr ? 'ar' : 'en'];
 
   const adv = useMemo(() => computeAdvancedInsights(state), [state]);
+  const detailed = useMemo(() => computeDetailedAiInsights(state), [state]);
 
   const now = new Date();
   const curMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const thisMonthSales = state.invoices.reduce((sum, inv) => {
+    if (inv.status === 'cancelled' || inv.status === 'draft' || inv.invoiceType === 'quotation') return sum;
     const d = new Date(inv.date);
     if (Number.isNaN(d.getTime())) return sum;
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    return key === curMonthKey ? sum + (inv.baseTotal ?? inv.total * (inv.exchangeRate ?? 1)) : sum;
+    const sign = inv.invoiceType === 'return' ? -1 : 1;
+    return key === curMonthKey ? sum + (inv.baseTotal ?? inv.total * (inv.exchangeRate ?? 1)) * sign : sum;
   }, 0);
 
   const baseSales = thisMonthSales > 0 ? thisMonthSales : metrics.totalSales;
@@ -31,15 +48,19 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
     metrics.totalSales > 0
       ? Math.max(0, Math.round(((metrics.totalSales - metrics.customerDebt) / metrics.totalSales) * 100))
       : 100;
-  const forecastBase = adv.nextMonthForecast > 0 ? adv.nextMonthForecast : (baseSales > 0 ? baseSales : 10000);
+  const forecastBase = adv.nextMonthForecast > 0 ? adv.nextMonthForecast : baseSales > 0 ? baseSales : 10000;
   const points = Array.from({ length: 6 }, (_, i) => ({
     label: `M${i + 1}`,
     value: Math.round(forecastBase * (1 + i * 0.065)),
   }));
   const maxVal = Math.max(...points.map((p) => p.value), 1);
 
+  const curMoProfit = detailed.monthComparison.currentRev - detailed.monthComparison.currentExp;
+  const prevMoProfit = detailed.monthComparison.prevRev - detailed.monthComparison.prevExp;
+
   return (
     <div className="space-y-5">
+      {/* Executive Health Score + Monthly Goal */}
       <div className="bg-[#0A3D2C] text-white rounded-[20px] p-6 flex flex-col sm:flex-row items-center gap-6">
         <HealthScoreRing score={metrics.healthScore} label={t.healthScore} />
         <div className="flex-1 w-full space-y-2.5">
@@ -67,7 +88,75 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
             <div className="h-full bg-[#C9A227] rounded-full transition-all" style={{ width: `${progress}%` }} />
           </div>
           <p className="text-xs text-white/80 font-mono tabular-nums">
-            {thisMonthSales.toLocaleString()} / {goal.toLocaleString()} {cur}
+            {formatCurrencyNumber(thisMonthSales, cur)} / {formatCurrency(goal, cur, { isAr })}
+          </p>
+        </div>
+      </div>
+
+      {/* Month-over-Month Performance Comparison */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-500">
+              {isAr ? 'مقارنة المبيعات (هذا الشهر / السابق)' : 'Revenue MoM Comparison'}
+            </span>
+            <span
+              className={`inline-flex items-center gap-0.5 text-[11px] font-mono font-extrabold ${
+                detailed.monthComparison.revChangePct >= 0 ? 'text-emerald-600' : 'text-rose-600'
+              }`}
+            >
+              {detailed.monthComparison.revChangePct >= 0 ? (
+                <ArrowUpRight className="w-3.5 h-3.5" />
+              ) : (
+                <ArrowDownRight className="w-3.5 h-3.5" />
+              )}
+              {detailed.monthComparison.revChangePct >= 0 ? '+' : ''}
+              {detailed.monthComparison.revChangePct}%
+            </span>
+          </div>
+          <p className="text-xl font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-emerald-400">
+            {formatCurrency(detailed.monthComparison.currentRev, cur, { isAr })}
+          </p>
+          <p className="text-[11px] text-slate-500 font-mono">
+            {isAr ? 'الشهر السابق:' : 'Prev:'} {formatCurrency(detailed.monthComparison.prevRev, cur, { isAr })}
+          </p>
+        </div>
+
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-500">
+              {isAr ? 'مقارنة المصروفات (هذا الشهر / السابق)' : 'Expenses MoM Comparison'}
+            </span>
+            <span
+              className={`inline-flex items-center gap-0.5 text-[11px] font-mono font-extrabold ${
+                detailed.monthComparison.expChangePct <= 0 ? 'text-emerald-600' : 'text-amber-600'
+              }`}
+            >
+              {detailed.monthComparison.expChangePct >= 0 ? '+' : ''}
+              {detailed.monthComparison.expChangePct}%
+            </span>
+          </div>
+          <p className="text-xl font-extrabold font-mono tabular-nums text-amber-700 dark:text-[#C9A227]">
+            {formatCurrency(detailed.monthComparison.currentExp, cur, { isAr })}
+          </p>
+          <p className="text-[11px] text-slate-500 font-mono">
+            {isAr ? 'الشهر السابق:' : 'Prev:'} {formatCurrency(detailed.monthComparison.prevExp, cur, { isAr })}
+          </p>
+        </div>
+
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-1.5">
+          <span className="text-xs font-bold text-slate-500 block">
+            {isAr ? 'صافي التدفق الشهري (هذا الشهر / السابق)' : 'Net Monthly Flow (Current vs Prev)'}
+          </span>
+          <p
+            className={`text-xl font-extrabold font-mono tabular-nums ${
+              curMoProfit >= 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-600'
+            }`}
+          >
+            {formatCurrency(curMoProfit, cur, { isAr })}
+          </p>
+          <p className="text-[11px] text-slate-500 font-mono">
+            {isAr ? 'الشهر السابق:' : 'Prev:'} {formatCurrency(prevMoProfit, cur, { isAr })}
           </p>
         </div>
       </div>
@@ -80,7 +169,7 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
             <span>{isAr ? 'توقع مبيعات الشهر القادم (من آخر 3 أشهر)' : 'Next Month Forecast (3-Mo Weighted)'}</span>
           </p>
           <p className="text-2xl font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227]">
-            {adv.nextMonthForecast.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+            {formatCurrency(adv.nextMonthForecast, cur, { isAr, maxDecimals: 0 })}
           </p>
           <p className="text-[11px] font-mono text-slate-400">
             {adv.last3MonthsRevenue.map((m) => `${m.monthKey.slice(5)}: ${(m.total / 1000).toFixed(1)}k`).join(' · ')}
@@ -103,6 +192,188 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
           <p className="text-2xl font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227]">
             {collectionRatio}%
           </p>
+        </div>
+      </div>
+
+      {/* Best Customers, Best Products (with Profit Margin), Slow-Moving Products */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-extrabold flex items-center gap-1.5 text-[#0A3D2C] dark:text-[#C9A227]">
+              <Award className="w-4 h-4" />
+              <span>{isAr ? 'أفضل العملاء إنفاقاً' : 'Top Customers'}</span>
+            </h3>
+            <button onClick={() => onNavigate('customers')} className="text-[11px] font-bold text-slate-500 cursor-pointer">
+              {t.customers}
+            </button>
+          </div>
+          {detailed.bestCustomers.length === 0 ? (
+            <p className="text-xs text-slate-400 py-3">{t.noData}</p>
+          ) : (
+            <div className="space-y-2">
+              {detailed.bestCustomers.map((c, idx) => (
+                <div key={c.customerId} className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] flex items-center justify-between gap-2 text-xs">
+                  <div className="min-w-0">
+                    <p className="font-bold truncate">
+                      {idx + 1}. {c.customerName}
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      {c.invoiceCount} {isAr ? 'فاتورة' : 'invoices'}
+                    </p>
+                  </div>
+                  <span className="font-mono font-extrabold text-[#0A3D2C] dark:text-emerald-400 shrink-0">
+                    {formatCurrency(c.totalSpent, cur, { isAr })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-extrabold flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400">
+              <Sparkles className="w-4 h-4" />
+              <span>{isAr ? 'الأصناف الأعلى مبيعاً وربحية' : 'Best Products & Margin'}</span>
+            </h3>
+            <button onClick={() => onNavigate('inventory')} className="text-[11px] font-bold text-slate-500 cursor-pointer">
+              {t.inventory}
+            </button>
+          </div>
+          {detailed.bestProducts.length === 0 ? (
+            <p className="text-xs text-slate-400 py-3">{t.noData}</p>
+          ) : (
+            <div className="space-y-2">
+              {detailed.bestProducts.map((p) => (
+                <div key={p.productId} className="p-2.5 rounded-xl bg-emerald-500/5 border border-emerald-500/15 flex items-center justify-between gap-2 text-xs">
+                  <div className="min-w-0">
+                    <p className="font-bold truncate">{p.name}</p>
+                    <p className="text-[11px] text-slate-500">
+                      {isAr ? `مباع: ${p.qtySold}` : `Sold: ${p.qtySold}`} ·{' '}
+                      <span className="text-emerald-700 dark:text-emerald-400 font-bold">
+                        {isAr ? `هامش ${p.marginPct}%` : `${p.marginPct}% margin`}
+                      </span>
+                    </p>
+                  </div>
+                  <span className="font-mono font-extrabold text-[#0A3D2C] dark:text-[#C9A227] shrink-0">
+                    {formatCurrency(p.revenue, cur, { isAr })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-extrabold flex items-center gap-1.5 text-amber-700 dark:text-amber-400">
+              <TrendingDown className="w-4 h-4" />
+              <span>{isAr ? 'أصناف بطيئة الحركة / راكدة' : 'Slow-Moving Stock'}</span>
+            </h3>
+            <button onClick={() => onNavigate('inventory')} className="text-[11px] font-bold text-slate-500 cursor-pointer">
+              {t.inventory}
+            </button>
+          </div>
+          {detailed.slowMovingProducts.length === 0 ? (
+            <p className="text-xs text-slate-400 py-3">{t.noData}</p>
+          ) : (
+            <div className="space-y-2">
+              {detailed.slowMovingProducts.map((p) => (
+                <div key={p.productId} className="p-2.5 rounded-xl bg-amber-500/5 border border-amber-500/20 flex items-center justify-between gap-2 text-xs">
+                  <div className="min-w-0">
+                    <p className="font-bold truncate">{p.name}</p>
+                    <p className="text-[11px] text-slate-500">
+                      {isAr ? `رصيد راكد: ${p.currentStock}` : `On hand: ${p.currentStock}`} · {isAr ? `هامش ${p.marginPct}%` : `${p.marginPct}% margin`}
+                    </p>
+                  </div>
+                  <span className="font-mono font-bold text-amber-700 dark:text-[#C9A227] shrink-0">
+                    {isAr ? `${p.qtySold} مبيعة` : `${p.qtySold} sold`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Stockout Predictions + Actionable Recommendations */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-3">
+          <h3 className="text-sm font-extrabold flex items-center gap-2 text-[#0A3D2C] dark:text-[#C9A227]">
+            <Timer className="w-4 h-4" />
+            <span>{isAr ? 'توقع نفاد المخزون (أيام التغطية)' : 'Stockout Days Prediction'}</span>
+          </h3>
+          {detailed.stockoutPredictions.length === 0 ? (
+            <p className="text-xs text-slate-400 py-4 text-center">
+              {isAr ? 'لا توجد أصناف مهددة بالنفاد خلال 45 يوماً' : 'No stockouts predicted within 45 days'}
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="text-slate-500 border-b border-slate-100 dark:border-[#1F332B]">
+                  <tr>
+                    <th className="py-2 text-start">{isAr ? 'الصنف' : 'Product'}</th>
+                    <th className="py-2 text-end">{isAr ? 'الرصيد' : 'Stock'}</th>
+                    <th className="py-2 text-end">{isAr ? 'المعدل/يوم' : 'Vel./day'}</th>
+                    <th className="py-2 text-end">{isAr ? 'النفاد خلال' : 'Stockout In'}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-[#1F332B]">
+                  {detailed.stockoutPredictions.map((p) => (
+                    <tr key={p.productId}>
+                      <td className="py-2 font-bold">{p.name}</td>
+                      <td className="py-2 text-end font-mono">{p.currentStock}</td>
+                      <td className="py-2 text-end font-mono">{p.dailyVelocity}</td>
+                      <td className="py-2 text-end">
+                        <span
+                          className={`px-2 py-0.5 rounded-md font-mono font-bold ${
+                            (p.daysUntilStockout ?? 99) <= 7
+                              ? 'bg-rose-500/15 text-rose-600'
+                              : 'bg-amber-500/15 text-amber-700 dark:text-[#C9A227]'
+                          }`}
+                        >
+                          {p.daysUntilStockout} {isAr ? 'يوم' : 'd'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 space-y-3">
+          <h3 className="text-sm font-extrabold flex items-center gap-2 text-[#0A3D2C] dark:text-[#C9A227]">
+            <Lightbulb className="w-4 h-4 text-[#C9A227]" />
+            <span>{isAr ? 'توصيات ذكية قابلة للتنفيذ' : 'Actionable AI Recommendations'}</span>
+          </h3>
+          {detailed.recommendations.length === 0 ? (
+            <p className="text-xs text-slate-400 py-4 text-center">
+              {isAr ? 'الأداء التشغيلي متوازن حالياً ✓' : 'Operations look well-balanced ✓'}
+            </p>
+          ) : (
+            <div className="space-y-2.5">
+              {detailed.recommendations.map((rec) => (
+                <div
+                  key={rec.id}
+                  className="p-3 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                >
+                  <div className="space-y-0.5">
+                    <p className="text-xs font-extrabold">{isAr ? rec.titleAr : rec.titleEn}</p>
+                    <p className="text-[11px] text-slate-500">{isAr ? rec.detailAr : rec.detailEn}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate(rec.actionRoute)}
+                    className="px-3 py-1.5 rounded-lg bg-[#C9A227] text-slate-950 text-xs font-extrabold shrink-0 cursor-pointer"
+                  >
+                    {t.takeAction}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -132,7 +403,7 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
                     </p>
                   </div>
                   <span className="font-mono font-extrabold text-rose-600 shrink-0">
-                    {c.debt.toLocaleString()} {cur}
+                    {formatCurrency(c.debt, cur, { isAr })}
                   </span>
                 </div>
               ))}
@@ -194,11 +465,11 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
                   <div className="min-w-0">
                     <p className="font-bold truncate">{b.name}</p>
                     <p className="text-[11px] text-slate-500">
-                      {t.revenueLabel}: {b.revenue.toLocaleString()} · {t.expensesLabel}: {b.expenses.toLocaleString()}
+                      {t.revenueLabel}: {formatCurrencyNumber(b.revenue, cur)} · {t.expensesLabel}: {formatCurrencyNumber(b.expenses, cur)}
                     </p>
                   </div>
                   <span className="font-mono font-extrabold text-rose-600 shrink-0">
-                    {b.netResult.toLocaleString()} {cur}
+                    {formatCurrency(b.netResult, cur, { isAr })}
                   </span>
                 </div>
               ))}
@@ -207,6 +478,7 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
         </div>
       </div>
 
+      {/* 6-Month Projection Chart */}
       <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-4">
         <h3 className="text-base font-extrabold">{t.forecast6m}</h3>
         <div className="grid grid-cols-6 gap-3 items-end h-44 pt-4">
@@ -228,6 +500,7 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
         </div>
       </div>
 
+      {/* Smart Alerts */}
       <div className="space-y-3">
         <h3 className="text-base font-extrabold flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 text-[#C9A227]" />

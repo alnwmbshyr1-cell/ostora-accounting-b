@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import {
+  ArrowLeftRight,
   Building2,
   Cloud,
   CloudOff,
@@ -8,16 +9,20 @@ import {
   Database,
   Download,
   FileSpreadsheet,
+  FileText,
   ImagePlus,
   Lock,
   LogOut,
+  MessageSquare,
   Percent,
   Plus,
+  Printer,
   RefreshCw,
   RotateCcw,
   Shield,
   Trash2,
   Upload,
+  Warehouse,
 } from 'lucide-react';
 import { DataImportModal } from '../components/DataImportModal';
 import { ALL_ROUTES } from '../constants/permissions';
@@ -27,14 +32,20 @@ import { uploadAssetWithOfflineFallback } from '../services/firebaseExtras';
 import { CurrencyCode, RoleId } from '../types/erp';
 import {
   buildDefaultRatesForBase,
+  convertCurrencyAmount,
+  CurrencyDecimalMode,
+  CurrencyDisplayStyle,
+  CurrencyNumberLocale,
   DEFAULT_ENABLED_CURRENCIES,
+  formatCurrency,
+  getCurrencyMeta,
   SUPPORTED_CURRENCIES,
 } from '../utils/currencies';
 import { downloadTextFile, exportMultiSheetExcel } from '../utils/export';
 import { compressImageToBase64 } from '../utils/image';
 import { ScreenProps } from './types';
 
-export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
+export const SettingsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) => {
   const { state, metrics, actions, idbSnapshots, cloudBackups } = store;
   const { user, signingIn, syncStatus, lastCloudSyncAt, authError, signInWithGoogle, signOutFirebase } = useFirebase();
   const isAr = state.settings.isArabic;
@@ -47,6 +58,9 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
   const [downloadingBackup, setDownloadingBackup] = useState(false);
   const [syncingNow, setSyncingNow] = useState(false);
   const [updatingRates, setUpdatingRates] = useState(false);
+  const [convAmount, setConvAmount] = useState('1000');
+  const [convFrom, setConvFrom] = useState<CurrencyCode>(state.settings.currency);
+  const [convTo, setConvTo] = useState<CurrencyCode>(state.settings.currency === 'USD' ? 'SAR' : 'USD');
   const [bulkImportOpen, setBulkImportOpen] = useState(false);
   const [savingCloudBackup, setSavingCloudBackup] = useState(false);
   const [branchModal, setBranchModal] = useState<{ open: boolean; editId?: string }>({ open: false });
@@ -184,6 +198,16 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
               className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
             />
           </div>
+          <div>
+            <label className="text-xs font-bold text-slate-500">{isAr ? 'المدينة' : 'City'}</label>
+            <input
+              maxLength={80}
+              value={state.settings.city ?? ''}
+              onChange={(e) => actions.updateSettings({ city: e.target.value })}
+              placeholder={isAr ? 'الرياض' : 'Riyadh'}
+              className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-sm"
+            />
+          </div>
         </div>
       </div>
 
@@ -258,6 +282,23 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
               </div>
             ))}
           </div>
+          <div className="pt-2 border-t border-slate-100 dark:border-[#1F332B] flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-bold text-slate-600 dark:text-slate-300">
+              <Warehouse className="w-4 h-4 text-[#0A3D2C] dark:text-[#C9A227]" />
+              <span>
+                {isAr
+                  ? `المستودعات النشطة: ${state.warehouses.length}`
+                  : `Active Warehouses: ${state.warehouses.length}`}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate('warehouses')}
+              className="px-3 py-1 rounded-lg bg-[#0A3D2C]/10 dark:bg-[#C9A227]/15 text-[#0A3D2C] dark:text-[#C9A227] text-xs font-bold cursor-pointer"
+            >
+              {isAr ? 'إدارة المستودعات ←' : 'Manage Warehouses →'}
+            </button>
+          </div>
         </div>
 
         <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-3">
@@ -320,7 +361,7 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
           >
             {SUPPORTED_CURRENCIES.map((c) => (
               <option key={c.code} value={c.code}>
-                {c.code} — {isAr ? c.nameAr : c.nameEn}
+                {c.code} — {isAr ? c.nameAr : c.nameEn} ({formatCurrency(1250.5, c.code, { isAr })})
               </option>
             ))}
           </select>
@@ -336,12 +377,23 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
         </div>
       </div>
 
-      {/* Multi-Currency & Live Exchange Rates Panel */}
+      {/* Multi-Currency, Display Formatting & Live Exchange Rates Panel */}
       {(() => {
         const baseCur = state.settings.currency;
         const enabledList = state.settings.enabledCurrencies ?? DEFAULT_ENABLED_CURRENCIES;
+        const displayCur = state.settings.displayCurrency && enabledList.includes(state.settings.displayCurrency)
+          ? state.settings.displayCurrency
+          : baseCur;
+        const displayStyle = state.settings.currencyDisplayStyle ?? 'symbol';
+        const numberLocale = state.settings.currencyNumberLocale ?? 'auto';
+        const decimalMode = state.settings.currencyDecimalMode ?? 'auto';
+        const fxIntervalHours = state.settings.fxAutoIntervalHours ?? 6;
+        const ratesSource = state.settings.lastRatesSource;
         const ratesMap = state.settings.exchangeRates ?? buildDefaultRatesForBase(baseCur);
         const foreignEnabled = enabledList.filter((c) => c !== baseCur);
+        const convRaw = parseFloat(convAmount);
+        const convNumeric = Number.isFinite(convRaw) && convRaw >= 0 ? convRaw : 0;
+        const convertedResult = convertCurrencyAmount(convNumeric, convFrom, convTo, baseCur, ratesMap);
 
         return (
           <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-4">
@@ -353,34 +405,162 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
                   <p className="text-[11px] text-slate-500 font-mono">
                     {t.lastUpdatedRates}:{' '}
                     {state.settings.lastRatesUpdate ? state.settings.lastRatesUpdate.slice(0, 16).replace('T', ' ') : '—'}
+                    {ratesSource && (
+                      <span className="ms-2 text-[#0A3D2C] dark:text-[#C9A227] font-bold">
+                        · {ratesSource === 'live' ? (isAr ? 'سوق مباشر' : 'Live API') : isAr ? 'مرجعي' : 'Reference'}
+                      </span>
+                    )}
                   </p>
                 </div>
               </div>
-              <button
-                type="button"
-                disabled={updatingRates}
-                onClick={async () => {
-                  setUpdatingRates(true);
-                  try {
-                    const res = await actions.refreshLiveExchangeRates(baseCur);
-                    actions.notify(
-                      res.source === 'live'
-                        ? isAr
-                          ? `تم تحديث أسعار الصرف مباشرة مقابل ${baseCur}`
-                          : `Live exchange rates updated against ${baseCur}`
-                        : isAr
-                        ? 'تم تحميل الأسعار المرجعية (وضع غير متصل)'
-                        : 'Loaded reference exchange rates (offline fallback)',
-                    );
-                  } finally {
-                    setUpdatingRates(false);
-                  }
-                }}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer disabled:opacity-60"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${updatingRates ? 'animate-spin' : ''}`} />
-                <span>{updatingRates ? t.fetchingRates : t.fetchLiveRates}</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={state.settings.autoUpdateExchangeRates ?? true}
+                    onChange={(e) => {
+                      actions.updateSettings({ autoUpdateExchangeRates: e.target.checked });
+                      actions.notify(
+                        e.target.checked
+                          ? isAr
+                            ? 'تم تفعيل التحديث التلقائي لأسعار الصرف'
+                            : 'Auto FX rate updates enabled'
+                          : isAr
+                          ? 'تم إيقاف التحديث التلقائي لأسعار الصرف'
+                          : 'Auto FX rate updates paused',
+                      );
+                    }}
+                    className="w-4 h-4 accent-[#0A3D2C] cursor-pointer"
+                  />
+                  <span>{isAr ? 'تحديث تلقائي للأسعار' : 'Auto-update rates'}</span>
+                </label>
+                {(state.settings.autoUpdateExchangeRates ?? true) && (
+                  <select
+                    value={fxIntervalHours}
+                    onChange={(e) => actions.updateSettings({ fxAutoIntervalHours: Number(e.target.value) })}
+                    aria-label={isAr ? 'فترة التحديث التلقائي' : 'Auto-update interval'}
+                    className="px-2.5 py-1.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+                  >
+                    <option value={1}>{isAr ? 'كل ساعة' : 'Every 1h'}</option>
+                    <option value={6}>{isAr ? 'كل 6 ساعات' : 'Every 6h'}</option>
+                    <option value={12}>{isAr ? 'كل 12 ساعة' : 'Every 12h'}</option>
+                    <option value={24}>{isAr ? 'يومياً (24س)' : 'Daily (24h)'}</option>
+                  </select>
+                )}
+                <button
+                  type="button"
+                  disabled={updatingRates}
+                  onClick={async () => {
+                    setUpdatingRates(true);
+                    try {
+                      const res = await actions.refreshLiveExchangeRates(baseCur);
+                      actions.notify(
+                        res.source === 'live'
+                          ? isAr
+                            ? `تم تحديث أسعار الصرف مباشرة مقابل ${baseCur}`
+                            : `Live exchange rates updated against ${baseCur}`
+                          : isAr
+                          ? 'تم تحميل الأسعار المرجعية (وضع غير متصل)'
+                          : 'Loaded reference exchange rates (offline fallback)',
+                      );
+                    } finally {
+                      setUpdatingRates(false);
+                    }
+                  }}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer disabled:opacity-60"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${updatingRates ? 'animate-spin' : ''}`} />
+                  <span>{updatingRates ? t.fetchingRates : t.fetchLiveRates}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    actions.resetDefaultExchangeRates(baseCur);
+                    actions.notify(isAr ? 'تمت استعادة أسعار الصرف المرجعية الافتراضية' : 'Default reference FX rates restored');
+                  }}
+                  className="flex items-center gap-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-[#1F332B] hover:border-[#0A3D2C] dark:hover:border-[#C9A227] text-xs font-bold cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'استعادة الافتراضي' : 'Reset Rates'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Currency Display Support & Formatting Preferences */}
+            <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-extrabold text-[#0A3D2C] dark:text-[#C9A227]">
+                  {isAr ? 'إعدادات عرض العملة وتنسيق الأرقام' : 'Currency Display & Number Formatting'}
+                </span>
+                <span className="text-xs font-mono font-bold text-slate-600 dark:text-slate-300">
+                  {isAr ? 'معاينة:' : 'Preview:'} {formatCurrency(12500.5, displayCur, { isAr })} · {formatCurrency(840.25, 'USD', { isAr })}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 mb-1">
+                    {isAr ? 'عملة العرض الافتراضية' : 'Default Display Currency'}
+                  </label>
+                  <select
+                    value={displayCur}
+                    onChange={(e) => actions.updateSettings({ displayCurrency: e.target.value as CurrencyCode })}
+                    className="w-full px-2.5 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+                  >
+                    {enabledList.map((c) => {
+                      const m = getCurrencyMeta(c);
+                      return (
+                        <option key={c} value={c}>
+                          {c} — {isAr ? m.nameAr : m.nameEn}
+                          {c === baseCur ? (isAr ? ' (الأساسية)' : ' (Base)') : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 mb-1">
+                    {isAr ? 'أسلوب إظهار العملة' : 'Currency Display Style'}
+                  </label>
+                  <select
+                    value={displayStyle}
+                    onChange={(e) => actions.updateSettings({ currencyDisplayStyle: e.target.value as CurrencyDisplayStyle })}
+                    className="w-full px-2.5 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+                  >
+                    <option value="symbol">{isAr ? 'رمز العملة (ر.س / $)' : 'Symbol (ر.س / $)'}</option>
+                    <option value="code">{isAr ? 'كود العملة (SAR / USD)' : 'ISO Code (SAR / USD)'}</option>
+                    <option value="both">{isAr ? 'الرمز والكود معاً' : 'Symbol + ISO Code'}</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 mb-1">
+                    {isAr ? 'نظام الأرقام والفواصل' : 'Number Format Locale'}
+                  </label>
+                  <select
+                    value={numberLocale}
+                    onChange={(e) => actions.updateSettings({ currencyNumberLocale: e.target.value as CurrencyNumberLocale })}
+                    className="w-full px-2.5 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+                  >
+                    <option value="auto">{isAr ? 'تلقائي حسب العملة' : 'Auto per currency'}</option>
+                    <option value="en-US">{isAr ? 'لاتيني (1,250.50)' : 'Western (1,250.50)'}</option>
+                    <option value="ar-SA">{isAr ? 'عربي (١٬٢٥٠٫٥٠)' : 'Arabic (١٬٢٥٠٫٥٠)'}</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 mb-1">
+                    {isAr ? 'الخانات العشرية' : 'Decimal Precision'}
+                  </label>
+                  <select
+                    value={decimalMode}
+                    onChange={(e) => actions.updateSettings({ currencyDecimalMode: e.target.value as CurrencyDecimalMode })}
+                    className="w-full px-2.5 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+                  >
+                    <option value="auto">{isAr ? 'تلقائي (2 للريال، 3 للدينار)' : 'Auto per currency ISO'}</option>
+                    <option value="0">{isAr ? 'بدون كسور (0)' : '0 decimals'}</option>
+                    <option value="2">{isAr ? 'خانتان (2)' : '2 decimals'}</option>
+                    <option value="3">{isAr ? 'ثلاث خانات (3)' : '3 decimals'}</option>
+                  </select>
+                </div>
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -417,44 +597,105 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
             {foreignEnabled.length > 0 && (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 pt-1">
                 {foreignEnabled.map((code) => {
-                  const meta = SUPPORTED_CURRENCIES.find((m) => m.code === code);
+                  const meta = getCurrencyMeta(code);
                   const val = ratesMap[code] ?? 1;
+                  const inverse = val > 0 ? (1 / val).toFixed(4) : '—';
                   return (
                     <div
                       key={code}
-                      className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B]"
+                      className="flex flex-col gap-1.5 px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B]"
                     >
-                      <div className="min-w-0">
-                        <span className="text-xs font-extrabold block">1 {code} =</span>
-                        <span className="text-[10px] text-slate-500 truncate block">
-                          {isAr ? meta?.nameAr : meta?.nameEn}
-                        </span>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <span className="text-xs font-extrabold block">1 {code} =</span>
+                          <span className="text-[10px] text-slate-500 truncate block">
+                            {isAr ? meta.nameAr : meta.nameEn} · {formatCurrency(1250.5, code, { isAr })}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <input
+                            type="number"
+                            min={0.0001}
+                            step={0.0001}
+                            value={val}
+                            onChange={(e) => {
+                              const num = parseFloat(e.target.value);
+                              if (!Number.isFinite(num) || num <= 0) return;
+                              actions.updateSettings({
+                                exchangeRates: {
+                                  ...ratesMap,
+                                  [code]: num,
+                                },
+                              });
+                            }}
+                            className="w-24 px-2 py-1 rounded-lg bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-mono tabular-nums text-end"
+                          />
+                          <span className="text-xs font-mono font-bold text-slate-500">{baseCur}</span>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <input
-                          type="number"
-                          min={0.0001}
-                          step={0.0001}
-                          value={val}
-                          onChange={(e) => {
-                            const num = parseFloat(e.target.value);
-                            if (!Number.isFinite(num) || num <= 0) return;
-                            actions.updateSettings({
-                              exchangeRates: {
-                                ...ratesMap,
-                                [code]: num,
-                              },
-                            });
-                          }}
-                          className="w-24 px-2 py-1 rounded-lg bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-mono tabular-nums text-end"
-                        />
-                        <span className="text-xs font-mono font-bold text-slate-500">{baseCur}</span>
+                      <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 border-t border-slate-200/70 dark:border-[#1F332B] pt-1">
+                        <span>1 {baseCur} = {inverse} {code}</span>
+                        <span>{meta.maxDecimals} {isAr ? 'خانات' : 'dec'}</span>
                       </div>
                     </div>
                   );
                 })}
               </div>
             )}
+
+            {/* Instant Currency Converter */}
+            <div className="p-3.5 rounded-2xl bg-[#0A3D2C]/5 dark:bg-[#0A120F] border border-[#0A3D2C]/20 dark:border-[#1F332B] space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-extrabold text-[#0A3D2C] dark:text-[#C9A227]">
+                  {isAr ? 'محول العملات الفوري' : 'Quick Currency Converter'}
+                </span>
+                <span className="text-xs font-mono font-extrabold text-[#0A3D2C] dark:text-emerald-400 tabular-nums">
+                  {formatCurrency(convNumeric, convFrom, { isAr })} = {formatCurrency(convertedResult, convTo, { isAr })}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={convAmount}
+                  onChange={(e) => setConvAmount(e.target.value)}
+                  className="sm:col-span-4 px-3 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-mono font-bold tabular-nums"
+                />
+                <select
+                  value={convFrom}
+                  onChange={(e) => setConvFrom(e.target.value as CurrencyCode)}
+                  className="sm:col-span-3 px-2.5 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+                >
+                  {enabledList.map((c) => (
+                    <option key={c} value={c}>{c} — {isAr ? getCurrencyMeta(c).nameAr : getCurrencyMeta(c).nameEn}</option>
+                  ))}
+                </select>
+                <div className="sm:col-span-1 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const prevFrom = convFrom;
+                      setConvFrom(convTo);
+                      setConvTo(prevFrom);
+                    }}
+                    title={isAr ? 'تبديل العملتين' : 'Swap currencies'}
+                    className="p-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] hover:border-[#0A3D2C] dark:hover:border-[#C9A227] cursor-pointer"
+                  >
+                    <ArrowLeftRight className="w-3.5 h-3.5 text-[#0A3D2C] dark:text-[#C9A227]" />
+                  </button>
+                </div>
+                <select
+                  value={convTo}
+                  onChange={(e) => setConvTo(e.target.value as CurrencyCode)}
+                  className="sm:col-span-4 px-2.5 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+                >
+                  {enabledList.map((c) => (
+                    <option key={c} value={c}>{c} — {isAr ? getCurrencyMeta(c).nameAr : getCurrencyMeta(c).nameEn}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
           </div>
         );
       })()}
@@ -539,6 +780,123 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store }) => {
           </div>
         </div>
         <p className="text-xs text-slate-500">{t.taxConfigHint}</p>
+      </div>
+
+      {/* Invoice Numbering, Print Configuration & Messaging Templates */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-3">
+          <div className="flex items-center gap-2">
+            <FileText className="w-5 h-5 text-[#0A3D2C] dark:text-[#C9A227]" />
+            <h3 className="text-base font-extrabold">
+              {isAr ? 'إعدادات ترقيم وشروط الفواتير' : 'Invoice Numbering & Terms'}
+            </h3>
+          </div>
+          <div className="grid grid-cols-2 gap-2.5">
+            <div>
+              <label className="text-xs font-bold text-slate-500">{isAr ? 'بادئة الترقيم' : 'Prefix'}</label>
+              <input
+                maxLength={12}
+                value={state.settings.invoicePrefix ?? 'INV-'}
+                onChange={(e) => actions.updateSettings({ invoicePrefix: e.target.value })}
+                className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-500">{isAr ? 'صيغة الترقيم' : 'Number Format'}</label>
+              <input
+                maxLength={32}
+                value={state.settings.invoiceNumberFormat ?? '{PREFIX}{NUM}'}
+                onChange={(e) => actions.updateSettings({ invoiceNumberFormat: e.target.value })}
+                className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-bold text-slate-500">
+              {isAr ? 'شروط وأحكام الفاتورة الافتراضية' : 'Default Invoice Terms'}
+            </label>
+            <textarea
+              rows={2}
+              maxLength={300}
+              value={state.settings.invoiceTerms ?? ''}
+              onChange={(e) => actions.updateSettings({ invoiceTerms: e.target.value })}
+              placeholder={isAr ? 'البضاعة المباعة ترد وتستبدل خلال 7 أيام وفق الفاتورة...' : 'Goods returnable within 7 days with original receipt...'}
+              className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+            />
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-3">
+          <div className="flex items-center gap-2">
+            <Printer className="w-5 h-5 text-[#0A3D2C] dark:text-[#C9A227]" />
+            <h3 className="text-base font-extrabold">
+              {isAr ? 'إعدادات الطباعة والرسائل' : 'Print & Messaging Settings'}
+            </h3>
+          </div>
+          <div>
+            <label className="text-xs font-bold text-slate-500">{isAr ? 'حجم ورق الطباعة الافتراضي' : 'Default Paper Size'}</label>
+            <select
+              value={state.settings.printPaperSize ?? 'a4'}
+              onChange={(e) =>
+                actions.updateSettings({
+                  printPaperSize: e.target.value as 'a4' | 'thermal_80' | 'thermal_58',
+                })
+              }
+              className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+            >
+              <option value="a4">{isAr ? 'ورق A4 قياسي' : 'Standard A4'}</option>
+              <option value="thermal_80">{isAr ? 'حراري 80mm (كاشير)' : 'Thermal 80mm (POS)'}</option>
+              <option value="thermal_58">{isAr ? 'حراري 58mm (محمول)' : 'Thermal 58mm (Mini)'}</option>
+            </select>
+          </div>
+          <div className="flex flex-wrap gap-4 pt-1">
+            <label className="inline-flex items-center gap-2 text-xs font-bold cursor-pointer">
+              <input
+                type="checkbox"
+                checked={state.settings.showQrOnPrint ?? true}
+                onChange={(e) => actions.updateSettings({ showQrOnPrint: e.target.checked })}
+                className="w-4 h-4 accent-[#0A3D2C] cursor-pointer"
+              />
+              <span>{isAr ? 'إظهار رمز QR بالطباعة' : 'Show ZATCA QR on Print'}</span>
+            </label>
+            <label className="inline-flex items-center gap-2 text-xs font-bold cursor-pointer">
+              <input
+                type="checkbox"
+                checked={state.settings.showLogoOnPrint ?? true}
+                onChange={(e) => actions.updateSettings({ showLogoOnPrint: e.target.checked })}
+                className="w-4 h-4 accent-[#0A3D2C] cursor-pointer"
+              />
+              <span>{isAr ? 'إظهار الشعار بالطباعة' : 'Show Logo on Print'}</span>
+            </label>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+            <div>
+              <label className="text-xs font-bold text-slate-500 flex items-center gap-1">
+                <MessageSquare className="w-3.5 h-3.5" />
+                <span>{isAr ? 'إيميل الإرسال' : 'Sender Email'}</span>
+              </label>
+              <input
+                type="email"
+                maxLength={160}
+                value={state.settings.senderEmail ?? state.settings.email}
+                onChange={(e) => actions.updateSettings({ senderEmail: e.target.value })}
+                className="mt-1 w-full px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-500">
+                {isAr ? 'قالب رسالة واتساب' : 'WhatsApp Message Template'}
+              </label>
+              <input
+                maxLength={240}
+                value={state.settings.whatsappTemplate ?? ''}
+                onChange={(e) => actions.updateSettings({ whatsappTemplate: e.target.value })}
+                placeholder={isAr ? 'مرحباً {customer}، فاتورتك رقم {id} بمبلغ {total}' : 'Hi {customer}, Invoice #{id} total {total}'}
+                className="mt-1 w-full px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+              />
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Permissions Matrix Table */}

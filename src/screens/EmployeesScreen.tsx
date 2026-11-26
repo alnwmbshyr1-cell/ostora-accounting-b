@@ -1,8 +1,24 @@
 import React, { useMemo, useState } from 'react';
-import { CreditCard, Edit2, MessageCircle, Plus, Search, Trash2, X } from 'lucide-react';
+import {
+  Camera,
+  CreditCard,
+  Edit2,
+  FileText,
+  Lock,
+  MessageCircle,
+  Plus,
+  Search,
+  Trash2,
+  Upload,
+  UserCheck,
+  X,
+} from 'lucide-react';
 import { ALL_ROUTES, DEFAULT_PERMISSIONS_MATRIX } from '../constants/permissions';
 import { strings } from '../data/translations';
+import { fromHalalas, toHalalas } from '../domain/halala';
 import { Employee, RoleId, RouteId } from '../types/erp';
+import { formatCurrency } from '../utils/currencies';
+import { compressImageToBase64 } from '../utils/image';
 import { buildWhatsAppLink } from '../utils/messaging';
 import { ScreenProps } from './types';
 
@@ -27,12 +43,22 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
     role: RoleId;
     permissions: RouteId[];
     phone: string;
+    whatsapp: string;
     email: string;
     nationalId: string;
+    birthDate: string;
     branchId: string;
     hireDate: string;
     salary: string;
+    allowances: string;
+    deductions: string;
     bankAccount: string;
+    workShift: string;
+    username: string;
+    password: string;
+    photoBase64: string;
+    attachmentBase64: string;
+    idAttachmentBase64: string;
     status: 'active' | 'on_leave' | 'terminated';
     notes: string;
   }>({
@@ -43,12 +69,22 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
     role: 'salesman',
     permissions: [...DEFAULT_PERMISSIONS_MATRIX.salesman],
     phone: '',
+    whatsapp: '',
     email: '',
     nationalId: '',
+    birthDate: '',
     branchId: state.branches[0]?.id ?? '',
     hireDate: new Date().toISOString().slice(0, 10),
     salary: '',
+    allowances: '0',
+    deductions: '0',
     bankAccount: '',
+    workShift: isAr ? 'صباحي 8 ص - 4 م' : 'Morning 8AM - 4PM',
+    username: '',
+    password: '',
+    photoBase64: '',
+    attachmentBase64: '',
+    idAttachmentBase64: '',
     status: 'active',
     notes: '',
   });
@@ -68,6 +104,9 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
     if (st === 'terminated') return isAr ? 'منتهي الخدمة' : 'Terminated';
     return isAr ? 'على رأس العمل' : 'Active';
   };
+
+  const computeNetSalary = (salary: number, allowances = 0, deductions = 0) =>
+    fromHalalas(Math.max(0, toHalalas(salary) + toHalalas(allowances) - toHalalas(deductions)));
 
   const nextEmpCodePreview = useMemo(() => {
     const nums = state.employees
@@ -100,11 +139,26 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
         e.roleTitle.toLowerCase().includes(q) ||
         (e.department ?? '').toLowerCase().includes(q) ||
         e.phone.toLowerCase().includes(q) ||
+        (e.whatsapp ?? '').toLowerCase().includes(q) ||
         (e.email ?? '').toLowerCase().includes(q) ||
-        (e.nationalId ?? '').toLowerCase().includes(q)
+        (e.nationalId ?? '').toLowerCase().includes(q) ||
+        (e.username ?? '').toLowerCase().includes(q)
       );
     });
   }, [state.employees, search, deptFilter, roleFilter, statusFilter]);
+
+  const totalNetPayroll = useMemo(
+    () =>
+      fromHalalas(
+        filteredEmployees
+          .filter((e) => (e.status ?? 'active') !== 'terminated')
+          .reduce(
+            (s, e) => s + Math.max(0, toHalalas(e.salary) + toHalalas(e.allowances ?? 0) - toHalalas(e.deductions ?? 0)),
+            0,
+          ),
+      ),
+    [filteredEmployees],
+  );
 
   const openNewEmployeeModal = () => {
     setFormError('');
@@ -116,12 +170,22 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
       role: 'salesman',
       permissions: [...DEFAULT_PERMISSIONS_MATRIX.salesman],
       phone: '',
+      whatsapp: '',
       email: '',
       nationalId: '',
+      birthDate: '',
       branchId: state.branches[0]?.id ?? '',
       hireDate: new Date().toISOString().slice(0, 10),
       salary: '',
+      allowances: '0',
+      deductions: '0',
       bankAccount: '',
+      workShift: isAr ? 'صباحي 8 ص - 4 م' : 'Morning 8AM - 4PM',
+      username: '',
+      password: '',
+      photoBase64: '',
+      attachmentBase64: '',
+      idAttachmentBase64: '',
       status: 'active',
       notes: '',
     });
@@ -138,17 +202,46 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
       role: e.role,
       permissions: [...e.permissions],
       phone: e.phone,
+      whatsapp: e.whatsapp ?? '',
       email: e.email ?? '',
       nationalId: e.nationalId ?? '',
+      birthDate: e.birthDate ?? '',
       branchId: e.branchId ?? state.branches[0]?.id ?? '',
       hireDate: e.hireDate ?? '',
       salary: String(e.salary),
+      allowances: String(e.allowances ?? 0),
+      deductions: String(e.deductions ?? 0),
       bankAccount: e.bankAccount ?? '',
+      workShift: e.workShift ?? '',
+      username: e.username ?? '',
+      password: e.password ?? '',
+      photoBase64: e.photoBase64 ?? '',
+      attachmentBase64: e.attachmentBase64 ?? '',
+      idAttachmentBase64: e.idAttachmentBase64 ?? '',
       status: e.status ?? 'active',
       notes: e.notes ?? '',
     });
     setEmpModal({ open: true, editId: e.id });
   };
+
+  const handleUploadImage = async (
+    file: File | undefined,
+    field: 'photoBase64' | 'attachmentBase64' | 'idAttachmentBase64',
+  ) => {
+    if (!file) return;
+    try {
+      const compressed = await compressImageToBase64(file);
+      setEmpForm((prev) => ({ ...prev, [field]: compressed }));
+    } catch {
+      actions.notify(isAr ? 'تعذر قراءة الملف المختار' : 'Failed to process selected image');
+    }
+  };
+
+  const modalNetSalary = computeNetSalary(
+    parseFloat(empForm.salary) || 0,
+    parseFloat(empForm.allowances) || 0,
+    parseFloat(empForm.deductions) || 0,
+  );
 
   return (
     <div className="space-y-4">
@@ -159,15 +252,21 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder={isAr ? 'بحث بالاسم، الكود، القسم، الجوال، أو الهوية...' : 'Search name, code, department, phone, or ID...'}
+            placeholder={isAr ? 'بحث بالاسم، الكود، القسم، الجوال، أو اسم المستخدم...' : 'Search name, code, dept, phone, or username...'}
             className="w-full ps-10 pe-4 py-2.5 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-sm outline-none focus:border-[#0A3D2C]"
           />
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-xl px-4 py-2 text-xs font-bold flex items-center gap-2">
+          <span className="text-slate-500">{isAr ? 'صافي مسير الرواتب:' : 'Net Payroll:'}</span>
+          <span className="font-mono font-extrabold text-[#0A3D2C] dark:text-[#C9A227] tabular-nums">
+            {formatCurrency(totalNetPayroll, cur, { isAr })}
+          </span>
         </div>
         <button
           onClick={openNewEmployeeModal}
           className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0A3D2C] text-white font-bold text-sm cursor-pointer"
         >
-          <Plus className="w-4 h-4" />
+          <Plus className="w-4 h-4 text-[#C9A227]" />
           <span>{t.addEmployee}</span>
         </button>
       </div>
@@ -217,46 +316,80 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
           {filteredEmployees.map((e) => {
             const brName = state.branches.find((b) => b.id === e.branchId)?.[isAr ? 'nameAr' : 'nameEn'];
             const st = e.status ?? 'active';
+            const netSal = computeNetSalary(e.salary, e.allowances ?? 0, e.deductions ?? 0);
             return (
               <div key={e.id} className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-3">
-                <div className="flex justify-between items-start gap-2">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
-                      <span className="text-[10px] font-mono font-bold text-[#C9A227]">{e.code ?? e.id}</span>
-                      <span
-                        className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
-                          st === 'active'
-                            ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                            : st === 'on_leave'
-                              ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
-                              : 'bg-red-500/15 text-red-700 dark:text-red-300'
-                        }`}
-                      >
-                        {statusLabel(st)}
-                      </span>
-                    </div>
-                    <h4 className="font-extrabold text-base truncate">{e.name}</h4>
-                    <p className="text-xs text-slate-500">
-                      {e.roleTitle}{e.department ? ` · ${e.department}` : ''} · {roleLabels[e.role]} · {e.phone}
-                    </p>
-                    {(brName || e.hireDate || e.nationalId) && (
-                      <p className="text-[11px] text-slate-400 font-mono mt-0.5">
-                        {brName ? `${brName}` : ''}
-                        {e.nationalId ? ` · ID: ${e.nationalId}` : ''}
-                        {e.hireDate ? ` · ${isAr ? 'التعيين:' : 'Hire:'} ${e.hireDate}` : ''}
-                      </p>
+                <div className="flex justify-between items-start gap-3">
+                  <div className="flex items-start gap-3 min-w-0">
+                    {e.photoBase64 ? (
+                      <img src={e.photoBase64} alt={e.name} className="w-12 h-12 rounded-xl object-cover border border-slate-200 dark:border-[#1F332B] shrink-0" />
+                    ) : (
+                      <div className="w-12 h-12 rounded-xl bg-[#0A3D2C]/10 dark:bg-[#C9A227]/15 flex items-center justify-center font-extrabold text-[#0A3D2C] dark:text-[#C9A227] shrink-0">
+                        {e.name.trim().slice(0, 1) || 'E'}
+                      </div>
                     )}
-                    <p className="text-[11px] text-[#0A3D2C] dark:text-[#C9A227] mt-1 font-semibold">
-                      {e.permissions.length} {isAr ? 'صلاحيات مفعّلة' : 'permissions enabled'}
-                    </p>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
+                        <span className="text-[10px] font-mono font-bold text-[#C9A227]">{e.code ?? e.id}</span>
+                        <span
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                            st === 'active'
+                              ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                              : st === 'on_leave'
+                                ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                                : 'bg-red-500/15 text-red-700 dark:text-red-300'
+                          }`}
+                        >
+                          {statusLabel(st)}
+                        </span>
+                        {e.workShift && (
+                          <span className="text-[10px] text-slate-400">· {e.workShift}</span>
+                        )}
+                      </div>
+                      <h4 className="font-extrabold text-base truncate">{e.name}</h4>
+                      <p className="text-xs text-slate-500">
+                        {e.roleTitle}{e.department ? ` · ${e.department}` : ''} · {roleLabels[e.role]} · {e.phone}
+                      </p>
+                      {(brName || e.hireDate || e.nationalId) && (
+                        <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+                          {brName ? `${brName}` : ''}
+                          {e.nationalId ? ` · ID: ${e.nationalId}` : ''}
+                          {e.hireDate ? ` · ${isAr ? 'التعيين:' : 'Hire:'} ${e.hireDate}` : ''}
+                        </p>
+                      )}
+                      <div className="flex flex-wrap items-center gap-2 mt-1 text-[11px]">
+                        <span className="text-[#0A3D2C] dark:text-[#C9A227] font-semibold">
+                          {e.permissions.length} {isAr ? 'صلاحيات' : 'perms'}
+                        </span>
+                        {e.username && (
+                          <span className="text-slate-400 font-mono flex items-center gap-0.5">
+                            <UserCheck className="w-3 h-3" /> {e.username}
+                          </span>
+                        )}
+                        {(e.attachmentBase64 || e.idAttachmentBase64) && (
+                          <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-0.5">
+                            <FileText className="w-3 h-3" /> {isAr ? 'مرفقات موثقة' : 'Docs'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                  <span className="font-mono font-extrabold text-sm tabular-nums shrink-0">{e.salary.toLocaleString()} {cur}</span>
+                  <div className="text-end shrink-0">
+                    <span className="font-mono font-extrabold text-sm tabular-nums block text-[#0A3D2C] dark:text-[#C9A227]">
+                      {formatCurrency(netSal, cur, { isAr })}
+                    </span>
+                    <span className="text-[10px] text-slate-400 font-mono block">
+                      {isAr ? 'أساسي' : 'Base'}: {formatCurrency(e.salary, cur, { isAr })}
+                      {e.allowances ? ` +${e.allowances}` : ''}
+                      {e.deductions ? ` -${e.deductions}` : ''}
+                    </span>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2 pt-2 border-t border-slate-100 dark:border-[#1F332B]">
                   <button
                     onClick={() => {
                       actions.paySalary(e.id);
-                      actions.notify(`${t.paySalary}: ${e.name}`);
+                      actions.notify(`${t.paySalary}: ${e.name} (${formatCurrency(netSal, cur, { isAr })})`);
                     }}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer"
                   >
@@ -265,10 +398,10 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
                   </button>
                   <a
                     href={buildWhatsAppLink(
-                      e.phone,
+                      e.whatsapp || e.phone,
                       isAr
-                        ? `مرحباً ${e.name}، تم تحويل راتبك الشهري ${e.salary.toFixed(2)} ${cur} من ${state.settings.companyName}.`
-                        : `Hi ${e.name}, your salary of ${e.salary.toFixed(2)} ${cur} has been transferred.`,
+                        ? `مرحباً ${e.name}، تم تحويل صافي راتبك الشهري ${formatCurrency(netSal, cur, { isAr })} من ${state.settings.companyName}.`
+                        : `Hi ${e.name}, your net salary of ${formatCurrency(netSal, cur, { isAr })} has been transferred.`,
                     )}
                     target="_blank"
                     rel="noreferrer"
@@ -299,7 +432,7 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
 
       {empModal.open && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] max-w-2xl w-full p-6 space-y-3 my-auto max-h-[92vh] overflow-y-auto">
+          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] max-w-3xl w-full p-6 space-y-3 my-auto max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-extrabold">{empModal.editId ? t.edit : t.addEmployee}</h3>
               <button
@@ -317,7 +450,26 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
               </div>
             )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            {/* Photo & Core Identity */}
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5 items-end">
+              <div className="flex items-center gap-2.5">
+                {empForm.photoBase64 ? (
+                  <img src={empForm.photoBase64} alt="avatar" className="w-11 h-11 rounded-xl object-cover border border-slate-200 dark:border-[#1F332B]" />
+                ) : (
+                  <div className="w-11 h-11 rounded-xl bg-slate-100 dark:bg-[#0A120F] flex items-center justify-center text-slate-400">
+                    <Camera className="w-5 h-5" />
+                  </div>
+                )}
+                <label className="flex-1 px-2.5 py-2 rounded-xl border border-dashed border-slate-300 dark:border-[#1F332B] text-[11px] font-bold text-center cursor-pointer hover:bg-slate-50 dark:hover:bg-[#0A120F]">
+                  {isAr ? 'صورة الموظف' : 'Photo'}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => void handleUploadImage(e.target.files?.[0], 'photoBase64')}
+                  />
+                </label>
+              </div>
               <div>
                 <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
                   {isAr ? 'كود الموظف' : 'Employee Code'}
@@ -347,7 +499,7 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
               <div>
                 <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
                   {isAr ? 'المسمى الوظيفي' : 'Job Title'}
@@ -374,6 +526,18 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
               </div>
               <div>
                 <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
+                  {isAr ? 'الدوام / الوردية' : 'Work Shift'}
+                </label>
+                <input
+                  maxLength={80}
+                  value={empForm.workShift}
+                  onChange={(e) => setEmpForm({ ...empForm, workShift: e.target.value })}
+                  placeholder={isAr ? 'صباحي 8 - 4' : 'Shift'}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
                   {isAr ? 'الحالة الوظيفية' : 'Status'}
                 </label>
                 <select
@@ -388,7 +552,7 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
               <div>
                 <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
                   {t.phone} *
@@ -401,7 +565,20 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
                     setFormError('');
                     setEmpForm({ ...empForm, phone: e.target.value });
                   }}
-                  placeholder={t.phone}
+                  placeholder="05XXXXXXXX"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
+                  {isAr ? 'واتساب' : 'WhatsApp'}
+                </label>
+                <input
+                  type="tel"
+                  maxLength={40}
+                  value={empForm.whatsapp}
+                  onChange={(e) => setEmpForm({ ...empForm, whatsapp: e.target.value })}
+                  placeholder="9665XXXXXXXX"
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
                 />
               </div>
@@ -432,22 +609,16 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
               <div>
                 <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
-                  {t.salary} *
+                  {isAr ? 'تاريخ الميلاد' : 'Birth Date'}
                 </label>
                 <input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={empForm.salary}
-                  onChange={(e) => {
-                    setFormError('');
-                    setEmpForm({ ...empForm, salary: e.target.value });
-                  }}
-                  placeholder={t.salary}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono tabular-nums"
+                  type="date"
+                  value={empForm.birthDate}
+                  onChange={(e) => setEmpForm({ ...empForm, birthDate: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
                 />
               </div>
               <div>
@@ -487,6 +658,100 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
                 />
               </div>
+            </div>
+
+            {/* Salary, Allowances, Deductions & Auto Net Salary */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B]">
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
+                  {isAr ? 'الراتب الأساسي' : 'Base Salary'} *
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={empForm.salary}
+                  onChange={(e) => {
+                    setFormError('');
+                    setEmpForm({ ...empForm, salary: e.target.value });
+                  }}
+                  placeholder="0.00"
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-mono tabular-nums"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
+                  {isAr ? 'البدلات' : 'Allowances'}
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={empForm.allowances}
+                  onChange={(e) => setEmpForm({ ...empForm, allowances: e.target.value })}
+                  placeholder="0.00"
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-mono tabular-nums"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
+                  {isAr ? 'الخصومات' : 'Deductions'}
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={empForm.deductions}
+                  onChange={(e) => setEmpForm({ ...empForm, deductions: e.target.value })}
+                  placeholder="0.00"
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-mono tabular-nums"
+                />
+              </div>
+              <div className="flex flex-col justify-center">
+                <span className="text-[10px] font-bold text-slate-500">{isAr ? 'صافي الراتب (تلقائي)' : 'Net Salary (Auto)'}</span>
+                <span className="text-sm font-extrabold font-mono text-[#0A3D2C] dark:text-[#C9A227] tabular-nums">
+                  {formatCurrency(modalNetSalary, cur, { isAr })}
+                </span>
+              </div>
+            </div>
+
+            {/* Username, Password & Attachments */}
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
+                  {isAr ? 'اسم المستخدم' : 'Username'}
+                </label>
+                <input
+                  maxLength={64}
+                  value={empForm.username}
+                  onChange={(e) => setEmpForm({ ...empForm, username: e.target.value })}
+                  placeholder="user.emp"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-0.5 flex items-center gap-1">
+                  <Lock className="w-3 h-3" /> {isAr ? 'كلمة المرور' : 'Password'}
+                </label>
+                <input
+                  type="password"
+                  maxLength={128}
+                  value={empForm.password}
+                  onChange={(e) => setEmpForm({ ...empForm, password: e.target.value })}
+                  placeholder="••••••"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+                />
+              </div>
+              <label className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-slate-300 dark:border-[#1F332B] text-xs font-bold cursor-pointer hover:bg-slate-50 dark:hover:bg-[#0A120F]">
+                <Upload className="w-3.5 h-3.5 text-[#0A3D2C] dark:text-[#C9A227]" />
+                <span>{empForm.attachmentBase64 ? (isAr ? 'تم إرفاق العقد ✓' : 'Contract ✓') : (isAr ? 'مرفق العقد' : 'Contract File')}</span>
+                <input type="file" accept="image/*" className="hidden" onChange={(e) => void handleUploadImage(e.target.files?.[0], 'attachmentBase64')} />
+              </label>
+              <label className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-slate-300 dark:border-[#1F332B] text-xs font-bold cursor-pointer hover:bg-slate-50 dark:hover:bg-[#0A120F]">
+                <Upload className="w-3.5 h-3.5 text-[#0A3D2C] dark:text-[#C9A227]" />
+                <span>{empForm.idAttachmentBase64 ? (isAr ? 'تم إرفاق الهوية ✓' : 'ID File ✓') : (isAr ? 'صورة الهوية' : 'ID Scan')}</span>
+                <input type="file" accept="image/*" className="hidden" onChange={(e) => void handleUploadImage(e.target.files?.[0], 'idAttachmentBase64')} />
+              </label>
             </div>
 
             <div>
@@ -560,9 +825,11 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
                   }
                   const sal = parseFloat(empForm.salary);
                   if (!Number.isFinite(sal) || sal <= 0) {
-                    setFormError(isAr ? 'الراتب الشهري إلزامي ويجب أن يكون أكبر من صفر *' : 'Salary must be > 0 *');
+                    setFormError(isAr ? 'الراتب الأساسي إلزامي ويجب أن يكون أكبر من صفر *' : 'Salary must be > 0 *');
                     return;
                   }
+                  const allow = Math.max(0, parseFloat(empForm.allowances) || 0);
+                  const ded = Math.max(0, parseFloat(empForm.deductions) || 0);
                   actions.saveEmployee(
                     {
                       code: empForm.code.trim() || nextEmpCodePreview,
@@ -572,12 +839,22 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
                       role: empForm.role,
                       permissions: empForm.permissions,
                       phone: empForm.phone.trim(),
+                      whatsapp: empForm.whatsapp.trim() || undefined,
                       email: empForm.email.trim() || undefined,
                       nationalId: empForm.nationalId.trim() || undefined,
+                      birthDate: empForm.birthDate || undefined,
                       branchId: empForm.branchId || undefined,
                       hireDate: empForm.hireDate || undefined,
                       salary: sal,
+                      allowances: allow || undefined,
+                      deductions: ded || undefined,
                       bankAccount: empForm.bankAccount.trim() || undefined,
+                      workShift: empForm.workShift.trim() || undefined,
+                      username: empForm.username.trim() || undefined,
+                      password: empForm.password.trim() || undefined,
+                      photoBase64: empForm.photoBase64 || undefined,
+                      attachmentBase64: empForm.attachmentBase64 || undefined,
+                      idAttachmentBase64: empForm.idAttachmentBase64 || undefined,
                       status: empForm.status,
                       notes: empForm.notes.trim() || undefined,
                     },

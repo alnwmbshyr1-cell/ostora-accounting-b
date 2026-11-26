@@ -3,6 +3,7 @@ import { CheckCircle2, Edit2, FileSpreadsheet, ImagePlus, Layers, MessageCircle,
 import { strings } from '../data/translations';
 import { fromHalalas, toHalalas } from '../domain/halala';
 import { ReturnReason, ReturnRecord, ReturnType as ReturnKind } from '../types/erp';
+import { formatCurrency } from '../utils/currencies';
 import { exportMultiSheetExcel } from '../utils/export';
 import { compressImageToBase64 } from '../utils/image';
 import { buildWhatsAppLink } from '../utils/messaging';
@@ -353,7 +354,7 @@ export const ReturnsScreen: React.FC<ScreenProps> = ({ store, onPrintReturn, onO
                   </td>
                   <td className="p-3 text-end font-mono tabular-nums">{r.qty}</td>
                   <td className="p-3 text-end font-mono font-extrabold text-[#0A3D2C] dark:text-[#C9A227] tabular-nums">
-                    {r.amount.toFixed(2)} {cur}
+                    {formatCurrency(r.amount, cur, { isAr })}
                   </td>
                   <td className="p-3">{reasonLabel(r.reason)}</td>
                   <td className="p-3 text-[11px]">
@@ -376,8 +377,8 @@ export const ReturnsScreen: React.FC<ScreenProps> = ({ store, onPrintReturn, onO
                         href={buildWhatsAppLink(
                           r.partyPhone,
                           isAr
-                            ? `إشعار مرتجع رقم ${r.id} للمستند ${r.originalDocId}: الصنف ${r.productName} (الكمية ${r.qty}) بمبلغ ${r.amount.toFixed(2)} ${cur}.`
-                            : `Return Notice ${r.id} for ${r.originalDocId}: ${r.productName} x${r.qty}, Credit ${r.amount.toFixed(2)} ${cur}.`,
+                            ? `إشعار مرتجع رقم ${r.id} للمستند ${r.originalDocId}: الصنف ${r.productName} (الكمية ${r.qty}) بمبلغ ${formatCurrency(r.amount, cur, { isAr })}.`
+                            : `Return Notice ${r.id} for ${r.originalDocId}: ${r.productName} x${r.qty}, Credit ${formatCurrency(r.amount, cur, { isAr })}.`,
                         )}
                         target="_blank"
                         rel="noreferrer"
@@ -456,7 +457,7 @@ export const ReturnsScreen: React.FC<ScreenProps> = ({ store, onPrintReturn, onO
                 >
                   {sourceDocs.map((d) => (
                     <option key={d.id} value={d.id}>
-                      {d.id} · {d.partyName} ({d.total.toFixed(2)} {cur})
+                      {d.id} · {d.partyName} ({formatCurrency(d.total, cur, { isAr })})
                     </option>
                   ))}
                 </select>
@@ -636,9 +637,9 @@ export const ReturnsScreen: React.FC<ScreenProps> = ({ store, onPrintReturn, onO
             />
 
             <div className="p-3 rounded-xl bg-[#0A3D2C]/5 dark:bg-[#C9A227]/10 flex flex-wrap justify-between items-center gap-2 text-xs font-bold tabular-nums">
-              <span>{t.vat} ({matchedDocRate}%): {fromHalalas(Math.max(0, previewTotalH - previewNetH)).toFixed(2)} {cur}</span>
+              <span>{t.vat} ({matchedDocRate}%): {formatCurrency(fromHalalas(Math.max(0, previewTotalH - previewNetH)), cur, { isAr })}</span>
               <span className="text-sm text-[#0A3D2C] dark:text-[#C9A227]">
-                {t.total}: {fromHalalas(previewTotalH).toFixed(2)} {cur}
+                {t.total}: {formatCurrency(fromHalalas(previewTotalH), cur, { isAr })}
               </span>
             </div>
 

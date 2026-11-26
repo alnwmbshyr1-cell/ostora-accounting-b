@@ -1,6 +1,7 @@
 import React from 'react';
 import { Layers, Printer, ShieldCheck, X } from 'lucide-react';
 import { BatchPrintItem, CompanySettings } from '../types/erp';
+import { formatCurrency, formatCurrencyNumber } from '../utils/currencies';
 import { buildZatcaTlvBase64 } from '../utils/zatca';
 import { QrMatrix } from './QrMatrix';
 
@@ -143,10 +144,10 @@ export const BatchPrintModal: React.FC<BatchPrintModalProps> = ({
                               <td className="p-2.5">
                                 {it.productName} × {it.qty}
                               </td>
-                              <td className="p-2.5 text-end font-mono tabular-nums">{it.total.toFixed(2)}</td>
-                              <td className="p-2.5 text-end font-mono tabular-nums">{itemVat.toFixed(2)}</td>
+                               <td className="p-2.5 text-end font-mono tabular-nums">{formatCurrencyNumber(it.total, invCur)}</td>
+                              <td className="p-2.5 text-end font-mono tabular-nums">{formatCurrencyNumber(itemVat, invCur)}</td>
                               <td className="p-2.5 text-end font-mono font-bold tabular-nums">
-                                {(it.total + itemVat).toFixed(2)} {invCur}
+                                {formatCurrency(it.total + itemVat, invCur, { isAr })}
                               </td>
                             </tr>
                           );
@@ -154,10 +155,10 @@ export const BatchPrintModal: React.FC<BatchPrintModalProps> = ({
                       ) : (
                         <tr className="border-b border-slate-200">
                           <td className="p-2.5">{inv.description || 'Accounting & Supply Services'}</td>
-                          <td className="p-2.5 text-end font-mono tabular-nums">{inv.subtotal.toFixed(2)}</td>
-                          <td className="p-2.5 text-end font-mono tabular-nums">{inv.vat.toFixed(2)}</td>
+                          <td className="p-2.5 text-end font-mono tabular-nums">{formatCurrencyNumber(inv.subtotal, invCur)}</td>
+                          <td className="p-2.5 text-end font-mono tabular-nums">{formatCurrencyNumber(inv.vat, invCur)}</td>
                           <td className="p-2.5 text-end font-mono font-bold tabular-nums">
-                            {inv.total.toFixed(2)} {invCur}
+                            {formatCurrency(inv.total, invCur, { isAr })}
                           </td>
                         </tr>
                       )}
@@ -169,26 +170,26 @@ export const BatchPrintModal: React.FC<BatchPrintModalProps> = ({
                       <div className="flex justify-between text-xs">
                         <span>{isAr ? 'المجموع الفرعي' : 'Subtotal'}</span>
                         <span className="font-mono tabular-nums">
-                          {inv.subtotal.toFixed(2)} {invCur}
+                          {formatCurrency(inv.subtotal, invCur, { isAr })}
                         </span>
                       </div>
                       <div className="flex justify-between text-xs">
                         <span>{isAr ? `ضريبة القيمة المضافة ${effRate}%` : `VAT ${effRate}%`}</span>
                         <span className="font-mono tabular-nums">
-                          {inv.vat.toFixed(2)} {invCur}
+                          {formatCurrency(inv.vat, invCur, { isAr })}
                         </span>
                       </div>
                       <div className="border-t border-slate-300 pt-2 flex justify-between font-extrabold text-sm text-[#0A3D2C]">
                         <span>{isAr ? 'الإجمالي المستحق' : 'TOTAL'}</span>
                         <span className="font-mono tabular-nums">
-                          {inv.total.toFixed(2)} {invCur}
+                          {formatCurrency(inv.total, invCur, { isAr })}
                         </span>
                       </div>
                       {invCur !== company.currency && (
                         <div className="border-t border-slate-200 pt-2 flex justify-between text-[11px] text-slate-600 font-mono">
                           <span>1 {invCur} = {fxRate.toFixed(4)} {company.currency}</span>
                           <span className="font-bold">
-                            ≈ {baseTotal.toFixed(2)} {company.currency}
+                            ≈ {formatCurrency(baseTotal, company.currency, { isAr })}
                           </span>
                         </div>
                       )}
@@ -278,9 +279,9 @@ export const BatchPrintModal: React.FC<BatchPrintModalProps> = ({
                       <tr className="border-b border-slate-200">
                         <td className="p-3">{ret.productName}</td>
                         <td className="p-3 text-end font-mono tabular-nums">{ret.qty}</td>
-                        <td className="p-3 text-end font-mono tabular-nums">{ret.unitPrice.toFixed(2)}</td>
+                        <td className="p-3 text-end font-mono tabular-nums">{formatCurrencyNumber(ret.unitPrice, company.currency)}</td>
                         <td className="p-3 text-end font-mono font-bold tabular-nums">
-                          {ret.amount.toFixed(2)} {company.currency}
+                          {formatCurrency(ret.amount, company.currency, { isAr })}
                         </td>
                       </tr>
                     </tbody>
@@ -291,6 +292,7 @@ export const BatchPrintModal: React.FC<BatchPrintModalProps> = ({
 
             if (item.kind === 'quotation') {
               const qt = item.data;
+              const qtCur = qt.currency ?? company.currency;
               return (
                 <section key={sheetKey} className="batch-print-sheet p-6 sm:p-8 space-y-5 text-sm bg-white">
                   <div className="no-print flex items-center justify-between text-[11px] font-mono text-slate-400">
@@ -342,8 +344,8 @@ export const BatchPrintModal: React.FC<BatchPrintModalProps> = ({
                         <tr key={lineIdx} className="border-b border-slate-200">
                           <td className="p-2.5">{it.productName}</td>
                           <td className="p-2.5 text-end font-mono tabular-nums">{it.qty}</td>
-                          <td className="p-2.5 text-end font-mono tabular-nums">{it.unitPrice.toFixed(2)}</td>
-                          <td className="p-2.5 text-end font-mono font-bold tabular-nums">{it.total.toFixed(2)}</td>
+                          <td className="p-2.5 text-end font-mono tabular-nums">{formatCurrencyNumber(it.unitPrice, qtCur)}</td>
+                          <td className="p-2.5 text-end font-mono font-bold tabular-nums">{formatCurrencyNumber(it.total, qtCur)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -353,19 +355,19 @@ export const BatchPrintModal: React.FC<BatchPrintModalProps> = ({
                     <div className="w-full sm:w-64 bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-1.5 text-xs">
                       <div className="flex justify-between">
                         <span>{isAr ? 'المجموع الفرعي' : 'Subtotal'}</span>
-                        <span className="font-mono tabular-nums">{qt.subtotal.toFixed(2)}</span>
+                        <span className="font-mono tabular-nums">{formatCurrency(qt.subtotal, qtCur, { isAr })}</span>
                       </div>
                       <div className="flex justify-between">
                         <span>{isAr ? `الخصم (${qt.discountPercent}%)` : `Discount (${qt.discountPercent}%)`}</span>
-                        <span className="font-mono tabular-nums">-{qt.discountAmount.toFixed(2)}</span>
+                        <span className="font-mono tabular-nums">-{formatCurrency(qt.discountAmount, qtCur, { isAr })}</span>
                       </div>
                       <div className="flex justify-between">
                         <span>{isAr ? 'الضريبة' : 'VAT'}</span>
-                        <span className="font-mono tabular-nums">{qt.vat.toFixed(2)}</span>
+                        <span className="font-mono tabular-nums">{formatCurrency(qt.vat, qtCur, { isAr })}</span>
                       </div>
                       <div className="border-t border-slate-300 pt-1.5 flex justify-between font-extrabold text-sm text-[#0A3D2C]">
                         <span>{isAr ? 'الإجمالي' : 'TOTAL'}</span>
-                        <span className="font-mono tabular-nums">{qt.total.toFixed(2)} {company.currency}</span>
+                        <span className="font-mono tabular-nums">{formatCurrency(qt.total, qtCur, { isAr })}</span>
                       </div>
                     </div>
                   </div>
@@ -409,7 +411,7 @@ export const BatchPrintModal: React.FC<BatchPrintModalProps> = ({
                       : isAr ? 'مبلغ سند الصرف' : 'PAYMENT AMOUNT'}
                   </p>
                   <p className="text-3xl font-extrabold text-[#0A3D2C] font-mono tabular-nums mt-1">
-                    {v.amount.toFixed(2)} {company.currency}
+                    {formatCurrency(v.amount, company.currency, { isAr })}
                   </p>
                 </div>
 

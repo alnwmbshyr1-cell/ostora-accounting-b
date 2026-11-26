@@ -177,6 +177,19 @@ service cloud.firestore {
         isValidCurrencyCode(arr[0]);
     }
 
+    function isValidSubscriptionMeta(m) {
+      return m is map &&
+        m.keys().hasAll(['planId', 'billingCycle', 'startDate', 'endDate', 'status', 'paymentMethod', 'autoRenew']) &&
+        m.keys().hasOnly(['planId', 'billingCycle', 'startDate', 'endDate', 'status', 'paymentMethod', 'autoRenew']) &&
+        m.planId in ['free', 'basic', 'pro', 'enterprise'] &&
+        m.billingCycle in ['monthly', 'yearly'] &&
+        isBoundedString(m.startDate, 32) &&
+        isBoundedString(m.endDate, 32) &&
+        m.status in ['active', 'expired', 'cancelled'] &&
+        isBoundedString(m.paymentMethod, 80) &&
+        m.autoRenew is bool;
+    }
+
     function isValidWorkspace(data) {
       return data.keys().hasAll([
           'ownerId', 'companyName', 'taxNumber', 'crNumber', 'phone', 'email', 'address',
@@ -185,13 +198,17 @@ service cloud.firestore {
           'currentRole', 'permissionsMatrix', 'createdAt', 'updatedAt'
         ]) &&
         data.keys().hasOnly([
-          'ownerId', 'companyName', 'taxNumber', 'crNumber', 'phone', 'email', 'address',
-          'currency', 'enabledCurrencies', 'exchangeRates', 'lastRatesUpdate',
+          'ownerId', 'companyName', 'taxNumber', 'crNumber', 'phone', 'email', 'address', 'city',
+          'currency', 'enabledCurrencies', 'exchangeRates', 'lastRatesUpdate', 'lastRatesSource',
+          'autoUpdateExchangeRates', 'fxAutoIntervalHours', 'displayCurrency',
+          'currencyDisplayStyle', 'currencyNumberLocale', 'currencyDecimalMode',
           'isArabic', 'isDarkMode', 'monthlySalesGoal', 'defaultSalesTaxRate',
           'defaultPurchaseTaxRate', 'autoBackupDaily', 'lastBackupDate',
           'autoCloudSync', 'autoSyncIntervalMinutes', 'logoBase64', 'fiscalLockDate',
-          'defaultBranchId', 'defaultWarehouseId', 'receiptFooter', 'activePlan',
-          'trialStartIso', 'currentRole', 'permissionsMatrix', 'createdAt', 'updatedAt'
+          'defaultBranchId', 'defaultWarehouseId', 'receiptFooter',
+          'invoicePrefix', 'invoiceNumberFormat', 'invoiceTerms', 'printPaperSize',
+          'showQrOnPrint', 'showLogoOnPrint', 'whatsappTemplate', 'senderEmail', 'subscriptionMeta',
+          'activePlan', 'trialStartIso', 'currentRole', 'permissionsMatrix', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.ownerId) &&
         (data.ownerId == request.auth.uid || isAdmin()) &&
@@ -201,10 +218,18 @@ service cloud.firestore {
         isBoundedString(data.phone, 40) &&
         isBoundedString(data.email, 160) &&
         isBoundedString(data.address, 300) &&
+        (!('city' in data) || isBoundedString(data.city, 80)) &&
         isValidCurrencyCode(data.currency) &&
         (!('enabledCurrencies' in data) || isValidCurrencyList(data.enabledCurrencies)) &&
         (!('exchangeRates' in data) || (data.exchangeRates is map && data.exchangeRates.size() <= 20)) &&
         (!('lastRatesUpdate' in data) || isBoundedString(data.lastRatesUpdate, 64)) &&
+        (!('lastRatesSource' in data) || data.lastRatesSource in ['live', 'fallback']) &&
+        (!('autoUpdateExchangeRates' in data) || data.autoUpdateExchangeRates is bool) &&
+        (!('fxAutoIntervalHours' in data) || (data.fxAutoIntervalHours is number && data.fxAutoIntervalHours >= 1 && data.fxAutoIntervalHours <= 168)) &&
+        (!('displayCurrency' in data) || isValidCurrencyCode(data.displayCurrency)) &&
+        (!('currencyDisplayStyle' in data) || data.currencyDisplayStyle in ['symbol', 'code', 'both']) &&
+        (!('currencyNumberLocale' in data) || data.currencyNumberLocale in ['auto', 'en-US', 'ar-SA']) &&
+        (!('currencyDecimalMode' in data) || data.currencyDecimalMode in ['auto', '0', '2', '3']) &&
         data.isArabic is bool &&
         data.isDarkMode is bool &&
         data.monthlySalesGoal is number && data.monthlySalesGoal >= 0 &&
@@ -219,6 +244,15 @@ service cloud.firestore {
         (!('defaultBranchId' in data) || isBoundedString(data.defaultBranchId, 128)) &&
         (!('defaultWarehouseId' in data) || isBoundedString(data.defaultWarehouseId, 128)) &&
         (!('receiptFooter' in data) || isBoundedString(data.receiptFooter, 300)) &&
+        (!('invoicePrefix' in data) || isBoundedString(data.invoicePrefix, 20)) &&
+        (!('invoiceNumberFormat' in data) || isBoundedString(data.invoiceNumberFormat, 40)) &&
+        (!('invoiceTerms' in data) || isBoundedString(data.invoiceTerms, 500)) &&
+        (!('printPaperSize' in data) || data.printPaperSize in ['a4', 'thermal_80', 'thermal_58']) &&
+        (!('showQrOnPrint' in data) || data.showQrOnPrint is bool) &&
+        (!('showLogoOnPrint' in data) || data.showLogoOnPrint is bool) &&
+        (!('whatsappTemplate' in data) || isBoundedString(data.whatsappTemplate, 500)) &&
+        (!('senderEmail' in data) || isBoundedString(data.senderEmail, 160)) &&
+        (!('subscriptionMeta' in data) || isValidSubscriptionMeta(data.subscriptionMeta)) &&
         isNonEmptyString(data.activePlan, 40) &&
         isNonEmptyString(data.trialStartIso, 64) &&
         isValidRoleId(data.currentRole) &&
@@ -639,7 +673,9 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'id', 'ownerId', 'code', 'name', 'roleTitle', 'department', 'role', 'permissions', 'phone',
-          'email', 'nationalId', 'branchId', 'hireDate', 'salary', 'bankAccount', 'status', 'notes',
+          'whatsapp', 'email', 'nationalId', 'birthDate', 'branchId', 'hireDate',
+          'salary', 'allowances', 'deductions', 'bankAccount', 'workShift', 'username', 'password',
+          'photoBase64', 'attachmentBase64', 'idAttachmentBase64', 'status', 'notes',
           'lastPaidDate', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.id) &&
@@ -652,12 +688,22 @@ service cloud.firestore {
         isValidRoleId(data.role) &&
         isValidRoleList(data.permissions) &&
         isBoundedString(data.phone, 40) &&
+        (!('whatsapp' in data) || isBoundedString(data.whatsapp, 40)) &&
         (!('email' in data) || isBoundedString(data.email, 160)) &&
         (!('nationalId' in data) || isBoundedString(data.nationalId, 64)) &&
+        (!('birthDate' in data) || isBoundedString(data.birthDate, 32)) &&
         (!('branchId' in data) || isBoundedString(data.branchId, 128)) &&
         (!('hireDate' in data) || isBoundedString(data.hireDate, 32)) &&
         data.salary is number && data.salary >= 0 &&
+        (!('allowances' in data) || (data.allowances is number && data.allowances >= 0)) &&
+        (!('deductions' in data) || (data.deductions is number && data.deductions >= 0)) &&
         (!('bankAccount' in data) || isBoundedString(data.bankAccount, 80)) &&
+        (!('workShift' in data) || isBoundedString(data.workShift, 80)) &&
+        (!('username' in data) || isBoundedString(data.username, 64)) &&
+        (!('password' in data) || isBoundedString(data.password, 128)) &&
+        (!('photoBase64' in data) || isBoundedString(data.photoBase64, 250000)) &&
+        (!('attachmentBase64' in data) || isBoundedString(data.attachmentBase64, 250000)) &&
+        (!('idAttachmentBase64' in data) || isBoundedString(data.idAttachmentBase64, 250000)) &&
         (!('status' in data) || data.status in ['active', 'on_leave', 'terminated']) &&
         (!('notes' in data) || isBoundedString(data.notes, 400)) &&
         (!('lastPaidDate' in data) || isBoundedString(data.lastPaidDate, 64)) &&
@@ -667,30 +713,60 @@ service cloud.firestore {
 
     function isValidExpense(data) {
       return data.keys().hasAll(['id', 'ownerId', 'title', 'category', 'amount', 'paidFromBankId', 'date', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['id', 'ownerId', 'title', 'category', 'amount', 'paidFromBankId', 'date', 'branchId', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'expenseNumber', 'title', 'category', 'expenseType', 'beneficiary',
+          'costCenter', 'amount', 'currency', 'exchangeRate', 'baseAmount', 'paymentMethod',
+          'paidFromBankId', 'status', 'date', 'branchId', 'attachmentBase64', 'notes',
+          'isRecurringMonthly', 'reminderDate', 'createdAt', 'updatedAt'
+        ]) &&
         isValidId(data.id) &&
         isValidId(data.ownerId) &&
         (data.ownerId == request.auth.uid || isAdmin()) &&
+        (!('expenseNumber' in data) || isBoundedString(data.expenseNumber, 64)) &&
         isNonEmptyString(data.title, 160) &&
         isBoundedString(data.category, 80) &&
+        (!('expenseType' in data) || data.expenseType in ['rent', 'electricity', 'salaries', 'maintenance', 'marketing', 'other']) &&
+        (!('beneficiary' in data) || isBoundedString(data.beneficiary, 160)) &&
+        (!('costCenter' in data) || isBoundedString(data.costCenter, 120)) &&
         data.amount is number && data.amount >= 0 &&
+        (!('currency' in data) || isValidCurrencyCode(data.currency)) &&
+        (!('exchangeRate' in data) || (data.exchangeRate is number && data.exchangeRate > 0)) &&
+        (!('baseAmount' in data) || (data.baseAmount is number && data.baseAmount >= 0)) &&
+        (!('paymentMethod' in data) || isValidPaymentMethod(data.paymentMethod)) &&
         isBoundedString(data.paidFromBankId, 128) &&
+        (!('status' in data) || data.status in ['draft', 'approved', 'paid']) &&
         isNonEmptyString(data.date, 64) &&
         (!('branchId' in data) || isBoundedString(data.branchId, 128)) &&
+        (!('attachmentBase64' in data) || isBoundedString(data.attachmentBase64, 250000)) &&
+        (!('notes' in data) || isBoundedString(data.notes, 500)) &&
+        (!('isRecurringMonthly' in data) || data.isRecurringMonthly is bool) &&
+        (!('reminderDate' in data) || isBoundedString(data.reminderDate, 32)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
 
     function isValidBankAccount(data) {
       return data.keys().hasAll(['id', 'ownerId', 'nameAr', 'nameEn', 'accountNumber', 'balance', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['id', 'ownerId', 'nameAr', 'nameEn', 'accountNumber', 'balance', 'lastReconciledDate', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'accountType', 'bankName', 'nameAr', 'nameEn', 'accountNumber',
+          'iban', 'branchId', 'currency', 'openingBalance', 'balance', 'custodianName',
+          'status', 'lastReconciledDate', 'createdAt', 'updatedAt'
+        ]) &&
         isValidId(data.id) &&
         isValidId(data.ownerId) &&
         (data.ownerId == request.auth.uid || isAdmin()) &&
+        (!('accountType' in data) || data.accountType in ['bank', 'cash']) &&
+        (!('bankName' in data) || isBoundedString(data.bankName, 120)) &&
         isNonEmptyString(data.nameAr, 120) &&
         isNonEmptyString(data.nameEn, 120) &&
         isBoundedString(data.accountNumber, 64) &&
+        (!('iban' in data) || isBoundedString(data.iban, 80)) &&
+        (!('branchId' in data) || isBoundedString(data.branchId, 128)) &&
+        (!('currency' in data) || isValidCurrencyCode(data.currency)) &&
+        (!('openingBalance' in data) || data.openingBalance is number) &&
         data.balance is number &&
+        (!('custodianName' in data) || isBoundedString(data.custodianName, 120)) &&
+        (!('status' in data) || data.status in ['active', 'closed']) &&
         (!('lastReconciledDate' in data) || isBoundedString(data.lastReconciledDate, 64)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
@@ -880,17 +956,39 @@ service cloud.firestore {
 
     function isValidAuditLogEntry(data) {
       return data.keys().hasAll(['id', 'ownerId', 'actor', 'actorRole', 'action', 'entity', 'entityId', 'summary', 'timestamp', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['id', 'ownerId', 'actor', 'actorRole', 'action', 'entity', 'entityId', 'summary', 'timestamp', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'actor', 'actorRole', 'action', 'entity', 'entityId', 'summary',
+          'screenName', 'oldValue', 'newValue', 'deviceInfo', 'timestamp', 'createdAt', 'updatedAt'
+        ]) &&
         isValidId(data.id) &&
         isValidId(data.ownerId) &&
         (data.ownerId == request.auth.uid || isAdmin()) &&
         isNonEmptyString(data.actor, 160) &&
         isValidRoleId(data.actorRole) &&
-        data.action in ['create', 'update', 'delete', 'pay', 'receive', 'transfer', 'reconcile', 'stocktake', 'fiscal_lock', 'backup'] &&
+        data.action in ['create', 'update', 'delete', 'pay', 'receive', 'transfer', 'reconcile', 'stocktake', 'fiscal_lock', 'backup', 'print'] &&
         isNonEmptyString(data.entity, 80) &&
         isBoundedString(data.entityId, 128) &&
         isNonEmptyString(data.summary, 400) &&
+        (!('screenName' in data) || isBoundedString(data.screenName, 120)) &&
+        (!('oldValue' in data) || isBoundedString(data.oldValue, 300)) &&
+        (!('newValue' in data) || isBoundedString(data.newValue, 300)) &&
+        (!('deviceInfo' in data) || isBoundedString(data.deviceInfo, 120)) &&
         isNonEmptyString(data.timestamp, 64) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSupportTicket(data) {
+      return data.keys().hasAll(['id', 'ownerId', 'title', 'description', 'status', 'submittedAt', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'ownerId', 'title', 'description', 'screenshotBase64', 'status', 'submittedAt', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.ownerId) &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
+        isNonEmptyString(data.title, 160) &&
+        isNonEmptyString(data.description, 1000) &&
+        (!('screenshotBase64' in data) || isBoundedString(data.screenshotBase64, 250000)) &&
+        data.status in ['open', 'in_progress', 'resolved'] &&
+        isNonEmptyString(data.submittedAt, 64) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -957,12 +1055,14 @@ service cloud.firestore {
           isAdmin() || (
             existing().ownerId == request.auth.uid &&
             incoming().diff(existing()).affectedKeys().hasOnly([
-              'companyName', 'taxNumber', 'crNumber', 'phone', 'email', 'address',
-              'currency', 'enabledCurrencies', 'exchangeRates', 'lastRatesUpdate',
+              'companyName', 'taxNumber', 'crNumber', 'phone', 'email', 'address', 'city',
+              'currency', 'enabledCurrencies', 'exchangeRates', 'lastRatesUpdate', 'autoUpdateExchangeRates',
               'isArabic', 'isDarkMode', 'monthlySalesGoal',
               'defaultSalesTaxRate', 'defaultPurchaseTaxRate', 'autoBackupDaily',
               'lastBackupDate', 'autoCloudSync', 'autoSyncIntervalMinutes',
               'logoBase64', 'fiscalLockDate', 'defaultBranchId', 'defaultWarehouseId', 'receiptFooter',
+              'invoicePrefix', 'invoiceNumberFormat', 'invoiceTerms', 'printPaperSize',
+              'showQrOnPrint', 'showLogoOnPrint', 'whatsappTemplate', 'senderEmail', 'subscriptionMeta',
               'activePlan', 'trialStartIso', 'currentRole', 'permissionsMatrix', 'updatedAt'
             ])
           )
@@ -1265,7 +1365,9 @@ service cloud.firestore {
             isAdmin() ||
             incoming().diff(existing()).affectedKeys().hasOnly([
               'code', 'name', 'roleTitle', 'department', 'role', 'permissions', 'phone',
-              'email', 'nationalId', 'branchId', 'hireDate', 'salary', 'bankAccount', 'status', 'notes',
+              'whatsapp', 'email', 'nationalId', 'birthDate', 'branchId', 'hireDate',
+              'salary', 'allowances', 'deductions', 'bankAccount', 'workShift', 'username', 'password',
+              'photoBase64', 'attachmentBase64', 'idAttachmentBase64', 'status', 'notes',
               'lastPaidDate', 'updatedAt'
             ])
           );
@@ -1292,7 +1394,10 @@ service cloud.firestore {
           (isWorkspaceOwner(workspaceId) || isAdmin()) && (
             isAdmin() ||
             incoming().diff(existing()).affectedKeys().hasOnly([
-              'title', 'category', 'amount', 'paidFromBankId', 'date', 'branchId', 'updatedAt'
+              'expenseNumber', 'title', 'category', 'expenseType', 'beneficiary',
+              'costCenter', 'amount', 'currency', 'exchangeRate', 'baseAmount', 'paymentMethod',
+              'paidFromBankId', 'status', 'date', 'branchId', 'attachmentBase64', 'notes',
+              'isRecurringMonthly', 'reminderDate', 'updatedAt'
             ])
           );
         allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(expenseId) && (isWorkspaceOwner(workspaceId) || isAdmin());
@@ -1317,7 +1422,11 @@ service cloud.firestore {
           incoming().ownerId == existing().ownerId &&
           (isWorkspaceOwner(workspaceId) || isAdmin()) && (
             isAdmin() ||
-            incoming().diff(existing()).affectedKeys().hasOnly(['nameAr', 'nameEn', 'accountNumber', 'balance', 'lastReconciledDate', 'updatedAt'])
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'accountType', 'bankName', 'nameAr', 'nameEn', 'accountNumber',
+              'iban', 'branchId', 'currency', 'openingBalance', 'balance', 'custodianName',
+              'status', 'lastReconciledDate', 'updatedAt'
+            ])
           );
         allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(bankId) && (isWorkspaceOwner(workspaceId) || isAdmin());
       }
@@ -1495,6 +1604,30 @@ service cloud.firestore {
           incoming().id == logId &&
           (isWorkspaceOwner(workspaceId) || isAdmin());
         allow update, delete: if false;
+      }
+
+      match /supportTickets/{ticketId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(ticketId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(ticketId) &&
+          isValidSupportTicket(incoming()) &&
+          hasValidTimestampsCreate(incoming()) &&
+          incoming().id == ticketId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow update: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(ticketId) &&
+          isValidSupportTicket(incoming()) &&
+          hasValidTimestampsUpdate() &&
+          incoming().id == existing().id &&
+          incoming().ownerId == existing().ownerId &&
+          (isWorkspaceOwner(workspaceId) || isAdmin()) && (
+            isAdmin() ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'screenshotBase64', 'status', 'updatedAt'])
+          );
+        allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(ticketId) && (isWorkspaceOwner(workspaceId) || isAdmin());
       }
 
       match /cloudBackups/{backupId} {

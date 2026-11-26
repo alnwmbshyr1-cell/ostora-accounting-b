@@ -4,6 +4,7 @@ import { strings } from '../data/translations';
 import { computeAccountLedger, computeTrialBalanceFromJournals } from '../domain/accounting';
 import { fromHalalas, toHalalas } from '../domain/halala';
 import { JournalLine } from '../types/erp';
+import { formatCurrency, formatCurrencyNumber } from '../utils/currencies';
 import { compressImageToBase64 } from '../utils/image';
 import { ScreenProps } from './types';
 
@@ -119,7 +120,7 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
                 : 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300'
             }`}
           >
-            {t.trialBalance}: {trialSummary.totalDebit.toFixed(2)} = {trialSummary.totalCredit.toFixed(2)} {cur}
+            {t.trialBalance}: {formatCurrencyNumber(trialSummary.totalDebit, cur)} = {formatCurrency(trialSummary.totalCredit, cur, { isAr })}
           </span>
         </div>
 
@@ -219,13 +220,13 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
                     <td className="p-2 font-bold">{r.account}</td>
                     <td className="p-2">{r.description}</td>
                     <td className="p-2 text-end font-mono font-bold text-emerald-600 tabular-nums">
-                      {r.debit > 0 ? r.debit.toFixed(2) : '—'}
+                      {r.debit > 0 ? formatCurrencyNumber(r.debit, cur) : '—'}
                     </td>
                     <td className="p-2 text-end font-mono font-bold text-red-600 tabular-nums">
-                      {r.credit > 0 ? r.credit.toFixed(2) : '—'}
+                      {r.credit > 0 ? formatCurrencyNumber(r.credit, cur) : '—'}
                     </td>
                     <td className="p-2 text-end font-mono font-extrabold tabular-nums">
-                      {r.runningBalance.toFixed(2)} {cur}
+                      {formatCurrency(r.runningBalance, cur, { isAr })}
                     </td>
                   </tr>
                 ))}
@@ -309,16 +310,16 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
                           {l.description && <span className="text-[10px] text-slate-400">{l.description}</span>}
                         </div>
                         <span className="col-span-3 text-end font-mono font-bold text-emerald-600 tabular-nums">
-                          {l.debit > 0 ? l.debit.toFixed(2) : '—'}
+                          {l.debit > 0 ? formatCurrencyNumber(l.debit, cur) : '—'}
                         </span>
                         <span className="col-span-3 text-end font-mono font-bold text-red-600 tabular-nums">
-                          {l.credit > 0 ? l.credit.toFixed(2) : '—'}
+                          {l.credit > 0 ? formatCurrencyNumber(l.credit, cur) : '—'}
                         </span>
                       </div>
                     ))}
                   </div>
                   <div className="text-xs font-mono font-bold text-slate-500 tabular-nums">
-                    {t.debit}: {totalD.toFixed(2)} {cur} · {t.credit}: {totalC.toFixed(2)} {cur}
+                    {t.debit}: {formatCurrency(totalD, cur, { isAr })} · {t.credit}: {formatCurrency(totalC, cur, { isAr })}
                   </div>
                 </div>
               );
@@ -465,7 +466,7 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
 
             <div className="p-3 rounded-xl bg-slate-100 dark:bg-[#0A120F] flex flex-wrap items-center justify-between gap-2 text-xs font-mono font-bold tabular-nums">
               <span>
-                {t.debit}: {fromHalalas(sumDebitH).toFixed(2)} · {t.credit}: {fromHalalas(sumCreditH).toFixed(2)} · {isAr ? 'الفرق:' : 'Diff:'} {fromHalalas(Math.abs(sumDebitH - sumCreditH)).toFixed(2)}
+                {t.debit}: {formatCurrencyNumber(fromHalalas(sumDebitH), cur)} · {t.credit}: {formatCurrencyNumber(fromHalalas(sumCreditH), cur)} · {isAr ? 'الفرق:' : 'Diff:'} {formatCurrency(fromHalalas(Math.abs(sumDebitH - sumCreditH)), cur, { isAr })}
               </span>
               <span className={isBalanced ? 'text-emerald-600' : 'text-amber-600'}>
                 {isBalanced ? (isAr ? 'متوازن ✓' : 'Balanced ✓') : isAr ? 'غير متوازن' : 'Unbalanced'}

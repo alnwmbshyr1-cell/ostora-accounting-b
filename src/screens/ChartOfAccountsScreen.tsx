@@ -3,6 +3,7 @@ import { BookOpen, ChevronDown, ChevronRight, Edit2, FolderTree, Plus, Search, T
 import { strings } from '../data/translations';
 import { computeAccountLedger } from '../domain/accounting';
 import { AccountCategory, ChartAccount } from '../types/erp';
+import { formatCurrency, formatCurrencyNumber } from '../utils/currencies';
 import { ScreenProps } from './types';
 
 const CATEGORY_ORDER: AccountCategory[] = ['assets', 'liabilities', 'equity', 'revenue', 'expenses'];
@@ -279,7 +280,7 @@ export const ChartOfAccountsScreen: React.FC<ScreenProps> = ({ store }) => {
                   </button>
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-xs font-extrabold tabular-nums">
-                      {rootSummary.netBalance.toLocaleString()} {cur}
+                      {formatCurrency(rootSummary.netBalance, cur, { isAr })}
                     </span>
                     <button
                       type="button"
@@ -307,7 +308,7 @@ export const ChartOfAccountsScreen: React.FC<ScreenProps> = ({ store }) => {
                           </div>
                           <div className="flex items-center gap-2">
                             <span className="font-mono font-bold tabular-nums">
-                              {summary.netBalance.toLocaleString()} {cur}
+                              {formatCurrency(summary.netBalance, cur, { isAr })}
                             </span>
                             <button
                               type="button"
@@ -373,10 +374,10 @@ export const ChartOfAccountsScreen: React.FC<ScreenProps> = ({ store }) => {
                         <span className="font-bold">{nb === 'debit' ? t.debit : t.credit}</span>
                         {acc.costCenter && <span className="block text-slate-400">{acc.costCenter}</span>}
                       </td>
-                      <td className="p-3 text-end font-mono tabular-nums">{summary.totalDebit.toLocaleString()}</td>
-                      <td className="p-3 text-end font-mono tabular-nums">{summary.totalCredit.toLocaleString()}</td>
+                      <td className="p-3 text-end font-mono tabular-nums">{formatCurrencyNumber(summary.totalDebit, cur)}</td>
+                      <td className="p-3 text-end font-mono tabular-nums">{formatCurrencyNumber(summary.totalCredit, cur)}</td>
                       <td className="p-3 text-end font-mono font-extrabold tabular-nums">
-                        {summary.netBalance.toLocaleString()} {cur}
+                        {formatCurrency(summary.netBalance, cur, { isAr })}
                       </td>
                       <td className="p-3 text-center">
                         <div className="flex items-center justify-center gap-1">
@@ -535,7 +536,7 @@ export const ChartOfAccountsScreen: React.FC<ScreenProps> = ({ store }) => {
                   {t.generalLedger}: {ledgerAccount.code} - {isAr ? ledgerAccount.nameAr : ledgerAccount.nameEn}
                 </h3>
                 <p className="text-xs text-slate-500 font-mono tabular-nums mt-0.5">
-                  {t.debit}: {ledgerData.totalDebit.toLocaleString()} · {t.credit}: {ledgerData.totalCredit.toLocaleString()} · {isAr ? 'الصافي' : 'Net'}: {ledgerData.netBalance.toLocaleString()} {cur}
+                  {t.debit}: {formatCurrencyNumber(ledgerData.totalDebit, cur)} · {t.credit}: {formatCurrencyNumber(ledgerData.totalCredit, cur)} · {isAr ? 'الصافي' : 'Net'}: {formatCurrency(ledgerData.netBalance, cur, { isAr })}
                 </p>
               </div>
               <button onClick={() => setLedgerAccount(null)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-[#1A2C24] cursor-pointer">
@@ -563,9 +564,9 @@ export const ChartOfAccountsScreen: React.FC<ScreenProps> = ({ store }) => {
                         <td className="p-2.5 font-mono">{r.date.slice(0, 10)}</td>
                         <td className="p-2.5 font-mono font-bold">{r.journalId}</td>
                         <td className="p-2.5">{r.description}</td>
-                        <td className="p-2.5 text-end font-mono tabular-nums">{r.debit > 0 ? r.debit.toLocaleString() : '—'}</td>
-                        <td className="p-2.5 text-end font-mono tabular-nums">{r.credit > 0 ? r.credit.toLocaleString() : '—'}</td>
-                        <td className="p-2.5 text-end font-mono font-bold tabular-nums">{r.runningBalance.toLocaleString()}</td>
+                        <td className="p-2.5 text-end font-mono tabular-nums">{r.debit > 0 ? formatCurrencyNumber(r.debit, cur) : '—'}</td>
+                        <td className="p-2.5 text-end font-mono tabular-nums">{r.credit > 0 ? formatCurrencyNumber(r.credit, cur) : '—'}</td>
+                        <td className="p-2.5 text-end font-mono font-bold tabular-nums">{formatCurrency(r.runningBalance, cur, { isAr })}</td>
                       </tr>
                     ))}
                   </tbody>

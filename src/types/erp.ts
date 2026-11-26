@@ -392,33 +392,67 @@ export interface Employee {
   role: RoleId;
   permissions: RouteId[];
   phone: string;
+  whatsapp?: string;
   email?: string;
   nationalId?: string;
+  birthDate?: string;
   branchId?: string;
   hireDate?: string;
   salary: number;
+  allowances?: number;
+  deductions?: number;
   bankAccount?: string;
+  workShift?: string;
+  username?: string;
+  password?: string;
+  photoBase64?: string;
+  attachmentBase64?: string;
+  idAttachmentBase64?: string;
   status?: 'active' | 'on_leave' | 'terminated';
   notes?: string;
   lastPaidDate?: string;
 }
 
+export type ExpenseType = 'rent' | 'electricity' | 'salaries' | 'maintenance' | 'marketing' | 'other';
+export type ExpenseStatus = 'draft' | 'approved' | 'paid';
+
 export interface Expense {
   id: string;
+  expenseNumber?: string;
   title: string;
   category: string;
+  expenseType?: ExpenseType;
+  beneficiary?: string;
+  costCenter?: string;
   amount: number;
+  currency?: CurrencyCode;
+  exchangeRate?: number;
+  baseAmount?: number;
+  paymentMethod?: PaymentMethodType;
   paidFromBankId: string;
+  status?: ExpenseStatus;
   date: string;
   branchId?: string;
+  attachmentBase64?: string;
+  notes?: string;
+  isRecurringMonthly?: boolean;
+  reminderDate?: string;
 }
 
 export interface BankAccount {
   id: string;
+  accountType?: 'bank' | 'cash';
+  bankName?: string;
   nameAr: string;
   nameEn: string;
   accountNumber: string;
+  iban?: string;
+  branchId?: string;
+  currency?: CurrencyCode;
+  openingBalance?: number;
   balance: number;
+  custodianName?: string;
+  status?: 'active' | 'closed';
   lastReconciledDate?: string;
 }
 
@@ -498,10 +532,14 @@ export interface AuditLogEntry {
   id: string;
   actor: string;
   actorRole: RoleId;
-  action: 'create' | 'update' | 'delete' | 'pay' | 'receive' | 'transfer' | 'reconcile' | 'stocktake' | 'fiscal_lock' | 'backup';
+  action: 'create' | 'update' | 'delete' | 'pay' | 'receive' | 'transfer' | 'reconcile' | 'stocktake' | 'fiscal_lock' | 'backup' | 'print';
   entity: string;
   entityId: string;
   summary: string;
+  screenName?: string;
+  oldValue?: string;
+  newValue?: string;
+  deviceInfo?: string;
   timestamp: string;
 }
 
@@ -512,10 +550,18 @@ export interface CompanySettings {
   phone: string;
   email: string;
   address: string;
+  city?: string;
   currency: CurrencyCode;
   enabledCurrencies?: CurrencyCode[];
   exchangeRates?: Record<string, number>;
   lastRatesUpdate?: string;
+  lastRatesSource?: 'live' | 'fallback';
+  autoUpdateExchangeRates?: boolean;
+  fxAutoIntervalHours?: number;
+  displayCurrency?: CurrencyCode;
+  currencyDisplayStyle?: 'symbol' | 'code' | 'both';
+  currencyNumberLocale?: 'auto' | 'en-US' | 'ar-SA';
+  currencyDecimalMode?: 'auto' | '0' | '2' | '3';
   isArabic: boolean;
   isDarkMode: boolean;
   monthlySalesGoal: number;
@@ -530,6 +576,33 @@ export interface CompanySettings {
   defaultBranchId?: string;
   defaultWarehouseId?: string;
   receiptFooter?: string;
+  invoicePrefix?: string;
+  invoiceNumberFormat?: string;
+  invoiceTerms?: string;
+  printPaperSize?: 'a4' | 'thermal_80' | 'thermal_58';
+  showQrOnPrint?: boolean;
+  showLogoOnPrint?: boolean;
+  whatsappTemplate?: string;
+  senderEmail?: string;
+}
+
+export interface SubscriptionMeta {
+  planId: 'free' | 'basic' | 'pro' | 'enterprise';
+  billingCycle: 'monthly' | 'yearly';
+  startDate: string;
+  endDate: string;
+  status: 'active' | 'expired' | 'cancelled';
+  paymentMethod: string;
+  autoRenew: boolean;
+}
+
+export interface SupportTicket {
+  id: string;
+  title: string;
+  description: string;
+  screenshotBase64?: string;
+  status: 'open' | 'in_progress' | 'resolved';
+  createdAt: string;
 }
 
 export interface SmartAlert {
@@ -640,6 +713,7 @@ export interface PersistedState {
   currentRole: RoleId;
   activePlan: string;
   trialStartIso: string;
+  subscriptionMeta?: SubscriptionMeta;
   settings: CompanySettings;
   permissionsMatrix: PermissionsMatrix;
   invoices: Invoice[];
@@ -662,4 +736,5 @@ export interface PersistedState {
   stockMovements: StockMovement[];
   stocktakes: StocktakeRecord[];
   auditLogs: AuditLogEntry[];
+  supportTickets?: SupportTicket[];
 }

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   BarChart2,
@@ -27,16 +27,33 @@ import {
   computeMonthlySummaryRich,
 } from '../domain/analytics';
 import { fromHalalas, mulFxHalalas, toHalalas } from '../domain/halala';
-import { RouteId } from '../types/erp';
+import { CurrencyCode, RouteId } from '../types/erp';
 import { HealthScoreRing } from '../components/QrMatrix';
+import {
+  convertFromBaseCurrency,
+  DEFAULT_ENABLED_CURRENCIES,
+  formatCurrency,
+} from '../utils/currencies';
 import { ScreenProps } from './types';
 
 export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) => {
   const { state, metrics, actions, hasPermission } = store;
   const isAr = state.settings.isArabic;
   const cur = state.settings.currency;
+  const dispCur = state.settings.displayCurrency ?? cur;
   const t = strings[isAr ? 'ar' : 'en'];
   const [tourStep, setTourStep] = useState<number | null>(null);
+  const enabledCurrencies = Array.from(
+    new Set<CurrencyCode>([cur, ...(state.settings.enabledCurrencies ?? DEFAULT_ENABLED_CURRENCIES)]),
+  );
+  const toDispVal = (baseVal: number) =>
+    convertFromBaseCurrency(baseVal, dispCur, cur, state.settings.exchangeRates);
+  const fmtDisp = (baseVal: number) => formatCurrency(toDispVal(baseVal), dispCur, { isAr });
+  useEffect(() => {
+    if (state.settings.displayCurrency && !enabledCurrencies.includes(state.settings.displayCurrency)) {
+      actions.updateSettings({ displayCurrency: cur });
+    }
+  }, [state.settings.displayCurrency, cur]);
 
   const todayKpis = useMemo(() => computeDashboardTodayKpis(state), [state]);
   const richMonth = useMemo(() => computeMonthlySummaryRich(state), [state]);
@@ -255,16 +272,30 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
         <div className="flex-1 text-center sm:text-start space-y-2">
           <div className="flex flex-wrap items-center justify-center sm:justify-between gap-2">
             <h2 className="text-base sm:text-lg font-bold text-white/90">{state.settings.companyName}</h2>
-            <button
-              onClick={() => setTourStep(0)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#C9A227] text-slate-950 font-extrabold text-xs cursor-pointer"
-            >
-              <Compass className="w-3.5 h-3.5" />
-              <span>{t.tour}</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={dispCur}
+                onChange={(e) => actions.updateSettings({ displayCurrency: e.target.value as CurrencyCode })}
+                aria-label={isAr ? 'عملة العرض' : 'Display Currency'}
+                className="px-2.5 py-1.5 rounded-xl bg-white/15 border border-white/25 text-white text-xs font-bold cursor-pointer"
+              >
+                {enabledCurrencies.map((c) => (
+                  <option key={c} value={c} className="text-slate-900">
+                    {isAr ? `عرض: ${c}` : `View: ${c}`}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => setTourStep(0)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#C9A227] text-slate-950 font-extrabold text-xs cursor-pointer"
+              >
+                <Compass className="w-3.5 h-3.5" />
+                <span>{t.tour}</span>
+              </button>
+            </div>
           </div>
           <p className="text-2xl font-extrabold text-[#C9A227] tabular-nums">
-            {t.netProfit}: {metrics.netProfit.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+            {t.netProfit}: {fmtDisp(metrics.netProfit)}
           </p>
           <div className="flex flex-wrap justify-center sm:justify-start gap-2 pt-1">
             {hasPermission('ai_analytics') && (
@@ -333,31 +364,31 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
         <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/35 rounded-[20px] p-4">
           <span className="text-[11px] font-bold text-slate-500 block">{t.todaySales}</span>
           <p className="text-base sm:text-lg font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227] mt-1">
-            {execStats.todaySales.toLocaleString(undefined, { maximumFractionDigits: 2 })} <span className="text-[11px]">{cur}</span>
+            {fmtDisp(execStats.todaySales)}
           </p>
         </div>
         <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
           <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'مبيعات الأسبوع' : 'Week Sales'}</span>
           <p className="text-base sm:text-lg font-extrabold font-mono tabular-nums text-slate-900 dark:text-white mt-1">
-            {execStats.weekSales.toLocaleString(undefined, { maximumFractionDigits: 0 })} <span className="text-[11px]">{cur}</span>
+            {fmtDisp(execStats.weekSales)}
           </p>
         </div>
         <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
           <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'مبيعات الشهر' : 'Month Sales'}</span>
           <p className="text-base sm:text-lg font-extrabold font-mono tabular-nums text-slate-900 dark:text-white mt-1">
-            {execStats.monthSales.toLocaleString(undefined, { maximumFractionDigits: 0 })} <span className="text-[11px]">{cur}</span>
+            {fmtDisp(execStats.monthSales)}
           </p>
         </div>
         <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
           <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'مبيعات السنة' : 'Year Sales'}</span>
           <p className="text-base sm:text-lg font-extrabold font-mono tabular-nums text-slate-900 dark:text-white mt-1">
-            {execStats.yearSales.toLocaleString(undefined, { maximumFractionDigits: 0 })} <span className="text-[11px]">{cur}</span>
+            {fmtDisp(execStats.yearSales)}
           </p>
         </div>
         <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
           <span className="text-[11px] font-bold text-slate-500 block">{t.todayProfit}</span>
           <p className={`text-base sm:text-lg font-extrabold font-mono tabular-nums mt-1 ${todayKpis.todayProfit >= 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-600'}`}>
-            {todayKpis.todayProfit.toLocaleString(undefined, { maximumFractionDigits: 2 })} <span className="text-[11px]">{cur}</span>
+            {fmtDisp(todayKpis.todayProfit)}
           </p>
         </div>
         <button
@@ -367,7 +398,7 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
         >
           <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'إجمالي المشتريات' : 'Total Purchases'}</span>
           <p className="text-base sm:text-lg font-extrabold font-mono tabular-nums text-amber-700 dark:text-[#C9A227] mt-1">
-            {execStats.totalPurchases.toLocaleString(undefined, { maximumFractionDigits: 0 })} <span className="text-[11px]">{cur}</span>
+            {fmtDisp(execStats.totalPurchases)}
           </p>
         </button>
       </div>
@@ -387,8 +418,7 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                 <Icon className="w-4 h-4 text-[#0A3D2C] dark:text-[#C9A227] shrink-0" />
               </div>
               <p className="text-base sm:text-lg font-extrabold tabular-nums font-mono">
-                {k.value.toLocaleString(undefined, { maximumFractionDigits: 0 })}{' '}
-                <span className="text-xs font-semibold text-slate-500">{cur}</span>
+                {fmtDisp(k.value)}
               </p>
             </button>
           );
@@ -404,11 +434,10 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
             <Landmark className="w-4 h-4 text-[#C9A227] shrink-0" />
           </div>
           <p className="text-base sm:text-lg font-extrabold tabular-nums font-mono text-[#0A3D2C] dark:text-[#C9A227]">
-            {metrics.totalCashAndBanks.toLocaleString(undefined, { maximumFractionDigits: 0 })}{' '}
-            <span className="text-xs font-semibold text-slate-500">{cur}</span>
+            {fmtDisp(metrics.totalCashAndBanks)}
           </p>
           <span className="text-[10px] text-slate-500 font-mono">
-            {t.cashBoxBalance}: {todayKpis.cashBoxBalance.toLocaleString()}
+            {t.cashBoxBalance}: {fmtDisp(todayKpis.cashBoxBalance)}
           </span>
         </button>
 
@@ -423,7 +452,7 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
           </div>
           <p className="text-base sm:text-lg font-extrabold tabular-nums font-mono text-rose-600 dark:text-rose-400">
             {execStats.overdueInvoicesCount}{' '}
-            <span className="text-xs font-semibold">({execStats.overdueInvoicesTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur})</span>
+            <span className="text-xs font-semibold">({fmtDisp(execStats.overdueInvoicesTotal)})</span>
           </p>
         </button>
       </div>
@@ -542,14 +571,14 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                 )}
               </div>
               <p className="mt-1 text-base sm:text-lg font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-emerald-400">
-                {monthlySummary.monthRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+                {fmtDisp(monthlySummary.monthRevenue)}
               </p>
             </div>
 
             <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B]">
               <span className="text-xs font-bold text-slate-500 block">{t.thisMonthExpenses}</span>
               <p className="mt-1 text-base sm:text-lg font-extrabold font-mono tabular-nums text-amber-700 dark:text-[#C9A227]">
-                {monthlySummary.monthExpenses.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+                {fmtDisp(monthlySummary.monthExpenses)}
               </p>
             </div>
 
@@ -562,8 +591,8 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                     : 'text-red-600 dark:text-red-400'
                 }`}
               >
-                {monthlySummary.monthNet >= 0 ? '+' : ''}
-                {monthlySummary.monthNet.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+                {monthlySummary.monthNet > 0 ? '+' : ''}
+                {fmtDisp(monthlySummary.monthNet)}
               </p>
             </div>
           </div>
@@ -572,7 +601,7 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
             <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] flex items-center justify-between text-xs">
               <span className="font-bold text-slate-500">{isAr ? 'أفضل عميل هذا الشهر' : 'Best Customer This Month'}</span>
               <span className="font-extrabold text-[#0A3D2C] dark:text-[#C9A227]">
-                {richMonth.bestCustomer ? `${richMonth.bestCustomer.name} (${richMonth.bestCustomer.revenue.toLocaleString()} ${cur})` : '—'}
+                {richMonth.bestCustomer ? `${richMonth.bestCustomer.name} (${fmtDisp(richMonth.bestCustomer.revenue)})` : '—'}
               </span>
             </div>
             <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#0A120F] border border-slate-100 dark:border-[#1F332B] flex items-center justify-between text-xs">
@@ -587,8 +616,8 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
             <div className="flex items-center justify-between text-xs">
               <span className="font-bold text-slate-600 dark:text-slate-300">{t.salesGoalProgress}</span>
               <span className="font-mono font-extrabold tabular-nums text-[#0A3D2C] dark:text-[#C9A227]">
-                {monthlySummary.monthSalesGross.toLocaleString(undefined, { maximumFractionDigits: 0 })} /{' '}
-                {monthlySummary.goal.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur} ({monthlySummary.goalPct}%)
+                {fmtDisp(monthlySummary.monthSalesGross)} /{' '}
+                {fmtDisp(monthlySummary.goal)} ({monthlySummary.goalPct}%)
               </span>
             </div>
             <div className="h-2.5 w-full rounded-full bg-slate-100 dark:bg-[#0A120F] overflow-hidden">
@@ -627,12 +656,12 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                 <div key={m.key} className="flex flex-col items-center gap-1.5 h-full justify-end">
                   <div className="w-full flex items-end justify-center gap-1 h-32">
                     <div
-                      title={`${t.revenueLabel}: ${m.sales.toLocaleString()} ${cur}`}
+                      title={`${t.revenueLabel}: ${fmtDisp(m.sales)}`}
                       className="w-3 sm:w-4 rounded-t-md bg-[#0A3D2C] dark:bg-emerald-500 transition-all"
                       style={{ height: `${salesH}%` }}
                     />
                     <div
-                      title={`${t.expensesLabel}: ${m.expenses.toLocaleString()} ${cur}`}
+                      title={`${t.expensesLabel}: ${fmtDisp(m.expenses)}`}
                       className="w-3 sm:w-4 rounded-t-md bg-[#C9A227] transition-all"
                       style={{ height: `${expH}%` }}
                     />
@@ -644,8 +673,8 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
           </div>
 
           <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-100 dark:border-[#1F332B] font-mono tabular-nums">
-            <span className="text-slate-500">{t.vat15}: {metrics.vatOutput.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}</span>
-            <span className="text-[#0A3D2C] dark:text-[#C9A227] font-bold">{t.expenses}: {metrics.totalExpenses.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}</span>
+            <span className="text-slate-500">{t.vat15}: {fmtDisp(metrics.vatOutput)}</span>
+            <span className="text-[#0A3D2C] dark:text-[#C9A227] font-bold">{t.expenses}: {fmtDisp(metrics.totalExpenses)}</span>
           </div>
         </div>
       </div>
@@ -714,7 +743,7 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
             <span className="text-xs font-bold text-slate-500 block">{t.topCustomerLabel}</span>
             <p className="text-sm font-extrabold truncate">{performanceInsights.topCustomerName}</p>
             <span className="text-[11px] font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227] block">
-              {performanceInsights.topCustomerTotal > 0 ? `${performanceInsights.topCustomerTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${cur}` : '—'}
+              {performanceInsights.topCustomerTotal > 0 ? fmtDisp(performanceInsights.topCustomerTotal) : '—'}
             </span>
           </div>
 
@@ -798,7 +827,7 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                     </div>
                   </div>
                   <span className="text-xs font-mono font-extrabold text-[#0A3D2C] dark:text-[#C9A227] tabular-nums shrink-0">
-                    {tc.totalSpent.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+                    {fmtDisp(tc.totalSpent)}
                   </span>
                 </div>
               ))}
@@ -837,7 +866,7 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                     </div>
                   </div>
                   <span className="text-xs font-mono font-extrabold text-[#0A3D2C] dark:text-emerald-400 tabular-nums shrink-0">
-                    {tp.revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+                    {fmtDisp(tp.revenue)}
                   </span>
                 </div>
               ))}
@@ -861,31 +890,42 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
             <p className="text-sm text-slate-500 py-6 text-center">{t.noData}</p>
           ) : (
             <div className="divide-y divide-slate-100 dark:divide-[#1F332B]">
-              {todayKpis.latest10Invoices.map((inv) => (
-                <div
-                  key={inv.id}
-                  onClick={() => onNavigate('invoices')}
-                  className="py-3 flex items-center justify-between gap-4 cursor-pointer hover:opacity-80"
-                >
-                  <div className="min-w-0">
-                    <p className="font-bold text-sm truncate">{inv.customerName}</p>
-                    <p className="text-xs text-slate-500 font-mono">
-                      {inv.id} · {t[inv.status]} · {inv.date.slice(0, 10)}
-                    </p>
-                  </div>
-                  <span
-                    className={`font-extrabold text-sm font-mono tabular-nums shrink-0 ${
-                      inv.status === 'paid'
-                        ? 'text-emerald-600 dark:text-emerald-400'
-                        : inv.status === 'overdue'
-                        ? 'text-red-600 dark:text-red-400'
-                        : 'text-amber-600 dark:text-amber-400'
-                    }`}
+              {todayKpis.latest10Invoices.map((inv) => {
+                const invCur = inv.currency ?? cur;
+                const invBaseTotal = inv.baseTotal ?? inv.total * (inv.exchangeRate ?? 1);
+                return (
+                  <div
+                    key={inv.id}
+                    onClick={() => onNavigate('invoices')}
+                    className="py-3 flex items-center justify-between gap-4 cursor-pointer hover:opacity-80"
                   >
-                    {inv.total.toFixed(2)} {inv.currency ?? cur}
-                  </span>
-                </div>
-              ))}
+                    <div className="min-w-0">
+                      <p className="font-bold text-sm truncate">{inv.customerName}</p>
+                      <p className="text-xs text-slate-500 font-mono">
+                        {inv.id} · {t[inv.status]} · {inv.date.slice(0, 10)}
+                      </p>
+                    </div>
+                    <div className="text-end shrink-0">
+                      <span
+                        className={`font-extrabold text-sm font-mono tabular-nums block ${
+                          inv.status === 'paid'
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : inv.status === 'overdue'
+                            ? 'text-red-600 dark:text-red-400'
+                            : 'text-amber-600 dark:text-amber-400'
+                        }`}
+                      >
+                        {formatCurrency(inv.total, invCur, { isAr })}
+                      </span>
+                      {invCur !== dispCur && (
+                        <span className="text-[11px] font-mono text-slate-500 tabular-nums">
+                          ≈ {fmtDisp(invBaseTotal)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

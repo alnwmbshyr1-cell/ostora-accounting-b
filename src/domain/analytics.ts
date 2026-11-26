@@ -1,5 +1,5 @@
 import { PersistedState } from '../types/erp';
-import { computeProfitAnalytics } from './accounting';
+import { computeProfitAnalytics, getExpenseBaseHalalas } from './accounting';
 import { fromHalalas, mulFxHalalas, toHalalas } from './halala';
 
 export interface TopProductStat {
@@ -63,8 +63,9 @@ export function computeDashboardTodayKpis(state: PersistedState): DashboardToday
 
   let todayExpH = 0;
   for (const exp of state.expenses) {
+    if (exp.status === 'draft') continue;
     if (exp.date.slice(0, 10) === todayKey) {
-      todayExpH += toHalalas(exp.amount);
+      todayExpH += getExpenseBaseHalalas(exp);
     }
   }
 
@@ -133,8 +134,9 @@ export function computeMonthlySummaryRich(state: PersistedState): MonthlySummary
   }
 
   for (const e of state.expenses) {
+    if (e.status === 'draft') continue;
     if (e.date.slice(0, 7) === ym) {
-      expH += toHalalas(e.amount);
+      expH += getExpenseBaseHalalas(e);
     }
   }
 
@@ -284,8 +286,9 @@ export function computeAdvancedInsights(state: PersistedState): AnalyticsInsight
   const profitByBranch = computeProfitAnalytics(state).byBranch;
   const branchExpMap = new Map<string, number>();
   for (const e of state.expenses) {
+    if (e.status === 'draft') continue;
     const bid = e.branchId || state.branches[0]?.id || 'BR-MAIN';
-    branchExpMap.set(bid, (branchExpMap.get(bid) ?? 0) + toHalalas(e.amount));
+    branchExpMap.set(bid, (branchExpMap.get(bid) ?? 0) + getExpenseBaseHalalas(e));
   }
 
   const lossMakingBranches: AnalyticsInsightsBundle['lossMakingBranches'] = [];
@@ -422,5 +425,233 @@ export function computeDashboardExecutiveStats(state: PersistedState): Dashboard
     top5Customers,
     lowStockProducts,
     expiringProducts,
+  };
+}
+
+export interface ProductPerformanceInsight {
+  productId: string;
+  name: string;
+  qtySold: number;
+  revenue: number;
+  cost: number;
+  profit: number;
+  marginPct: number;
+  currentStock: number;
+  dailyVelocity: number;
+  daysUntilStockout: number | null;
+}
+
+export interface SmartRecommendation {
+  id: string;
+  type: 'discount_stagnant' | 'reorder_fast' | 'collect_credit' | 'expiry_clearance';
+  titleAr: string;
+  titleEn: string;
+  detailAr: string;
+  detailEn: string;
+  actionRoute: 'inventory' | 'purchase_orders' | 'customers' | 'invoices';
+}
+
+export interface DetailedAiInsights {
+  bestCustomers: TopCustomerStat[];
+  bestProducts: ProductPerformanceInsight[];
+  slowMovingProducts: ProductPerformanceInsight[];
+  stockoutPredictions: ProductPerformanceInsight[];
+  monthComparison: {
+    currentMonthKey: string;
+    prevMonthKey: string;
+    currentRev: number;
+    prevRev: number;
+    revChangePct: number;
+    currentExp: number;
+    prevExp: number;
+    expChangePct: number;
+  };
+  recommendations: SmartRecommendation[];
+}
+
+export function computeDetailedAiInsights(state: PersistedState): DetailedAiInsights {
+  const now = new Date();
+  const curMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const prevDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const prevMonthKey = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+
+  let curRevH = 0;
+  let prevRevH = 0;
+  let curExpH = 0;
+  let prevExpH = 0;
+
+  const custMap = new Map<string, { name: string; count: number; totalH: number }>();
+  const prodSalesMap = new Map<string, { qty: number; revH: number; costH: number }>();
+
+  for (const inv of state.invoices) {
+    if (inv.status === 'cancelled' || inv.status === 'draft' || inv.invoiceType === 'quotation') continue;
+    const fx = inv.exchangeRate ?? 1;
+    const sign = inv.invoiceType === 'return' ? -1 : 1;
+    const baseTotalH = mulFxHalalas(toHalalas(inv.total), fx) * sign;
+    const mk = inv.date.slice(0, 7);
+    if (mk === curMonthKey) curRevH += baseTotalH;
+    if (mk === prevMonthKey) prevRevH += baseTotalH;
+
+    if (inv.invoiceType !== 'return') {
+      const ck = inv.customerId || inv.customerName;
+      const cPrev = custMap.get(ck) ?? { name: inv.customerName, count: 0, totalH: 0 };
+      cPrev.count += 1;
+      cPrev.totalH += mulFxHalalas(toHalalas(inv.total), fx);
+      custMap.set(ck, cPrev);
+
+      if (inv.items) {
+        for (const it of inv.items) {
+          const pk = it.productId || it.productName;
+          const pPrev = prodSalesMap.get(pk) ?? { qty: 0, revH: 0, costH: 0 };
+          pPrev.qty += it.qty;
+          pPrev.revH += mulFxHalalas(toHalalas(it.total), fx);
+          const unitCostH = it.costPrice !== undefined ? toHalalas(it.costPrice) : 0;
+          pPrev.costH += Math.round(unitCostH * it.qty);
+          prodSalesMap.set(pk, pPrev);
+        }
+      }
+    }
+  }
+
+  for (const exp of state.expenses) {
+    if (exp.status === 'draft') continue;
+    const mk = exp.date.slice(0, 7);
+    const expBaseH = getExpenseBaseHalalas(exp);
+    if (mk === curMonthKey) curExpH += expBaseH;
+    if (mk === prevMonthKey) prevExpH += expBaseH;
+  }
+
+  const curRev = fromHalalas(curRevH);
+  const prevRev = fromHalalas(prevRevH);
+  const curExp = fromHalalas(curExpH);
+  const prevExp = fromHalalas(prevExpH);
+  const revChangePct = prevRev > 0 ? Number((((curRev - prevRev) / prevRev) * 100).toFixed(1)) : curRev > 0 ? 100 : 0;
+  const expChangePct = prevExp > 0 ? Number((((curExp - prevExp) / prevExp) * 100).toFixed(1)) : curExp > 0 ? 100 : 0;
+
+  const bestCustomers: TopCustomerStat[] = Array.from(custMap.entries())
+    .map(([customerId, v]) => ({
+      customerId,
+      customerName: v.name,
+      invoiceCount: v.count,
+      totalSpent: fromHalalas(v.totalH),
+    }))
+    .sort((a, b) => b.totalSpent - a.totalSpent)
+    .slice(0, 5);
+
+  const productInsights: ProductPerformanceInsight[] = state.products
+    .filter((p) => p.status !== 'service')
+    .map((p) => {
+      const stats = prodSalesMap.get(p.id) ?? prodSalesMap.get(p.name) ?? { qty: 0, revH: 0, costH: 0 };
+      const rev = fromHalalas(stats.revH);
+      const estCostH = stats.costH > 0 ? stats.costH : Math.round(toHalalas(p.cost) * stats.qty);
+      const cost = fromHalalas(estCostH);
+      const profit = fromHalalas(stats.revH - estCostH);
+      const marginPct = rev > 0
+        ? Number(((profit / rev) * 100).toFixed(1))
+        : p.price > 0
+          ? Number((((p.price - p.cost) / p.price) * 100).toFixed(1))
+          : 0;
+      const dailyVelocity = Number((stats.qty / 30).toFixed(2));
+      const daysUntilStockout = dailyVelocity > 0 ? Math.max(0, Math.round(p.qty / dailyVelocity)) : null;
+      return {
+        productId: p.id,
+        name: p.name,
+        qtySold: stats.qty,
+        revenue: rev,
+        cost,
+        profit,
+        marginPct,
+        currentStock: p.qty,
+        dailyVelocity,
+        daysUntilStockout,
+      };
+    });
+
+  const bestProducts = [...productInsights].sort((a, b) => b.revenue - a.revenue || b.qtySold - a.qtySold).slice(0, 5);
+  const slowMovingProducts = [...productInsights]
+    .filter((p) => p.currentStock > 0)
+    .sort((a, b) => a.qtySold - b.qtySold || b.currentStock - a.currentStock)
+    .slice(0, 5);
+
+  const stockoutPredictions = [...productInsights]
+    .filter((p) => p.daysUntilStockout !== null && p.daysUntilStockout <= 45)
+    .sort((a, b) => (a.daysUntilStockout ?? 999) - (b.daysUntilStockout ?? 999))
+    .slice(0, 6);
+
+  const recommendations: SmartRecommendation[] = [];
+
+  const stagnantTop = slowMovingProducts.find((p) => p.qtySold <= 1 && p.currentStock >= 5);
+  if (stagnantTop) {
+    recommendations.push({
+      id: `rec_disc_${stagnantTop.productId}`,
+      type: 'discount_stagnant',
+      titleAr: `تصفية الصنف الراكد: ${stagnantTop.name}`,
+      titleEn: `Discount slow-moving item: ${stagnantTop.name}`,
+      detailAr: `لديك ${stagnantTop.currentStock} وحدة بمبيعات منخفضة. نقترح عرض خصم 15% لتنشيط دورة السيولة.`,
+      detailEn: `${stagnantTop.currentStock} units with slow velocity. Suggest a 15% promo discount to free working capital.`,
+      actionRoute: 'inventory',
+    });
+  }
+
+  const urgentStockout = stockoutPredictions[0];
+  if (urgentStockout) {
+    recommendations.push({
+      id: `rec_reord_${urgentStockout.productId}`,
+      type: 'reorder_fast',
+      titleAr: `إعادة طلب سريعة: ${urgentStockout.name}`,
+      titleEn: `Urgent reorder: ${urgentStockout.name}`,
+      detailAr: `بمعدل البيع الحالي (${urgentStockout.dailyVelocity}/يوم) سينفد المخزون خلال ${urgentStockout.daysUntilStockout} يوم.`,
+      detailEn: `At ${urgentStockout.dailyVelocity}/day velocity, stock will run out in ${urgentStockout.daysUntilStockout} days.`,
+      actionRoute: 'purchase_orders',
+    });
+  }
+
+  const creditExceededCust = state.customers.find(
+    (c) => typeof c.creditLimit === 'number' && c.creditLimit > 0 && c.debt >= c.creditLimit * 0.85,
+  );
+  if (creditExceededCust) {
+    recommendations.push({
+      id: `rec_cust_${creditExceededCust.id}`,
+      type: 'collect_credit',
+      titleAr: `متابعة تحصيل عميل: ${creditExceededCust.name}`,
+      titleEn: `Credit collection alert: ${creditExceededCust.name}`,
+      detailAr: `اقترب أو تجاوز الحد الائتماني (${creditExceededCust.debt.toLocaleString()} من ${creditExceededCust.creditLimit?.toLocaleString()}).`,
+      detailEn: `Near/above credit limit (${creditExceededCust.debt.toLocaleString()} of ${creditExceededCust.creditLimit?.toLocaleString()}).`,
+      actionRoute: 'customers',
+    });
+  }
+
+  const todayIso = now.toISOString().slice(0, 10);
+  const soonIso = new Date(now.getTime() + 45 * 86400000).toISOString().slice(0, 10);
+  const expiringSoon = state.products.find((p) => p.expiryDate && p.expiryDate <= soonIso && p.qty > 0);
+  if (expiringSoon) {
+    const expired = expiringSoon.expiryDate! < todayIso;
+    recommendations.push({
+      id: `rec_exp_${expiringSoon.id}`,
+      type: 'expiry_clearance',
+      titleAr: expired ? `إتلاف/عزل منتهي الصلاحية: ${expiringSoon.name}` : `عرض تصفية قبل الانتهاء: ${expiringSoon.name}`,
+      titleEn: expired ? `Quarantine expired item: ${expiringSoon.name}` : `Clearance before expiry: ${expiringSoon.name}`,
+      detailAr: `تاريخ الانتهاء ${expiringSoon.expiryDate} — الكمية المتبقية ${expiringSoon.qty}.`,
+      detailEn: `Expiry date ${expiringSoon.expiryDate} — ${expiringSoon.qty} units remaining.`,
+      actionRoute: 'inventory',
+    });
+  }
+
+  return {
+    bestCustomers,
+    bestProducts,
+    slowMovingProducts,
+    stockoutPredictions,
+    monthComparison: {
+      currentMonthKey: curMonthKey,
+      prevMonthKey,
+      currentRev: curRev,
+      prevRev,
+      revChangePct,
+      currentExp: curExp,
+      prevExp,
+      expChangePct,
+    },
+    recommendations,
   };
 }

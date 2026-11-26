@@ -23,7 +23,7 @@ import {
   RecurringFrequency,
   RecurringInvoice,
 } from '../types/erp';
-import { DEFAULT_ENABLED_CURRENCIES, getCurrencyMeta } from '../utils/currencies';
+import { DEFAULT_ENABLED_CURRENCIES, formatCurrency, getCurrencyMeta } from '../utils/currencies';
 import { ScreenProps } from './types';
 
 export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
@@ -241,7 +241,7 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
               {isAr ? 'إيراد شهري متوقع' : 'Est. Monthly Run-Rate'}
             </p>
             <p className="text-xl font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227] mt-0.5">
-              {estMonthlyValue.toLocaleString(undefined, { maximumFractionDigits: 0 })} {cur}
+              {formatCurrency(estMonthlyValue, cur, { isAr })}
             </p>
           </div>
           <CheckCircle2 className="w-6 h-6 text-emerald-600" />
@@ -397,7 +397,7 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
                   </div>
                   <div className="text-end">
                     <span className="text-lg font-extrabold text-[#0A3D2C] dark:text-[#C9A227] font-mono tabular-nums block">
-                      {total.toFixed(2)} {rec.currency}
+                      {formatCurrency(total, rec.currency, { isAr })}
                     </span>
                     <span className="text-[11px] text-slate-500">
                       {rec.autoGenerate ? (isAr ? 'إصدار تلقائي' : 'Auto-issue') : isAr ? 'إصدار يدوي' : 'Manual'} · {t[rec.targetStatus]}
@@ -412,7 +412,7 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
                       if (!res.ok) {
                         actions.notify(
                           res.reason === 'credit_limit'
-                            ? `${t.creditLimitExceeded} (${t.exceededBy}: ${(res.exceededBy ?? 0).toFixed(2)} ${cur})`
+                            ? `${t.creditLimitExceeded} (${t.exceededBy}: ${formatCurrency(res.exceededBy ?? 0, cur, { isAr })})`
                             : isAr ? 'تعذر إصدار الفاتورة' : 'Failed to issue invoice',
                         );
                         return;
@@ -537,7 +537,7 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
                   >
                     <img src={p.imageBase64 || DEFAULT_PRODUCT_IMAGE} alt={p.name} className="w-7 h-7 rounded object-cover shrink-0" />
                     <span className="flex-1 truncate font-bold">{p.name}</span>
-                    <span className="font-mono font-bold">{p.price} {cur}</span>
+                    <span className="font-mono font-bold">{formatCurrency(p.price, cur, { isAr })}</span>
                   </button>
                 ))}
               </div>
@@ -585,7 +585,7 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
                     <div key={idx} className="flex items-center justify-between text-xs">
                       <span className="truncate">{it.productName} ×{it.qty}</span>
                       <div className="flex items-center gap-2 shrink-0">
-                        <span className="font-mono font-bold tabular-nums">{it.total.toFixed(2)}</span>
+                        <span className="font-mono font-bold tabular-nums">{formatCurrency(it.total, form.currency, { isAr })}</span>
                         <button
                           type="button"
                           onClick={() => {
@@ -790,9 +790,19 @@ export const RecurringInvoicesScreen: React.FC<ScreenProps> = ({ store }) => {
               className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
             />
 
-            <div className="p-3 rounded-xl bg-slate-100 dark:bg-[#0A120F] flex justify-between text-xs font-bold tabular-nums">
-              <span>{t.vat} ({rateNum}%): {vatNum.toFixed(2)} {form.currency}</span>
-              <span className="text-[#0A3D2C] dark:text-[#C9A227]">{t.total}: {totalNum.toFixed(2)} {form.currency}</span>
+            <div className="p-3 rounded-xl bg-slate-100 dark:bg-[#0A120F] flex flex-wrap justify-between gap-2 text-xs font-bold tabular-nums">
+              <span>{t.vat} ({rateNum}%): {formatCurrency(vatNum, form.currency, { isAr })}</span>
+              <div className="text-end">
+                <span className="text-[#0A3D2C] dark:text-[#C9A227]">
+                  {t.total}: {formatCurrency(totalNum, form.currency, { isAr })}
+                </span>
+                {form.currency !== cur && (
+                  <span className="ms-2 text-[11px] font-mono text-slate-500">
+                    (1 {form.currency} = {(state.settings.exchangeRates?.[form.currency] ?? 1).toFixed(4)} {cur} · ≈{' '}
+                    {formatCurrency(totalNum * (state.settings.exchangeRates?.[form.currency] ?? 1), cur, { isAr })})
+                  </span>
+                )}
+              </div>
             </div>
 
             <div className="flex gap-2 pt-2">

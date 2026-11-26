@@ -6,6 +6,7 @@ import {
   decodeZatcaTlvBase64,
   validateZatcaPhase1,
 } from '../utils/zatca';
+import { formatCurrency, formatCurrencyNumber } from '../utils/currencies';
 import { CompanySettings, Invoice, Quotation, ReturnRecord, Voucher } from '../types/erp';
 import { QrMatrix } from './QrMatrix';
 
@@ -316,16 +317,16 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                                     <p className="text-[10px] text-amber-700 font-mono">
                                       {isAr ? 'خصم:' : 'Disc:'}{' '}
                                       {it.discountPercent ? `${it.discountPercent}% ` : ''}
-                                      {it.discountAmount ? `(-${it.discountAmount.toFixed(2)})` : ''}
+                                      {it.discountAmount ? `(-${formatCurrencyNumber(it.discountAmount, invCur)})` : ''}
                                     </p>
                                   )}
                                 </td>
-                                <td className="p-3 text-end font-mono tabular-nums">{it.total.toFixed(2)}</td>
+                                <td className="p-3 text-end font-mono tabular-nums">{formatCurrencyNumber(it.total, invCur)}</td>
                                 <td className="p-3 text-end font-mono tabular-nums">
-                                  {itemVat.toFixed(2)}
+                                  {formatCurrencyNumber(itemVat, invCur)}
                                 </td>
                                 <td className="p-3 text-end font-mono font-bold tabular-nums">
-                                  {(it.total + itemVat).toFixed(2)} {invCur}
+                                  {formatCurrency(it.total + itemVat, invCur, { isAr })}
                                 </td>
                               </tr>
                             );
@@ -333,10 +334,10 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                         ) : (
                           <tr className="border-b border-slate-200">
                             <td className="p-3">{invoice.description || 'Accounting & Supply Services'}</td>
-                            <td className="p-3 text-end font-mono tabular-nums">{invoice.subtotal.toFixed(2)}</td>
-                            <td className="p-3 text-end font-mono tabular-nums">{invoice.vat.toFixed(2)}</td>
+                            <td className="p-3 text-end font-mono tabular-nums">{formatCurrencyNumber(invoice.subtotal, invCur)}</td>
+                            <td className="p-3 text-end font-mono tabular-nums">{formatCurrencyNumber(invoice.vat, invCur)}</td>
                             <td className="p-3 text-end font-mono font-bold tabular-nums">
-                              {invoice.total.toFixed(2)} {invCur}
+                              {formatCurrency(invoice.total, invCur, { isAr })}
                             </td>
                           </tr>
                         )}
@@ -348,56 +349,56 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                         <div className="flex justify-between text-xs">
                           <span>{isAr ? 'المجموع الفرعي' : 'Subtotal'}</span>
                           <span className="font-mono tabular-nums">
-                            {invoice.subtotal.toFixed(2)} {invCur}
+                            {formatCurrency(invoice.subtotal, invCur, { isAr })}
                           </span>
                         </div>
                         {(invoice.discountTotal ?? 0) > 0 && (
                           <div className="flex justify-between text-xs text-amber-700">
                             <span>{isAr ? 'الخصم' : 'Discount'}</span>
-                            <span className="font-mono tabular-nums">-{(invoice.discountTotal ?? 0).toFixed(2)} {invCur}</span>
+                            <span className="font-mono tabular-nums">-{formatCurrency(invoice.discountTotal ?? 0, invCur, { isAr })}</span>
                           </div>
                         )}
                         {(invoice.shippingFee ?? 0) > 0 && (
                           <div className="flex justify-between text-xs">
                             <span>{isAr ? 'الشحن والتوصيل' : 'Shipping'}</span>
-                            <span className="font-mono tabular-nums">{(invoice.shippingFee ?? 0).toFixed(2)} {invCur}</span>
+                            <span className="font-mono tabular-nums">{formatCurrency(invoice.shippingFee ?? 0, invCur, { isAr })}</span>
                           </div>
                         )}
                         {(invoice.extraFee ?? 0) > 0 && (
                           <div className="flex justify-between text-xs">
                             <span>{isAr ? 'رسوم إضافية' : 'Extra Fees'}</span>
-                            <span className="font-mono tabular-nums">{(invoice.extraFee ?? 0).toFixed(2)} {invCur}</span>
+                            <span className="font-mono tabular-nums">{formatCurrency(invoice.extraFee ?? 0, invCur, { isAr })}</span>
                           </div>
                         )}
                         <div className="flex justify-between text-xs">
                           <span>{isAr ? `ضريبة القيمة المضافة ${effRate}%` : `VAT ${effRate}%`}</span>
                           <span className="font-mono tabular-nums">
-                            {invoice.vat.toFixed(2)} {invCur}
+                            {formatCurrency(invoice.vat, invCur, { isAr })}
                           </span>
                         </div>
                         <div className="border-t border-slate-300 pt-2 flex justify-between font-extrabold text-sm text-[#0A3D2C]">
                           <span>{isAr ? 'الإجمالي المستحق' : 'TOTAL'}</span>
                           <span className="font-mono tabular-nums">
-                            {invoice.total.toFixed(2)} {invCur}
+                            {formatCurrency(invoice.total, invCur, { isAr })}
                           </span>
                         </div>
                         {(invoice.paidAmount ?? 0) > 0 && (
                           <div className="flex justify-between text-xs text-emerald-700">
                             <span>{isAr ? 'المدفوع' : 'Paid'}</span>
-                            <span className="font-mono font-bold tabular-nums">{(invoice.paidAmount ?? 0).toFixed(2)} {invCur}</span>
+                            <span className="font-mono font-bold tabular-nums">{formatCurrency(invoice.paidAmount ?? 0, invCur, { isAr })}</span>
                           </div>
                         )}
                         {(invoice.remainingAmount ?? 0) > 0 && (
                           <div className="flex justify-between text-xs text-rose-700">
                             <span>{isAr ? 'المتبقي' : 'Remaining'}</span>
-                            <span className="font-mono font-bold tabular-nums">{(invoice.remainingAmount ?? 0).toFixed(2)} {invCur}</span>
+                            <span className="font-mono font-bold tabular-nums">{formatCurrency(invoice.remainingAmount ?? 0, invCur, { isAr })}</span>
                           </div>
                         )}
                         {invCur !== company.currency && (
                           <div className="border-t border-slate-200 pt-2 flex justify-between text-[11px] text-slate-600 font-mono">
                             <span>1 {invCur} = {fxRate.toFixed(4)} {company.currency}</span>
                             <span className="font-bold">
-                              ≈ {baseTotal.toFixed(2)} {company.currency}
+                              ≈ {formatCurrency(baseTotal, company.currency, { isAr })}
                             </span>
                           </div>
                         )}
@@ -459,9 +460,9 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                   <tr className="border-b border-slate-200">
                     <td className="p-3">{returnRecord.productName}</td>
                     <td className="p-3 text-end font-mono tabular-nums">{returnRecord.qty}</td>
-                    <td className="p-3 text-end font-mono tabular-nums">{returnRecord.unitPrice.toFixed(2)}</td>
+                    <td className="p-3 text-end font-mono tabular-nums">{formatCurrencyNumber(returnRecord.unitPrice, company.currency)}</td>
                     <td className="p-3 text-end font-mono font-bold tabular-nums">
-                      {returnRecord.amount.toFixed(2)} {company.currency}
+                      {formatCurrency(returnRecord.amount, company.currency, { isAr })}
                     </td>
                   </tr>
                 </tbody>
@@ -491,53 +492,60 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                 </div>
               </div>
 
-              <table className="w-full border-collapse text-xs sm:text-sm">
-                <thead>
-                  <tr className="bg-[#0A3D2C] text-white">
-                    <th className="p-2.5 text-start">{isAr ? 'الصنف' : 'Item'}</th>
-                    <th className="p-2.5 text-end">{isAr ? 'الكمية' : 'Qty'}</th>
-                    <th className="p-2.5 text-end">{isAr ? 'السعر' : 'Unit Price'}</th>
-                    <th className="p-2.5 text-end">{isAr ? 'الإجمالي' : 'Total'}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {quotation.items.map((it, idx) => (
-                    <tr key={idx} className="border-b border-slate-200">
-                      <td className="p-3">{it.productName}</td>
-                      <td className="p-3 text-end font-mono tabular-nums">{it.qty}</td>
-                      <td className="p-3 text-end font-mono tabular-nums">{it.unitPrice.toFixed(2)}</td>
-                      <td className="p-3 text-end font-mono font-bold tabular-nums">{it.total.toFixed(2)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              {(() => {
+                const qtCur = quotation.currency ?? company.currency;
+                return (
+                  <>
+                    <table className="w-full border-collapse text-xs sm:text-sm">
+                      <thead>
+                        <tr className="bg-[#0A3D2C] text-white">
+                          <th className="p-2.5 text-start">{isAr ? 'الصنف' : 'Item'}</th>
+                          <th className="p-2.5 text-end">{isAr ? 'الكمية' : 'Qty'}</th>
+                          <th className="p-2.5 text-end">{isAr ? 'السعر' : 'Unit Price'}</th>
+                          <th className="p-2.5 text-end">{isAr ? 'الإجمالي' : 'Total'}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {quotation.items.map((it, idx) => (
+                          <tr key={idx} className="border-b border-slate-200">
+                            <td className="p-3">{it.productName}</td>
+                            <td className="p-3 text-end font-mono tabular-nums">{it.qty}</td>
+                            <td className="p-3 text-end font-mono tabular-nums">{formatCurrencyNumber(it.unitPrice, qtCur)}</td>
+                            <td className="p-3 text-end font-mono font-bold tabular-nums">{formatCurrencyNumber(it.total, qtCur)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
 
-              <div className="flex justify-end">
-                <div className="w-full sm:w-64 bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2 text-xs">
-                  <div className="flex justify-between">
-                    <span>{isAr ? 'المجموع الفرعي' : 'Subtotal'}</span>
-                    <span className="font-mono tabular-nums">{quotation.subtotal.toFixed(2)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>{isAr ? `الخصم (${quotation.discountPercent}%)` : `Discount (${quotation.discountPercent}%)`}</span>
-                    <span className="font-mono tabular-nums">-{quotation.discountAmount.toFixed(2)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>
-                      {(() => {
-                        const netQ = Math.max(0, quotation.subtotal - quotation.discountAmount);
-                        const qRate = netQ > 0 ? Number(((quotation.vat / netQ) * 100).toFixed(1)) : company.defaultSalesTaxRate ?? 15;
-                        return isAr ? `ضريبة ${qRate}%` : `VAT ${qRate}%`;
-                      })()}
-                    </span>
-                    <span className="font-mono tabular-nums">{quotation.vat.toFixed(2)}</span>
-                  </div>
-                  <div className="border-t border-slate-300 pt-2 flex justify-between font-extrabold text-sm text-[#0A3D2C]">
-                    <span>{isAr ? 'الإجمالي' : 'TOTAL'}</span>
-                    <span className="font-mono tabular-nums">{quotation.total.toFixed(2)} {company.currency}</span>
-                  </div>
-                </div>
-              </div>
+                    <div className="flex justify-end">
+                      <div className="w-full sm:w-64 bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2 text-xs">
+                        <div className="flex justify-between">
+                          <span>{isAr ? 'المجموع الفرعي' : 'Subtotal'}</span>
+                          <span className="font-mono tabular-nums">{formatCurrency(quotation.subtotal, qtCur, { isAr })}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>{isAr ? `الخصم (${quotation.discountPercent}%)` : `Discount (${quotation.discountPercent}%)`}</span>
+                          <span className="font-mono tabular-nums">-{formatCurrency(quotation.discountAmount, qtCur, { isAr })}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>
+                            {(() => {
+                              const netQ = Math.max(0, quotation.subtotal - quotation.discountAmount);
+                              const qRate = netQ > 0 ? Number(((quotation.vat / netQ) * 100).toFixed(1)) : company.defaultSalesTaxRate ?? 15;
+                              return isAr ? `ضريبة ${qRate}%` : `VAT ${qRate}%`;
+                            })()}
+                          </span>
+                          <span className="font-mono tabular-nums">{formatCurrency(quotation.vat, qtCur, { isAr })}</span>
+                        </div>
+                        <div className="border-t border-slate-300 pt-2 flex justify-between font-extrabold text-sm text-[#0A3D2C]">
+                          <span>{isAr ? 'الإجمالي' : 'TOTAL'}</span>
+                          <span className="font-mono tabular-nums">{formatCurrency(quotation.total, qtCur, { isAr })}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
               {quotation.notes && (
                 <p className="text-xs bg-slate-50 border border-slate-200 rounded-xl p-3">
                   {isAr ? 'شروط وملاحظات:' : 'Terms & Notes:'} {quotation.notes}
@@ -560,7 +568,7 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                     : 'PAYMENT AMOUNT'}
                 </p>
                 <p className="text-3xl font-extrabold text-[#0A3D2C] font-mono tabular-nums mt-1">
-                  {voucher.amount.toFixed(2)} {company.currency}
+                  {formatCurrency(voucher.amount, company.currency, { isAr })}
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-3 text-xs bg-slate-50 p-4 rounded-xl border border-slate-200">

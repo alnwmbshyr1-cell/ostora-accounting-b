@@ -3,6 +3,7 @@ import { Edit2, FileText, MapPin, Paperclip, Plus, Printer, Search, ShoppingBag,
 import { DataImportModal } from '../components/DataImportModal';
 import { strings } from '../data/translations';
 import { CurrencyCode, PartyStatus, PaymentMethodType, Supplier, SupplierType } from '../types/erp';
+import { formatCurrency } from '../utils/currencies';
 import { compressImageToBase64 } from '../utils/image';
 import { ScreenProps } from './types';
 
@@ -237,7 +238,7 @@ export const SuppliersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                     )}
                   </div>
                   <span className="font-mono font-extrabold text-sm text-red-600 tabular-nums shrink-0">
-                    {s.payable.toLocaleString()} {s.currency ?? cur}
+                    {formatCurrency(s.payable, s.currency ?? cur, { isAr })}
                   </span>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100 dark:border-[#1F332B]">
@@ -574,7 +575,7 @@ export const SuppliersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
               <div>
                 <h3 className="text-base font-extrabold">{t.supplierStatement}: {stmtSupplier.name}</h3>
                 <p className="text-xs text-slate-500 font-mono">
-                  {stmtSupplier.code ?? stmtSupplier.id} · {stmtSupplier.phone} · {t.supplierDebt}: {stmtSupplier.payable.toLocaleString()} {cur}
+                  {stmtSupplier.code ?? stmtSupplier.id} · {stmtSupplier.phone} · {t.supplierDebt}: {formatCurrency(stmtSupplier.payable, stmtSupplier.currency ?? cur, { isAr })}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -604,8 +605,8 @@ export const SuppliersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                         <td className="p-2 font-mono">{p.date.slice(0, 10)}</td>
                         <td className="p-2">{p.id} · {p.productName}</td>
                         <td className="p-2 text-end font-mono">{p.quantity}</td>
-                        <td className="p-2 text-end font-mono">{p.unitCost.toFixed(2)}</td>
-                        <td className="p-2 text-end font-mono font-bold">{p.total.toFixed(2)}</td>
+                        <td className="p-2 text-end font-mono">{formatCurrency(p.unitCost, cur, { isAr })}</td>
+                        <td className="p-2 text-end font-mono font-bold">{formatCurrency(p.total, cur, { isAr })}</td>
                       </tr>
                     ))}
                 </tbody>

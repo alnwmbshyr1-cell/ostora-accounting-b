@@ -24,6 +24,7 @@ import { strings } from '../data/translations';
 import { computeInvoiceTotalsHalala } from '../domain/accounting';
 import { fromHalalas, toHalalas } from '../domain/halala';
 import { Invoice, LineItem, PaymentMethodType, UnitOfMeasure } from '../types/erp';
+import { formatCurrency, formatCurrencyNumber } from '../utils/currencies';
 import { buildWhatsAppLink } from '../utils/messaging';
 import { buildZatcaTlvBase64 } from '../utils/zatca';
 import { ScreenProps } from './types';
@@ -325,7 +326,7 @@ export const PosScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice }) => {
         setCreditError(t.fiscalLockBlocked);
       } else if ('creditLimit' in res) {
         setCreditError(
-          `${t.creditLimitExceeded} (${t.creditLimit}: ${res.creditLimit?.toLocaleString()} ${cur} · ${t.exceededBy}: ${res.exceededBy?.toLocaleString()} ${cur})`,
+          `${t.creditLimitExceeded} (${t.creditLimit}: ${formatCurrency(res.creditLimit ?? 0, cur, { isAr })} · ${t.exceededBy}: ${formatCurrency(res.exceededBy ?? 0, cur, { isAr })})`,
         );
       }
       return;
@@ -365,13 +366,15 @@ export const PosScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice }) => {
     if (res.lowStockItems && res.lowStockItems.length > 0) {
       actions.notify(
         isAr
-          ? `تم البيع (${totals.total.toLocaleString()} ${cur}) · تنبيه مخزون منخفض: ${res.lowStockItems.join('، ')}`
+          ? `تم البيع (${formatCurrency(totals.total, cur, { isAr })}) · تنبيه مخزون منخفض: ${res.lowStockItems.join('، ')}`
           : `POS Sale done · Low stock alert: ${res.lowStockItems.join(', ')}`,
         4500,
       );
     } else {
       actions.notify(
-        isAr ? `تم إتمام البيع بنجاح (${totals.total.toLocaleString()} ${cur})` : `POS Sale completed (${totals.total.toLocaleString()} ${cur})`,
+        isAr
+          ? `تم إتمام البيع بنجاح (${formatCurrency(totals.total, cur, { isAr })})`
+          : `POS Sale completed (${formatCurrency(totals.total, cur, { isAr })})`,
       );
     }
 
@@ -442,7 +445,7 @@ export const PosScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice }) => {
               : 'Drawer Closed'}
           </span>
           <span className="text-slate-500 font-mono hidden sm:inline">
-            {isAr ? 'الافتتاحي:' : 'Opening:'} {(posShift?.openingCash ?? 0).toLocaleString()} {cur}
+            {isAr ? 'الافتتاحي:' : 'Opening:'} {formatCurrency(posShift?.openingCash ?? 0, cur, { isAr })}
           </span>
         </div>
 
@@ -500,7 +503,7 @@ export const PosScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice }) => {
             <option value="CASH">{isAr ? 'عميل نقدي سريع' : 'Walk-in Cash Customer'}</option>
             {state.customers.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.name} {c.debt > 0 ? `(${c.debt.toLocaleString()} ${cur})` : ''}
+                {c.name} {c.debt > 0 ? `(${formatCurrency(c.debt, cur, { isAr })})` : ''}
               </option>
             ))}
           </select>
@@ -624,7 +627,7 @@ export const PosScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice }) => {
                   </div>
                   <div className="flex items-center justify-between gap-1 pt-1 border-t border-slate-200/70 dark:border-[#1F332B]">
                     <span className="font-mono text-xs font-extrabold text-[#0A3D2C] dark:text-[#C9A227] tabular-nums">
-                      {p.price.toLocaleString()} {cur}
+                      {formatCurrency(p.price, cur, { isAr })}
                     </span>
                     <span
                       className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md tabular-nums ${
@@ -686,7 +689,7 @@ export const PosScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice }) => {
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-xs font-bold truncate flex-1">{item.productName}</span>
                       <span className="font-mono text-xs font-extrabold tabular-nums text-[#0A3D2C] dark:text-[#C9A227]">
-                        {item.total.toFixed(2)} {cur}
+                        {formatCurrency(item.total, cur, { isAr })}
                       </span>
                       <button
                         type="button"
@@ -819,26 +822,26 @@ export const PosScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice }) => {
                 <div className="rounded-2xl bg-[#0A3D2C]/5 dark:bg-[#0A120F] border border-[#0A3D2C]/20 dark:border-[#1F332B] p-3 space-y-1 text-xs">
                   <div className="flex justify-between">
                     <span className="text-slate-500">{t.subtotal}</span>
-                    <span className="font-mono font-bold tabular-nums">{totals.subtotal.toFixed(2)} {cur}</span>
+                    <span className="font-mono font-bold tabular-nums">{formatCurrency(totals.subtotal, cur, { isAr })}</span>
                   </div>
                   {totals.discountTotal > 0 && (
                     <div className="flex justify-between text-amber-600">
                       <span>{isAr ? `الخصم (${discPctNum}%)` : `Discount (${discPctNum}%)`}</span>
-                      <span className="font-mono font-bold tabular-nums">-{totals.discountTotal.toFixed(2)} {cur}</span>
+                      <span className="font-mono font-bold tabular-nums">-{formatCurrency(totals.discountTotal, cur, { isAr })}</span>
                     </div>
                   )}
                   <div className="flex justify-between">
                     <span className="text-slate-500">{t.vat} ({taxRate}%)</span>
-                    <span className="font-mono font-bold tabular-nums">{totals.vat.toFixed(2)} {cur}</span>
+                    <span className="font-mono font-bold tabular-nums">{formatCurrency(totals.vat, cur, { isAr })}</span>
                   </div>
                   <div className="flex justify-between text-base font-extrabold pt-1 border-t border-slate-200 dark:border-[#1F332B] text-[#0A3D2C] dark:text-[#C9A227]">
                     <span>{t.total}</span>
-                    <span className="font-mono tabular-nums">{totals.total.toFixed(2)} {cur}</span>
+                    <span className="font-mono tabular-nums">{formatCurrency(totals.total, cur, { isAr })}</span>
                   </div>
                   {changeDue > 0 && (
                     <div className="flex justify-between text-xs font-extrabold text-emerald-700 dark:text-emerald-400">
                       <span>{isAr ? 'الباقي للعميل' : 'Change Due'}</span>
-                      <span className="font-mono tabular-nums">{changeDue.toFixed(2)} {cur}</span>
+                      <span className="font-mono tabular-nums">{formatCurrency(changeDue, cur, { isAr })}</span>
                     </div>
                   )}
                 </div>
@@ -1001,12 +1004,12 @@ export const PosScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice }) => {
             </div>
             <div className="rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] p-3.5 space-y-1.5 text-xs font-mono">
               <div className="flex justify-between"><span>{isAr ? 'عدد فواتير POS:' : 'POS Invoices:'}</span><span className="font-bold">{shiftStats.count}</span></div>
-              <div className="flex justify-between"><span>{t.payCash}:</span><span className="font-bold text-emerald-700 dark:text-emerald-400">{shiftStats.cashSales.toFixed(2)} {cur}</span></div>
-              <div className="flex justify-between"><span>{isAr ? 'الشبكة والتحويل:' : 'Card & Transfer:'}</span><span className="font-bold">{shiftStats.cardSales.toFixed(2)} {cur}</span></div>
-              <div className="flex justify-between"><span>{t.payCredit}:</span><span className="font-bold text-amber-600">{shiftStats.creditSales.toFixed(2)} {cur}</span></div>
+              <div className="flex justify-between"><span>{t.payCash}:</span><span className="font-bold text-emerald-700 dark:text-emerald-400">{formatCurrency(shiftStats.cashSales, cur, { isAr })}</span></div>
+              <div className="flex justify-between"><span>{isAr ? 'الشبكة والتحويل:' : 'Card & Transfer:'}</span><span className="font-bold">{formatCurrency(shiftStats.cardSales, cur, { isAr })}</span></div>
+              <div className="flex justify-between"><span>{t.payCredit}:</span><span className="font-bold text-amber-600">{formatCurrency(shiftStats.creditSales, cur, { isAr })}</span></div>
               <div className="flex justify-between border-t border-slate-200 dark:border-[#1F332B] pt-1.5 text-sm font-extrabold">
                 <span>{isAr ? 'النقد المتوقع بالدرج:' : 'Expected Drawer Cash:'}</span>
-                <span className="text-[#0A3D2C] dark:text-[#C9A227]">{shiftStats.expectedCash.toFixed(2)} {cur}</span>
+                <span className="text-[#0A3D2C] dark:text-[#C9A227]">{formatCurrency(shiftStats.expectedCash, cur, { isAr })}</span>
               </div>
             </div>
             {!posShift?.isOpen ? (
@@ -1100,7 +1103,7 @@ export const PosScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice }) => {
               className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
             >
               {state.products.map((pr) => (
-                <option key={pr.id} value={pr.id}>{pr.name} ({pr.price} {cur})</option>
+                <option key={pr.id} value={pr.id}>{pr.name} ({formatCurrency(pr.price, cur, { isAr })})</option>
               ))}
             </select>
             <input
@@ -1193,20 +1196,20 @@ export const PosScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice }) => {
                 {(thermalInv.items ?? []).map((it, idx) => (
                   <div key={idx} className="flex justify-between gap-2 font-mono">
                     <span className="truncate">{it.productName} ×{it.qty}</span>
-                    <span>{it.total.toFixed(2)}</span>
+                    <span>{formatCurrencyNumber(it.total, thermalInv.currency ?? cur)}</span>
                   </div>
                 ))}
               </div>
 
               <div className="space-y-1 text-xs font-mono">
-                <div className="flex justify-between"><span>{t.subtotal}</span><span>{thermalInv.subtotal.toFixed(2)}</span></div>
+                <div className="flex justify-between"><span>{t.subtotal}</span><span>{formatCurrencyNumber(thermalInv.subtotal, thermalInv.currency ?? cur)}</span></div>
                 {(thermalInv.discountTotal ?? 0) > 0 && (
-                  <div className="flex justify-between"><span>{isAr ? 'الخصم' : 'Disc'}</span><span>-{(thermalInv.discountTotal ?? 0).toFixed(2)}</span></div>
+                  <div className="flex justify-between"><span>{isAr ? 'الخصم' : 'Disc'}</span><span>-{formatCurrencyNumber(thermalInv.discountTotal ?? 0, thermalInv.currency ?? cur)}</span></div>
                 )}
-                <div className="flex justify-between"><span>{t.vat15}</span><span>{thermalInv.vat.toFixed(2)}</span></div>
+                <div className="flex justify-between"><span>{t.vat15}</span><span>{formatCurrencyNumber(thermalInv.vat, thermalInv.currency ?? cur)}</span></div>
                 <div className="flex justify-between font-extrabold text-sm border-t border-dashed border-slate-400 pt-1">
                   <span>{t.total}</span>
-                  <span>{thermalInv.total.toFixed(2)} {cur}</span>
+                  <span>{formatCurrency(thermalInv.total, thermalInv.currency ?? cur, { isAr })}</span>
                 </div>
               </div>
 
@@ -1227,7 +1230,7 @@ export const PosScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice }) => {
                 <a
                   href={buildWhatsAppLink(
                     thermalInv.customerPhone,
-                    `${state.settings.companyName}\n${thermalInv.id}\n${t.total}: ${thermalInv.total.toFixed(2)} ${cur}`,
+                    `${state.settings.companyName}\n${thermalInv.id}\n${t.total}: ${formatCurrency(thermalInv.total, thermalInv.currency ?? cur, { isAr })}`,
                   )}
                   target="_blank"
                   rel="noreferrer"
