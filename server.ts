@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
+import { GoogleGenAI } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -56,6 +57,7 @@ function collectFlutterRawFiles(dir: string, baseDir: string): { path: string; d
 async function startServer() {
   const app = express();
   const port = 3000;
+  app.use(express.json({ limit: '1mb' }));
 
   app.get('/api/flutter-files', (_req, res) => {
     try {
@@ -103,11 +105,12 @@ async function startServer() {
   });
 
   const ALLOWED_FX = new Set([
-    'SAR', 'YER', 'EGP', 'AED', 'USD', 'EUR', 'GBP', 'KWD', 'QAR', 'BHD', 'OMR', 'JOD', 'TRY',
+    'SAR', 'YER', 'EGP', 'AED', 'USD', 'EUR', 'GBP', 'KWD', 'QAR', 'BHD', 'OMR', 'JOD', 'TRY', 'IQD', 'JPY',
   ]);
   const FALLBACK_SAR_RATES: Record<string, number> = {
     SAR: 1, AED: 1.0211, USD: 3.75, EUR: 3.96, GBP: 4.74, EGP: 0.076,
     YER: 0.015, KWD: 12.2, QAR: 1.03, BHD: 9.95, OMR: 9.74, JOD: 5.29, TRY: 0.109,
+    IQD: 0.00286, JPY: 0.025,
   };
 
   app.get('/api/exchange-rates', async (req, res) => {
@@ -160,6 +163,162 @@ async function startServer() {
       });
     } catch {
       res.json({ base, rates: buildFallback(), updatedAt: new Date().toISOString(), source: 'fallback' });
+    }
+  });
+
+  app.get('/api/client-meta', (req, res) => {
+    const fwd = req.headers['x-forwarded-for'];
+    const ip = Array.isArray(fwd)
+      ? fwd[0]
+      : typeof fwd === 'string' && fwd.length > 0
+      ? fwd.split(',')[0].trim()
+      : req.socket?.remoteAddress || req.ip || 'unknown';
+    res.json({
+      ip,
+      userAgent: String(req.headers['user-agent'] || '').slice(0, 180),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  app.post('/api/ai/analytics', async (req, res) => {
+    const rawKey = (process.env.GEMINI_API_KEY || '').trim();
+    if (!rawKey || rawKey === 'MY_GEMINI_API_KEY') {
+      res.json({
+        enabled: false,
+        message: 'AI غير مفعل',
+        forecast: null,
+        summaryAr: '',
+        summaryEn: '',
+        actionItems: [],
+      });
+      return;
+    }
+
+    try {
+      const payload = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+        currency?: string;
+        isArabic?: boolean;
+        last3MonthsRevenue?: { monthKey: string; total: number }[];
+        monthlyRevenue?: number;
+        monthlyExpenses?: number;
+        netProfit?: number;
+        overdueCustomersCount?: number;
+        lowStockCount?: number;
+      };
+
+      const ai = new GoogleGenAI({
+        apiKey: rawKey,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+      });
+
+      const prompt = `You are a senior ERP financial analyst. Given ONLY the real company metrics below, return strict JSON (no markdown) with:
+{
+  "forecast6m": [{"monthLabel": "M+1", "projectedRevenue": number}, ... 6 items],
+  "summaryAr": "concise 2-sentence Arabic executive insight",
+  "summaryEn": "concise 2-sentence English executive insight",
+  "actionItems": [{"titleAr": string, "titleEn": string, "priority": "high"|"medium"|"low"}]
+}
+Metrics: ${JSON.stringify({
+        currency: payload.currency || 'SAR',
+        last3MonthsRevenue: payload.last3MonthsRevenue || [],
+        monthlyRevenue: payload.monthlyRevenue || 0,
+        monthlyExpenses: payload.monthlyExpenses || 0,
+        netProfit: payload.netProfit || 0,
+        overdueCustomersCount: payload.overdueCustomersCount || 0,
+        lowStockCount: payload.lowStockCount || 0,
+      })}`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: prompt,
+      });
+
+      const text = (response.text || '').trim();
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
+      const forecast = Array.isArray(parsed.forecast6m) ? parsed.forecast6m.slice(0, 6) : null;
+
+      res.json({
+        enabled: true,
+        model: 'gemini-4-hydrogen',
+        forecast,
+        summaryAr: typeof parsed.summaryAr === 'string' ? parsed.summaryAr : '',
+        summaryEn: typeof parsed.summaryEn === 'string' ? parsed.summaryEn : '',
+        actionItems: Array.isArray(parsed.actionItems) ? parsed.actionItems.slice(0, 5) : [],
+      });
+    } catch (err) {
+      res.status(502).json({
+        enabled: false,
+        message: 'AI غير مفعل',
+        error: String(err),
+        forecast: null,
+        actionItems: [],
+      });
+    }
+  });
+
+  app.post('/api/subscriptions/checkout', async (req, res) => {
+    const stripeKey = (process.env.STRIPE_SECRET_KEY || '').trim();
+    const { planId, billingCycle, customerEmail } = (req.body || {}) as {
+      planId?: string;
+      billingCycle?: 'monthly' | 'yearly';
+      customerEmail?: string;
+    };
+
+    const planPricesHalalas: Record<string, { monthly: number; yearly: number; name: string }> = {
+      basic: { monthly: 9900, yearly: 95000, name: 'Ostora ERP Basic' },
+      pro: { monthly: 24900, yearly: 239000, name: 'Ostora ERP Pro' },
+      enterprise: { monthly: 59900, yearly: 575000, name: 'Ostora ERP Enterprise' },
+    };
+    const chosen = planPricesHalalas[String(planId || '')];
+    if (!chosen) {
+      res.status(400).json({ configured: Boolean(stripeKey), error: 'Invalid subscription plan' });
+      return;
+    }
+
+    if (!stripeKey || stripeKey.startsWith('MY_')) {
+      res.json({
+        configured: false,
+        messageAr: 'بوابة الدفع Stripe غير مفعلة في الخادم حالياً (STRIPE_SECRET_KEY غير مضبوط).',
+        messageEn: 'Stripe checkout is not configured on the server yet (STRIPE_SECRET_KEY missing).',
+      });
+      return;
+    }
+
+    try {
+      const origin = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+      const unitAmount = billingCycle === 'yearly' ? chosen.yearly : chosen.monthly;
+      const body = new URLSearchParams({
+        mode: 'payment',
+        success_url: `${origin}/?subscription=success&plan=${encodeURIComponent(String(planId))}`,
+        cancel_url: `${origin}/?subscription=cancelled`,
+        'line_items[0][price_data][currency]': 'sar',
+        'line_items[0][price_data][product_data][name]': chosen.name,
+        'line_items[0][price_data][unit_amount]': String(unitAmount),
+        'line_items[0][quantity]': '1',
+      });
+      if (customerEmail) {
+        body.set('customer_email', customerEmail);
+      }
+      const stripeRes = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${stripeKey}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: body.toString(),
+      });
+      const session = (await stripeRes.json()) as { url?: string; error?: { message?: string } };
+      if (!stripeRes.ok || !session.url) {
+        res.status(502).json({
+          configured: true,
+          error: session.error?.message || 'Stripe checkout session creation failed',
+        });
+        return;
+      }
+      res.json({ configured: true, checkoutUrl: session.url });
+    } catch (err) {
+      res.status(500).json({ configured: true, error: String(err) });
     }
   });
 

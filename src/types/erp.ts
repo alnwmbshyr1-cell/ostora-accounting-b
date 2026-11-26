@@ -29,7 +29,12 @@ export type CurrencyCode =
   | 'BHD'
   | 'OMR'
   | 'JOD'
-  | 'TRY';
+  | 'TRY'
+  | 'IQD'
+  | 'JPY';
+export type LanguageCode = 'ar' | 'en' | 'fr' | 'es' | 'tr' | 'ur';
+export type CountryCode = 'SA' | 'AE' | 'QA' | 'KW' | 'BH' | 'OM' | 'EG' | 'JO' | 'US' | 'GB' | 'EU';
+export type TaxTreatment = 'standard' | 'zero' | 'exempt';
 export type RoleId = 'owner' | 'accountant' | 'cashier' | 'salesman' | 'warehouse';
 export type ReturnType = 'sales' | 'purchase';
 export type ReturnReason = 'damaged' | 'wrong_item' | 'expired' | 'not_matching' | 'changed_mind' | 'other';
@@ -91,6 +96,7 @@ export interface LineItem {
   discountAmount?: number;
   taxRate?: number;
   taxAmount?: number;
+  taxTreatment?: TaxTreatment;
   expiryDate?: string;
   note?: string;
 }
@@ -142,6 +148,18 @@ export interface Invoice {
   customerSignature?: string;
   installments?: InstallmentItem[];
   createdByRole?: RoleId;
+  taxTreatment?: TaxTreatment;
+  costCenter?: string;
+  zatcaUuid?: string;
+  icv?: number;
+  pih?: string;
+  invoiceHash?: string;
+  ecdsaSignature?: string;
+  zatcaXml?: string;
+  voidReason?: string;
+  voidedAt?: string;
+  voidedBy?: string;
+  reversalJournalId?: string;
 }
 
 export interface ReturnRecord {
@@ -306,6 +324,12 @@ export interface PurchaseOrder {
   notes?: string;
   paidAmount?: number;
   supplierInvoiceBase64?: string;
+  taxTreatment?: TaxTreatment;
+  costCenter?: string;
+  voidReason?: string;
+  voidedAt?: string;
+  voidedBy?: string;
+  reversalJournalId?: string;
 }
 
 export interface Voucher {
@@ -322,10 +346,15 @@ export interface Voucher {
   partyType?: 'customer' | 'supplier' | 'employee';
   branchId?: string;
   bankId?: string;
+  costCenter?: string;
   chequeNumber?: string;
   chequeDueDate?: string;
   attachmentBase64?: string;
-  status?: 'draft' | 'approved';
+  status?: 'draft' | 'approved' | 'cancelled';
+  voidReason?: string;
+  voidedAt?: string;
+  voidedBy?: string;
+  reversalJournalId?: string;
 }
 
 export interface JournalLine {
@@ -404,7 +433,6 @@ export interface Employee {
   bankAccount?: string;
   workShift?: string;
   username?: string;
-  password?: string;
   photoBase64?: string;
   attachmentBase64?: string;
   idAttachmentBase64?: string;
@@ -414,7 +442,7 @@ export interface Employee {
 }
 
 export type ExpenseType = 'rent' | 'electricity' | 'salaries' | 'maintenance' | 'marketing' | 'other';
-export type ExpenseStatus = 'draft' | 'approved' | 'paid';
+export type ExpenseStatus = 'draft' | 'approved' | 'paid' | 'cancelled';
 
 export interface Expense {
   id: string;
@@ -425,6 +453,9 @@ export interface Expense {
   beneficiary?: string;
   costCenter?: string;
   amount: number;
+  taxRate?: number;
+  vatInput?: number;
+  taxTreatment?: TaxTreatment;
   currency?: CurrencyCode;
   exchangeRate?: number;
   baseAmount?: number;
@@ -532,7 +563,22 @@ export interface AuditLogEntry {
   id: string;
   actor: string;
   actorRole: RoleId;
-  action: 'create' | 'update' | 'delete' | 'pay' | 'receive' | 'transfer' | 'reconcile' | 'stocktake' | 'fiscal_lock' | 'backup' | 'print';
+  action:
+    | 'create'
+    | 'update'
+    | 'delete'
+    | 'void'
+    | 'pay'
+    | 'receive'
+    | 'transfer'
+    | 'reconcile'
+    | 'stocktake'
+    | 'fiscal_lock'
+    | 'year_close'
+    | 'depreciation'
+    | 'backup'
+    | 'print'
+    | 'auth';
   entity: string;
   entityId: string;
   summary: string;
@@ -540,7 +586,76 @@ export interface AuditLogEntry {
   oldValue?: string;
   newValue?: string;
   deviceInfo?: string;
+  ipAddress?: string;
   timestamp: string;
+}
+
+export interface CompanyProfile {
+  id: string;
+  workspaceId: string;
+  companyName: string;
+  countryCode?: CountryCode;
+  currency: CurrencyCode;
+  taxNumber?: string;
+}
+
+export interface WorkspaceMember {
+  uid: string;
+  email: string;
+  name: string;
+  role: RoleId;
+  permissions: RouteId[];
+  status: 'active' | 'invited' | 'disabled';
+  invitedAt?: string;
+  joinedAt?: string;
+}
+
+export interface WorkspaceInvite {
+  id: string;
+  workspaceId: string;
+  companyName: string;
+  email: string;
+  role: RoleId;
+  permissions: RouteId[];
+  invitedByUid: string;
+  invitedByEmail: string;
+  status: 'pending' | 'accepted' | 'revoked';
+  createdAt: string;
+}
+
+export interface FixedAsset {
+  id: string;
+  code?: string;
+  name: string;
+  category: string;
+  acquisitionDate: string;
+  cost: number;
+  salvageValue: number;
+  usefulLifeMonths: number;
+  accumulatedDepreciation: number;
+  depreciationMethod: 'straight_line';
+  branchId?: string;
+  costCenter?: string;
+  status: 'active' | 'disposed' | 'fully_depreciated';
+  lastDepreciationDate?: string;
+  notes?: string;
+}
+
+export interface LoanRecord {
+  id: string;
+  loanType: 'receivable' | 'payable' | 'cheque_deferred';
+  partyName: string;
+  principalAmount: number;
+  paidAmount: number;
+  remainingAmount: number;
+  interestRate?: number;
+  startDate: string;
+  dueDate: string;
+  bankId?: string;
+  chequeNumber?: string;
+  status: 'active' | 'settled' | 'overdue' | 'cancelled';
+  branchId?: string;
+  notes?: string;
 }
 
 export interface CompanySettings {
@@ -563,6 +678,12 @@ export interface CompanySettings {
   currencyNumberLocale?: 'auto' | 'en-US' | 'ar-SA';
   currencyDecimalMode?: 'auto' | '0' | '2' | '3';
   isArabic: boolean;
+  language?: LanguageCode;
+  countryCode?: CountryCode;
+  taxTreatmentDefault?: TaxTreatment;
+  companyId?: string;
+  memberUids?: string[];
+  companies?: CompanyProfile[];
   isDarkMode: boolean;
   monthlySalesGoal: number;
   defaultSalesTaxRate: number;
@@ -735,6 +856,8 @@ export interface PersistedState {
   chartOfAccounts: ChartAccount[];
   stockMovements: StockMovement[];
   stocktakes: StocktakeRecord[];
+  fixedAssets?: FixedAsset[];
+  loans?: LoanRecord[];
   auditLogs: AuditLogEntry[];
   supportTickets?: SupportTicket[];
 }

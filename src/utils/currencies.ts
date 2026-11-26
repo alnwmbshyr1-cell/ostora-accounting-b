@@ -30,6 +30,8 @@ export const SUPPORTED_CURRENCIES: CurrencyMeta[] = [
   { code: 'OMR', nameAr: 'ريال عماني', nameEn: 'Omani Rial', symbol: 'ر.ع', minDecimals: 3, maxDecimals: 3, locale: 'en-US', symbolPlacement: 'after', approxSarRate: 9.74 },
   { code: 'JOD', nameAr: 'دينار أردني', nameEn: 'Jordanian Dinar', symbol: 'د.أ', minDecimals: 3, maxDecimals: 3, locale: 'en-US', symbolPlacement: 'after', approxSarRate: 5.29 },
   { code: 'TRY', nameAr: 'ليرة تركية', nameEn: 'Turkish Lira', symbol: '₺', minDecimals: 2, maxDecimals: 2, locale: 'tr-TR', symbolPlacement: 'after', approxSarRate: 0.109 },
+  { code: 'IQD', nameAr: 'دينار عراقي', nameEn: 'Iraqi Dinar', symbol: 'د.ع', minDecimals: 3, maxDecimals: 3, locale: 'en-US', symbolPlacement: 'after', approxSarRate: 0.00286 },
+  { code: 'JPY', nameAr: 'ين ياباني', nameEn: 'Japanese Yen', symbol: '¥', minDecimals: 0, maxDecimals: 0, locale: 'ja-JP', symbolPlacement: 'before', approxSarRate: 0.025 },
 ];
 
 export const ALL_CURRENCY_CODES: CurrencyCode[] = SUPPORTED_CURRENCIES.map((c) => c.code);

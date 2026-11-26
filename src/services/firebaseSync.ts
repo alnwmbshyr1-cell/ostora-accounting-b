@@ -29,12 +29,16 @@ import {
   Branch,
   ChartAccount,
   CloudBackupMeta,
+  CountryCode,
   CurrencyCode,
   Customer,
   Employee,
   Expense,
+  FixedAsset,
   Invoice,
   JournalEntry,
+  LanguageCode,
+  LoanRecord,
   PermissionsMatrix,
   PersistedState,
   Product,
@@ -49,8 +53,11 @@ import {
   SubscriptionMeta,
   Supplier,
   SupportTicket,
+  TaxTreatment,
   Voucher,
   Warehouse,
+  WorkspaceInvite,
+  WorkspaceMember,
 } from '../types/erp';
 import { handleFirestoreError, OperationType } from '../utils/firestoreErrors';
 
@@ -74,6 +81,8 @@ const SUBCOLLECTIONS = [
   'chartOfAccounts',
   'stockMovements',
   'stocktakes',
+  'fixedAssets',
+  'loans',
   'auditLogs',
   'supportTickets',
 ] as const;
@@ -157,6 +166,7 @@ function sanitizeLineItems(items: Invoice['items'] | undefined) {
     if (typeof it.discountAmount === 'number' && Number.isFinite(it.discountAmount)) row.discountAmount = clampNum(it.discountAmount, 0);
     if (typeof it.taxRate === 'number' && Number.isFinite(it.taxRate)) row.taxRate = clampNum(it.taxRate, 0, 100);
     if (typeof it.taxAmount === 'number' && Number.isFinite(it.taxAmount)) row.taxAmount = clampNum(it.taxAmount, 0);
+    if (it.taxTreatment && ['standard', 'zero', 'exempt'].includes(it.taxTreatment)) row.taxTreatment = it.taxTreatment;
     if (it.expiryDate) row.expiryDate = clampString(it.expiryDate, 32);
     if (it.note) row.note = clampString(it.note, 200);
     return row;
@@ -220,6 +230,30 @@ function sanitizeWorkspaceFields(uid: string, state: PersistedState) {
   }
   if (state.settings.currencyDecimalMode && ['auto', '0', '2', '3'].includes(state.settings.currencyDecimalMode)) {
     payload.currencyDecimalMode = state.settings.currencyDecimalMode;
+  }
+  if (state.settings.language && ['ar', 'en', 'fr', 'es', 'tr', 'ur'].includes(state.settings.language)) {
+    payload.language = state.settings.language;
+  }
+  if (
+    state.settings.countryCode &&
+    ['SA', 'AE', 'QA', 'KW', 'BH', 'OM', 'EG', 'JO', 'US', 'GB', 'EU'].includes(state.settings.countryCode)
+  ) {
+    payload.countryCode = state.settings.countryCode;
+  }
+  if (state.settings.taxTreatmentDefault && ['standard', 'zero', 'exempt'].includes(state.settings.taxTreatmentDefault)) {
+    payload.taxTreatmentDefault = state.settings.taxTreatmentDefault;
+  }
+  if (state.settings.companyId) {
+    payload.companyId = clampString(state.settings.companyId, 128);
+  }
+  if (Array.isArray(state.settings.memberUids)) {
+    payload.memberUids = Array.from(
+      new Set(
+        state.settings.memberUids
+          .filter((x): x is string => typeof x === 'string' && ID_REGEX.test(x))
+          .slice(0, 100),
+      ),
+    );
   }
   if (state.settings.lastBackupDate) {
     payload.lastBackupDate = clampString(state.settings.lastBackupDate, 64);
@@ -352,6 +386,20 @@ function sanitizeEntityForWrite(
       if (inv.createdByRole && ['owner', 'accountant', 'cashier', 'salesman', 'warehouse'].includes(inv.createdByRole)) {
         out.createdByRole = inv.createdByRole;
       }
+      if (inv.taxTreatment && ['standard', 'zero', 'exempt'].includes(inv.taxTreatment)) {
+        out.taxTreatment = inv.taxTreatment;
+      }
+      if (inv.costCenter) out.costCenter = clampString(inv.costCenter, 120);
+      if (inv.zatcaUuid) out.zatcaUuid = clampString(inv.zatcaUuid, 80);
+      if (typeof inv.icv === 'number' && Number.isFinite(inv.icv)) out.icv = clampNum(inv.icv, 0);
+      if (inv.pih) out.pih = clampString(inv.pih, 256);
+      if (inv.invoiceHash) out.invoiceHash = clampString(inv.invoiceHash, 256);
+      if (inv.ecdsaSignature) out.ecdsaSignature = clampString(inv.ecdsaSignature, 512);
+      if (inv.zatcaXml) out.zatcaXml = clampString(inv.zatcaXml, 120000);
+      if (inv.voidReason) out.voidReason = clampString(inv.voidReason, 400);
+      if (inv.voidedAt) out.voidedAt = clampString(inv.voidedAt, 64);
+      if (inv.voidedBy) out.voidedBy = clampString(inv.voidedBy, 120);
+      if (inv.reversalJournalId) out.reversalJournalId = clampString(inv.reversalJournalId, 128);
       return out;
     }
     case 'returns': {
@@ -561,6 +609,12 @@ function sanitizeEntityForWrite(
       if (po.notes) out.notes = clampString(po.notes, 500);
       if (typeof po.paidAmount === 'number') out.paidAmount = clampNum(po.paidAmount, 0);
       if (po.supplierInvoiceBase64 && po.supplierInvoiceBase64.length <= 250000) out.supplierInvoiceBase64 = po.supplierInvoiceBase64;
+      if (po.taxTreatment && ['standard', 'zero', 'exempt'].includes(po.taxTreatment)) out.taxTreatment = po.taxTreatment;
+      if (po.costCenter) out.costCenter = clampString(po.costCenter, 120);
+      if (po.voidReason) out.voidReason = clampString(po.voidReason, 400);
+      if (po.voidedAt) out.voidedAt = clampString(po.voidedAt, 64);
+      if (po.voidedBy) out.voidedBy = clampString(po.voidedBy, 120);
+      if (po.reversalJournalId) out.reversalJournalId = clampString(po.reversalJournalId, 128);
       return out;
     }
     case 'vouchers': {
@@ -581,10 +635,15 @@ function sanitizeEntityForWrite(
       if (v.partyType && ['customer', 'supplier', 'employee'].includes(v.partyType)) out.partyType = v.partyType;
       if (v.branchId) out.branchId = clampString(v.branchId, 128);
       if (v.bankId) out.bankId = clampString(v.bankId, 128);
+      if (v.costCenter) out.costCenter = clampString(v.costCenter, 120);
       if (v.chequeNumber) out.chequeNumber = clampString(v.chequeNumber, 64);
       if (v.chequeDueDate) out.chequeDueDate = clampString(v.chequeDueDate, 32);
       if (v.attachmentBase64 && v.attachmentBase64.length <= 250000) out.attachmentBase64 = v.attachmentBase64;
-      if (v.status && ['draft', 'approved'].includes(v.status)) out.status = v.status;
+      if (v.status && ['draft', 'approved', 'cancelled'].includes(v.status)) out.status = v.status;
+      if (v.voidReason) out.voidReason = clampString(v.voidReason, 400);
+      if (v.voidedAt) out.voidedAt = clampString(v.voidedAt, 64);
+      if (v.voidedBy) out.voidedBy = clampString(v.voidedBy, 120);
+      if (v.reversalJournalId) out.reversalJournalId = clampString(v.reversalJournalId, 128);
       return out;
     }
     case 'journals': {
@@ -682,7 +741,6 @@ function sanitizeEntityForWrite(
       if (e.bankAccount) out.bankAccount = clampString(e.bankAccount, 80);
       if (e.workShift) out.workShift = clampString(e.workShift, 80);
       if (e.username) out.username = clampString(e.username, 64);
-      if (e.password) out.password = clampString(e.password, 128);
       if (e.photoBase64 && e.photoBase64.length <= 250000) out.photoBase64 = e.photoBase64;
       if (e.attachmentBase64 && e.attachmentBase64.length <= 250000) out.attachmentBase64 = e.attachmentBase64;
       if (e.idAttachmentBase64 && e.idAttachmentBase64.length <= 250000) out.idAttachmentBase64 = e.idAttachmentBase64;
@@ -710,13 +768,16 @@ function sanitizeEntityForWrite(
       }
       if (ex.beneficiary) out.beneficiary = clampString(ex.beneficiary, 160);
       if (ex.costCenter) out.costCenter = clampString(ex.costCenter, 120);
+      if (typeof ex.taxRate === 'number' && Number.isFinite(ex.taxRate)) out.taxRate = clampNum(ex.taxRate, 0, 100);
+      if (typeof ex.vatInput === 'number' && Number.isFinite(ex.vatInput)) out.vatInput = clampNum(ex.vatInput, 0);
+      if (ex.taxTreatment && ['standard', 'zero', 'exempt'].includes(ex.taxTreatment)) out.taxTreatment = ex.taxTreatment;
       if (ex.currency) out.currency = sanitizeCurrencyCode(ex.currency, baseCurrency);
       if (typeof ex.exchangeRate === 'number' && Number.isFinite(ex.exchangeRate) && ex.exchangeRate > 0) {
         out.exchangeRate = ex.exchangeRate;
       }
       if (typeof ex.baseAmount === 'number' && Number.isFinite(ex.baseAmount)) out.baseAmount = clampNum(ex.baseAmount, 0);
       if (ex.paymentMethod && validPayMethods.includes(ex.paymentMethod)) out.paymentMethod = ex.paymentMethod;
-      if (ex.status && ['draft', 'approved', 'paid'].includes(ex.status)) out.status = ex.status;
+      if (ex.status && ['draft', 'approved', 'paid', 'cancelled'].includes(ex.status)) out.status = ex.status;
       if (ex.branchId) out.branchId = clampString(ex.branchId, 128);
       if (ex.attachmentBase64 && ex.attachmentBase64.length <= 250000) out.attachmentBase64 = ex.attachmentBase64;
       if (ex.notes) out.notes = clampString(ex.notes, 500);
@@ -905,6 +966,49 @@ function sanitizeEntityForWrite(
       if (st.reason) out.reason = clampString(st.reason, 200);
       return out;
     }
+    case 'fixedAssets': {
+      const fa = item as FixedAsset;
+      const out: Record<string, unknown> = {
+        id: sanitizeId(fa.id, 'FA'),
+        ownerId: uid,
+        name: clampNonEmpty(fa.name, 160, 'Asset'),
+        category: clampString(fa.category || 'equipment', 80),
+        acquisitionDate: clampNonEmpty(fa.acquisitionDate, 32, new Date().toISOString().slice(0, 10)),
+        cost: clampNum(fa.cost, 0),
+        salvageValue: clampNum(fa.salvageValue ?? 0, 0),
+        usefulLifeMonths: clampNum(fa.usefulLifeMonths || 60, 1, 1200),
+        accumulatedDepreciation: clampNum(fa.accumulatedDepreciation ?? 0, 0),
+        depreciationMethod: 'straight_line',
+        status: ['active', 'disposed', 'fully_depreciated'].includes(fa.status) ? fa.status : 'active',
+      };
+      if (fa.code) out.code = clampString(fa.code, 64);
+      if (fa.branchId) out.branchId = clampString(fa.branchId, 128);
+      if (fa.costCenter) out.costCenter = clampString(fa.costCenter, 120);
+      if (fa.lastDepreciationDate) out.lastDepreciationDate = clampString(fa.lastDepreciationDate, 32);
+      if (fa.notes) out.notes = clampString(fa.notes, 400);
+      return out;
+    }
+    case 'loans': {
+      const ln = item as LoanRecord;
+      const out: Record<string, unknown> = {
+        id: sanitizeId(ln.id, 'LN'),
+        ownerId: uid,
+        loanType: ['receivable', 'payable', 'cheque_deferred'].includes(ln.loanType) ? ln.loanType : 'payable',
+        partyName: clampNonEmpty(ln.partyName, 160, 'Party'),
+        principalAmount: clampNum(ln.principalAmount, 0),
+        paidAmount: clampNum(ln.paidAmount ?? 0, 0),
+        remainingAmount: clampNum(ln.remainingAmount ?? Math.max(0, (ln.principalAmount ?? 0) - (ln.paidAmount ?? 0)), 0),
+        startDate: clampNonEmpty(ln.startDate, 32, new Date().toISOString().slice(0, 10)),
+        dueDate: clampNonEmpty(ln.dueDate, 32, new Date().toISOString().slice(0, 10)),
+        status: ['active', 'settled', 'overdue', 'cancelled'].includes(ln.status) ? ln.status : 'active',
+      };
+      if (typeof ln.interestRate === 'number' && Number.isFinite(ln.interestRate)) out.interestRate = clampNum(ln.interestRate, 0, 100);
+      if (ln.bankId) out.bankId = clampString(ln.bankId, 128);
+      if (ln.chequeNumber) out.chequeNumber = clampString(ln.chequeNumber, 64);
+      if (ln.branchId) out.branchId = clampString(ln.branchId, 128);
+      if (ln.notes) out.notes = clampString(ln.notes, 400);
+      return out;
+    }
     case 'auditLogs': {
       const log = item as AuditLogEntry;
       const out: Record<string, unknown> = {
@@ -914,7 +1018,23 @@ function sanitizeEntityForWrite(
         actorRole: ['owner', 'accountant', 'cashier', 'salesman', 'warehouse'].includes(log.actorRole)
           ? log.actorRole
           : 'owner',
-        action: ['create', 'update', 'delete', 'pay', 'receive', 'transfer', 'reconcile', 'stocktake', 'fiscal_lock', 'backup', 'print'].includes(log.action)
+        action: [
+          'create',
+          'update',
+          'delete',
+          'void',
+          'pay',
+          'receive',
+          'transfer',
+          'reconcile',
+          'stocktake',
+          'fiscal_lock',
+          'year_close',
+          'depreciation',
+          'backup',
+          'print',
+          'auth',
+        ].includes(log.action)
           ? log.action
           : 'update',
         entity: clampNonEmpty(log.entity, 80, 'Record'),
@@ -926,6 +1046,7 @@ function sanitizeEntityForWrite(
       if (log.oldValue) out.oldValue = clampString(log.oldValue, 300);
       if (log.newValue) out.newValue = clampString(log.newValue, 300);
       if (log.deviceInfo) out.deviceInfo = clampString(log.deviceInfo, 120);
+      if (log.ipAddress) out.ipAddress = clampString(log.ipAddress, 64);
       return out;
     }
     case 'supportTickets': {
@@ -1059,6 +1180,11 @@ export async function loadOrSeedWorkspace(
         localState.settings.currencyDecimalMode ??
         'auto',
       isArabic: typeof wsData.isArabic === 'boolean' ? wsData.isArabic : localState.settings.isArabic,
+      language: (wsData.language as LanguageCode | undefined) ?? localState.settings.language ?? (wsData.isArabic === false ? 'en' : 'ar'),
+      countryCode: (wsData.countryCode as CountryCode | undefined) ?? localState.settings.countryCode ?? 'SA',
+      taxTreatmentDefault: (wsData.taxTreatmentDefault as TaxTreatment | undefined) ?? localState.settings.taxTreatmentDefault ?? 'standard',
+      companyId: (wsData.companyId as string | undefined) ?? localState.settings.companyId,
+      memberUids: (wsData.memberUids as string[] | undefined) ?? localState.settings.memberUids,
       isDarkMode: typeof wsData.isDarkMode === 'boolean' ? wsData.isDarkMode : localState.settings.isDarkMode,
       monthlySalesGoal: Number(wsData.monthlySalesGoal ?? localState.settings.monthlySalesGoal),
       defaultSalesTaxRate: Number(wsData.defaultSalesTaxRate ?? localState.settings.defaultSalesTaxRate),
@@ -1155,6 +1281,7 @@ function stripFirestoreMeta<T extends Record<string, unknown>>(docData: T): T {
   delete copy.ownerId;
   delete copy.createdAt;
   delete copy.updatedAt;
+  delete copy.password;
   if (typeof copy.submittedAt === 'string') {
     copy.createdAt = copy.submittedAt;
     delete copy.submittedAt;
@@ -1206,6 +1333,11 @@ export function subscribeWorkspace(
             currencyDecimalMode:
               (wsData.currencyDecimalMode as PersistedState['settings']['currencyDecimalMode']) ?? 'auto',
             isArabic: Boolean(wsData.isArabic),
+            language: (wsData.language as LanguageCode | undefined) ?? (wsData.isArabic === false ? 'en' : 'ar'),
+            countryCode: (wsData.countryCode as CountryCode | undefined) ?? 'SA',
+            taxTreatmentDefault: (wsData.taxTreatmentDefault as TaxTreatment | undefined) ?? 'standard',
+            companyId: wsData.companyId as string | undefined,
+            memberUids: wsData.memberUids as string[] | undefined,
             isDarkMode: Boolean(wsData.isDarkMode),
             monthlySalesGoal: Number(wsData.monthlySalesGoal ?? 120000),
             defaultSalesTaxRate: Number(wsData.defaultSalesTaxRate ?? 15),
@@ -1274,10 +1406,18 @@ function stableEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function isTerminalStateLocked(sub: SubcollectionName, prevItem: Record<string, unknown>, isUserAdmin: boolean): boolean {
+function isTerminalStateLocked(
+  sub: SubcollectionName,
+  prevItem: Record<string, unknown>,
+  nextItem: Record<string, unknown>,
+  isUserAdmin: boolean,
+): boolean {
   if (isUserAdmin) return false;
+  if (prevItem.status === 'cancelled') return true;
+  if (nextItem.status === 'cancelled') return false;
   if (sub === 'invoices' && prevItem.status === 'paid') return true;
   if (sub === 'purchaseOrders' && prevItem.status === 'received') return true;
+  if (sub === 'vouchers' && prevItem.status === 'approved') return true;
   if (sub === 'quotations' && (prevItem.status === 'accepted' || prevItem.status === 'rejected')) return true;
   return false;
 }
@@ -1364,7 +1504,7 @@ export async function syncStateDiffToFirestore(
           prev.settings.currency,
         );
         if (!stableEqual(prevSanitized, nextSanitized)) {
-          if (isTerminalStateLocked(sub, prevSanitized, isUserAdmin)) {
+          if (isTerminalStateLocked(sub, prevSanitized, nextSanitized, isUserAdmin)) {
             continue;
           }
           const patch: Record<string, unknown> = { ...nextSanitized };
@@ -1504,6 +1644,139 @@ export async function fetchCloudBackupSnapshotJson(uid: string, backupId: string
     const snap = await getDoc(doc(db, 'workspaces', uid, 'cloudBackups', sanitizeId(backupId, 'BKP')));
     if (!snap.exists()) return null;
     return String(snap.data().payloadJson ?? '');
+  } catch {
+    return null;
+  }
+}
+
+export async function createWorkspaceInvite(params: {
+  workspaceId: string;
+  companyName: string;
+  email: string;
+  role: RoleId;
+  permissions: RouteId[];
+  invitedByUid: string;
+  invitedByEmail: string;
+}): Promise<WorkspaceInvite> {
+  const inviteId = sanitizeId(`INV-${Date.now().toString(36)}`, 'INV');
+  const invite: WorkspaceInvite = {
+    id: inviteId,
+    workspaceId: params.workspaceId,
+    companyName: clampNonEmpty(params.companyName, 160, 'Workspace'),
+    email: params.email.trim().toLowerCase(),
+    role: params.role,
+    permissions: params.permissions.slice(0, 40),
+    invitedByUid: params.invitedByUid,
+    invitedByEmail: params.invitedByEmail.trim().toLowerCase(),
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+  };
+  await setDoc(doc(db, 'workspaceInvites', inviteId), {
+    ...invite,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  return invite;
+}
+
+export async function listPendingInvitesForEmail(email: string): Promise<WorkspaceInvite[]> {
+  try {
+    const normalized = email.trim().toLowerCase();
+    const q = query(collection(db, 'workspaceInvites'), where('email', '==', normalized));
+    const snap = await getDocs(q);
+    return snap.docs
+      .map((d) => {
+        const data = d.data();
+        return {
+          id: String(data.id ?? d.id),
+          workspaceId: String(data.workspaceId ?? ''),
+          companyName: String(data.companyName ?? ''),
+          email: String(data.email ?? ''),
+          role: (data.role as RoleId) ?? 'accountant',
+          permissions: Array.isArray(data.permissions) ? (data.permissions as RouteId[]) : [],
+          invitedByUid: String(data.invitedByUid ?? ''),
+          invitedByEmail: String(data.invitedByEmail ?? ''),
+          status: (data.status as WorkspaceInvite['status']) ?? 'pending',
+          createdAt: '',
+        };
+      })
+      .filter((inv) => inv.status === 'pending');
+  } catch {
+    return [];
+  }
+}
+
+export async function listOutgoingWorkspaceInvites(uid: string): Promise<WorkspaceInvite[]> {
+  try {
+    const q = query(collection(db, 'workspaceInvites'), where('invitedByUid', '==', uid));
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => {
+      const data = d.data();
+      return {
+        id: String(data.id ?? d.id),
+        workspaceId: String(data.workspaceId ?? ''),
+        companyName: String(data.companyName ?? ''),
+        email: String(data.email ?? ''),
+        role: (data.role as RoleId) ?? 'accountant',
+        permissions: Array.isArray(data.permissions) ? (data.permissions as RouteId[]) : [],
+        invitedByUid: String(data.invitedByUid ?? ''),
+        invitedByEmail: String(data.invitedByEmail ?? ''),
+        status: (data.status as WorkspaceInvite['status']) ?? 'pending',
+        createdAt: '',
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function acceptWorkspaceInvite(invite: WorkspaceInvite, user: User): Promise<void> {
+  if (!user.emailVerified) return;
+  const nowIso = new Date().toISOString();
+  await updateDoc(doc(db, 'workspaceInvites', invite.id), {
+    status: 'accepted',
+    updatedAt: serverTimestamp(),
+  });
+  const memberPayload: WorkspaceMember & { createdAt: unknown; updatedAt: unknown } = {
+    uid: user.uid,
+    email: (user.email ?? invite.email).toLowerCase(),
+    name: clampNonEmpty(user.displayName || user.email?.split('@')[0], 160, 'Member'),
+    role: invite.role,
+    permissions: invite.permissions,
+    status: 'active',
+    invitedAt: invite.createdAt || nowIso,
+    joinedAt: nowIso,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  await setDoc(doc(db, 'workspaces', invite.workspaceId, 'members', user.uid), memberPayload);
+}
+
+export async function revokeWorkspaceInvite(inviteId: string): Promise<void> {
+  await updateDoc(doc(db, 'workspaceInvites', inviteId), {
+    status: 'revoked',
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function resolveWorkspaceMemberRole(
+  workspaceId: string,
+  userUid: string,
+): Promise<WorkspaceMember | null> {
+  try {
+    const snap = await getDoc(doc(db, 'workspaces', workspaceId, 'members', userUid));
+    if (!snap.exists()) return null;
+    const d = snap.data();
+    return {
+      uid: String(d.uid ?? userUid),
+      email: String(d.email ?? ''),
+      name: String(d.name ?? ''),
+      role: (d.role as RoleId) ?? 'accountant',
+      permissions: Array.isArray(d.permissions) ? (d.permissions as RouteId[]) : [],
+      status: (d.status as WorkspaceMember['status']) ?? 'active',
+      invitedAt: typeof d.invitedAt === 'string' ? d.invitedAt : undefined,
+      joinedAt: typeof d.joinedAt === 'string' ? d.joinedAt : undefined,
+    };
   } catch {
     return null;
   }

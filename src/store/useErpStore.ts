@@ -2,12 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { waitForPendingWrites } from 'firebase/firestore';
 import { ALL_ROUTES, DEFAULT_PERMISSIONS_MATRIX } from '../constants/permissions';
 import { useFirebase } from '../contexts/FirebaseContext';
-import { strings } from '../data/translations';
+import { getLocaleStrings, isRtlLanguage, strings } from '../data/translations';
 import { db } from '../firebase';
 import {
+  buildDepreciationJournal,
   buildDoubleEntryForInvoice,
+  buildVoidReversalJournal,
   computeBankReconciliationDiff,
   computeInvoiceTotalsHalala,
+  computeStatementsFromJournals,
+  computeUnifiedNetProfit,
   DEFAULT_CHART_OF_ACCOUNTS,
   getExpenseBaseHalalas,
   isDateFiscalLocked,
@@ -17,12 +21,22 @@ import {
   mulFxHalalas,
   toHalalas,
 } from '../domain/halala';
-import { dispatchSmartNotification } from '../services/firebaseExtras';
 import {
+  dispatchSmartNotification,
+  migrateLegacyAssetsToStorage,
+  registerFcmForWorkspace,
+} from '../services/firebaseExtras';
+import {
+  acceptWorkspaceInvite,
+  createWorkspaceInvite,
   fetchCloudBackupSnapshotJson,
   listCloudBackupSnapshots,
+  listOutgoingWorkspaceInvites,
+  listPendingInvitesForEmail,
   loadOrSeedWorkspace,
   pushFullStateToCloud,
+  resolveWorkspaceMemberRole,
+  revokeWorkspaceInvite,
   saveCloudBackupSnapshot,
   subscribeWorkspace,
   syncStateDiffToFirestore,
@@ -45,6 +59,8 @@ import {
   formatCurrency,
   setCurrencyDisplayPreferences,
 } from '../utils/currencies';
+import { getCountryTaxRegime, resolveEffectiveTaxRate } from '../utils/taxRegimes';
+import { buildZatcaPhase2Package, buildZatcaUblXml, generateZatcaUuid } from '../utils/zatca';
 import {
   ArchivedDocument,
   AuditLogEntry,
@@ -52,13 +68,18 @@ import {
   Branch,
   ChartAccount,
   CloudBackupMeta,
+  CompanyProfile,
   CompanySettings,
+  CountryCode,
   CurrencyCode,
   Customer,
   Employee,
   Expense,
+  FixedAsset,
   Invoice,
   JournalEntry,
+  LanguageCode,
+  LoanRecord,
   PermissionsMatrix,
   PersistedState,
   PosHeldCart,
@@ -79,6 +100,7 @@ import {
   SupportTicket,
   Voucher,
   Warehouse,
+  WorkspaceInvite,
 } from '../types/erp';
 
 export type { PersistedState } from '../types/erp';
@@ -137,6 +159,8 @@ function getCompactDeviceInfo(): string {
   return `${platform} · ${browser}`;
 }
 
+let cachedClientIp: string | undefined;
+
 function makeAuditEntry(
   p: PersistedState,
   actorName: string,
@@ -149,6 +173,7 @@ function makeAuditEntry(
     oldValue?: string;
     newValue?: string;
     deviceInfo?: string;
+    ipAddress?: string;
   },
 ): AuditLogEntry {
   return {
@@ -163,6 +188,7 @@ function makeAuditEntry(
     oldValue: opts?.oldValue,
     newValue: opts?.newValue,
     deviceInfo: opts?.deviceInfo ?? getCompactDeviceInfo(),
+    ipAddress: opts?.ipAddress ?? cachedClientIp,
     timestamp: new Date().toISOString(),
   };
 }
@@ -408,6 +434,20 @@ function createDemoState(prevSettings?: CompanySettings): PersistedState {
       currencyNumberLocale: 'auto',
       currencyDecimalMode: 'auto',
       isArabic: true,
+      language: 'ar',
+      countryCode: 'SA',
+      taxTreatmentDefault: 'standard',
+      companyId: 'COMP-MAIN',
+      companies: [
+        {
+          id: 'COMP-MAIN',
+          workspaceId: 'MAIN',
+          companyName: 'مؤسسة الأسطورة للتجارة والمقاولات',
+          countryCode: 'SA',
+          currency: 'SAR',
+          taxNumber: '310482910400003',
+        },
+      ],
       isDarkMode: false,
       monthlySalesGoal: 120000,
       defaultSalesTaxRate: 15,
@@ -806,6 +846,8 @@ function createDemoState(prevSettings?: CompanySettings): PersistedState {
       { id: 'alahli', accountType: 'bank', bankName: 'البنك الأهلي السعودي', nameAr: 'البنك الأهلي السعودي', nameEn: 'AlAhli (SNB)', accountNumber: 'SA19 1000 0011 8920 3310', iban: 'SA1910000011892033105678', branchId: 'BR-2', currency: 'SAR', openingBalance: 73100, balance: 68900, custodianName: 'سارة القحطاني', status: 'active' },
       { id: 'cash', accountType: 'cash', bankName: 'الخزينة الرئيسية', nameAr: 'الصندوق النقدي', nameEn: 'Main Cash Box', accountNumber: 'CASH-01', branchId: 'BR-1', currency: 'SAR', openingBalance: 20900, balance: 19450, custodianName: 'فيصل الشمري', status: 'active' },
     ],
+    fixedAssets: [],
+    loans: [],
     supportTickets: [],
   };
 }
@@ -847,15 +889,32 @@ function hydrateState(rawObj: Partial<PersistedState>): PersistedState {
       ...p,
       barcode: p.barcode || generateEan13(),
     })),
-    employees: (rawObj.employees ?? demo.employees).map((e) => ({
-      ...e,
-      roleTitle: e.roleTitle ?? (e as unknown as { role?: string }).role ?? 'Staff',
-      role: (['owner', 'accountant', 'cashier', 'salesman', 'warehouse'].includes(e.role) ? e.role : 'accountant') as RoleId,
-      permissions: e.permissions ?? DEFAULT_PERMISSIONS_MATRIX.accountant,
-    })),
+    employees: (rawObj.employees ?? demo.employees).map((e) => {
+      const { password: _removedPassword, ...safeEmployee } = e as Employee & { password?: string };
+      return {
+        ...safeEmployee,
+        roleTitle: safeEmployee.roleTitle ?? (safeEmployee as unknown as { role?: string }).role ?? 'Staff',
+        role: (['owner', 'accountant', 'cashier', 'salesman', 'warehouse'].includes(safeEmployee.role)
+          ? safeEmployee.role
+          : 'accountant') as RoleId,
+        permissions: safeEmployee.permissions ?? DEFAULT_PERMISSIONS_MATRIX.accountant,
+      };
+    }),
+    fixedAssets: rawObj.fixedAssets ?? demo.fixedAssets ?? [],
+    loans: rawObj.loans ?? demo.loans ?? [],
     settings: {
       ...demo.settings,
       ...(rawObj.settings ?? {}),
+      language:
+        rawObj.settings?.language ??
+        ((rawObj.settings?.isArabic ?? demo.settings.isArabic) ? 'ar' : 'en'),
+      countryCode: rawObj.settings?.countryCode ?? demo.settings.countryCode ?? 'SA',
+      taxTreatmentDefault: rawObj.settings?.taxTreatmentDefault ?? demo.settings.taxTreatmentDefault ?? 'standard',
+      companyId: rawObj.settings?.companyId ?? demo.settings.companyId ?? 'COMP-MAIN',
+      companies:
+        rawObj.settings?.companies && rawObj.settings.companies.length > 0
+          ? rawObj.settings.companies
+          : demo.settings.companies,
       enabledCurrencies:
         rawObj.settings?.enabledCurrencies && rawObj.settings.enabledCurrencies.length > 0
           ? Array.from(
@@ -930,9 +989,21 @@ export function useErpStore() {
   const [toastMsg, setToastMsg] = useState<string>('');
   const [idbSnapshots, setIdbSnapshots] = useState<DailyBackupMeta[]>([]);
   const [cloudBackups, setCloudBackups] = useState<CloudBackupMeta[]>([]);
+  const [pendingInvites, setPendingInvites] = useState<WorkspaceInvite[]>([]);
+  const [outgoingInvites, setOutgoingInvites] = useState<WorkspaceInvite[]>([]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const [fatalSyncError, setFatalSyncError] = useState<Error | null>(null);
   const latestStateRef = useRef<PersistedState>(state);
   latestStateRef.current = state;
+
+  useEffect(() => {
+    fetch('/api/client-meta')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { ip?: string } | null) => {
+        if (d?.ip) cachedClientIp = d.ip;
+      })
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     try {
@@ -1111,49 +1182,93 @@ export function useErpStore() {
   }, [authReady, user, state.settings.autoBackupDaily]);
 
   useEffect(() => {
-    document.documentElement.dir = state.settings.isArabic ? 'rtl' : 'ltr';
-    document.documentElement.lang = state.settings.isArabic ? 'ar' : 'en';
+    const lang = state.settings.language ?? (state.settings.isArabic ? 'ar' : 'en');
+    document.documentElement.dir = isRtlLanguage(lang) ? 'rtl' : 'ltr';
+    document.documentElement.lang = lang;
     if (state.settings.isDarkMode) {
       document.documentElement.classList.add('dark');
     } else {
       document.documentElement.classList.remove('dark');
     }
-  }, [state.settings.isArabic, state.settings.isDarkMode]);
+  }, [state.settings.isArabic, state.settings.language, state.settings.isDarkMode]);
 
   useEffect(() => {
     if (!authReady) return;
     if (!user) {
       cloudHydratedUidRef.current = null;
       lastSyncedStateRef.current = null;
+      setActiveWorkspaceId(null);
+      setPendingInvites([]);
+      setOutgoingInvites([]);
       setSyncStatus('offline');
       return;
     }
 
+    const wsId = activeWorkspaceId ?? user.uid;
     let cancelled = false;
     let unsubscribe: (() => void) | null = null;
     const isOfflineNow = typeof navigator !== 'undefined' && !navigator.onLine;
     setSyncStatus(isOfflineNow ? 'offline' : 'syncing');
 
-    loadOrSeedWorkspace(user.uid, latestStateRef.current)
+    if (user.email) {
+      void listPendingInvitesForEmail(user.email).then((list) => {
+        if (!cancelled) setPendingInvites(list);
+      });
+      void listOutgoingWorkspaceInvites(user.uid).then((list) => {
+        if (!cancelled) setOutgoingInvites(list);
+      });
+    }
+
+    loadOrSeedWorkspace(wsId, latestStateRef.current)
       .then((cloudPatch) => {
         if (cancelled) return;
         const hydrated = hydrateState({ ...latestStateRef.current, ...cloudPatch });
         applyingRemoteRef.current = true;
         lastSyncedStateRef.current = hydrated;
-        cloudHydratedUidRef.current = user.uid;
+        cloudHydratedUidRef.current = wsId;
         setState(hydrated);
         const offline = typeof navigator !== 'undefined' && !navigator.onLine;
         setSyncStatus(offline ? 'offline' : 'synced');
         if (!offline) {
           setLastCloudSyncAt(new Date().toISOString());
+          if (user.emailVerified) {
+            void migrateLegacyAssetsToStorage(wsId, hydrated).then((migrated) => {
+              if (!cancelled && migrated) {
+                setState((prev) => ({
+                  ...prev,
+                  ...(migrated.settings ? { settings: migrated.settings } : {}),
+                  ...(migrated.products ? { products: migrated.products } : {}),
+                  ...(migrated.documents ? { documents: migrated.documents } : {}),
+                }));
+              }
+            });
+          }
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            void registerFcmForWorkspace(wsId);
+          }
         }
 
-        void listCloudBackupSnapshots(user.uid).then((bList) => {
+        if (wsId !== user.uid) {
+          void resolveWorkspaceMemberRole(wsId, user.uid).then((member) => {
+            if (!cancelled && member) {
+              setState((prev) => ({
+                ...prev,
+                currentRole: member.role,
+                permissionsMatrix: {
+                  ...prev.permissionsMatrix,
+                  [member.role]: member.permissions.length > 0 ? member.permissions : prev.permissionsMatrix[member.role],
+                },
+              }));
+            }
+          });
+        }
+
+        void listCloudBackupSnapshots(wsId).then((bList) => {
           if (!cancelled) setCloudBackups(bList);
         });
 
         unsubscribe = subscribeWorkspace(
-          user.uid,
+          wsId,
           (remotePatch) => {
             if (cancelled) return;
             applyingRemoteRef.current = true;
@@ -1185,7 +1300,7 @@ export function useErpStore() {
       cancelled = true;
       if (unsubscribe) unsubscribe();
     };
-  }, [authReady, user, setSyncStatus, setLastCloudSyncAt]);
+  }, [authReady, user, activeWorkspaceId, setSyncStatus, setLastCloudSyncAt]);
 
   const autoCloudSyncEnabled = state.settings.autoCloudSync ?? true;
   const autoSyncIntervalMinutes = Math.max(0, state.settings.autoSyncIntervalMinutes ?? 0);
@@ -1431,15 +1546,14 @@ export function useErpStore() {
   const hasPermission = (route: RouteId): boolean => allowedRoutes.includes(route);
 
   const metrics = useMemo(() => {
+    const unified = computeUnifiedNetProfit(state);
     let totalSalesH = 0;
-    let revExVatH = 0;
     let vatOutputH = 0;
     for (const inv of state.invoices) {
       if (inv.status === 'cancelled' || inv.invoiceType === 'quotation') continue;
       const fx = inv.exchangeRate ?? 1;
       const sign = inv.invoiceType === 'return' ? -1 : 1;
       totalSalesH += mulFxHalalas(toHalalas(inv.total), fx) * sign;
-      revExVatH += mulFxHalalas(toHalalas(inv.subtotal), fx) * sign;
       vatOutputH += mulFxHalalas(toHalalas(inv.vat), fx) * sign;
     }
     let customerDebtH = 0;
@@ -1448,23 +1562,20 @@ export function useErpStore() {
     for (const sp of state.suppliers) supplierDebtH += toHalalas(sp.payable);
     let stockValueH = 0;
     for (const p of state.products) stockValueH += Math.round(toHalalas(p.cost) * p.qty);
-    let totalExpensesH = 0;
-    for (const e of state.expenses) {
-      if (e.status === 'draft') continue;
-      totalExpensesH += getExpenseBaseHalalas(e);
-    }
     let totalBanksH = 0;
     for (const b of state.banks) totalBanksH += toHalalas(b.balance);
 
     const totalSales = fromHalalas(totalSalesH);
-    const revenueExVat = fromHalalas(revExVatH);
+    const revenueExVat = unified.revenueExVat;
+    const cogs = unified.cogs;
+    const grossProfit = unified.grossProfit;
     const vatOutput = fromHalalas(vatOutputH);
     const customerDebt = fromHalalas(customerDebtH);
     const supplierDebt = fromHalalas(supplierDebtH);
     const stockValue = fromHalalas(stockValueH);
-    const totalExpenses = fromHalalas(totalExpensesH);
+    const totalExpenses = unified.operatingExpenses;
     const totalCashAndBanks = fromHalalas(totalBanksH);
-    const netProfit = fromHalalas(revExVatH - totalExpensesH);
+    const netProfit = unified.netProfit;
 
     let score = 62;
     if (netProfit > 0) score += 18;
@@ -1522,6 +1633,8 @@ export function useErpStore() {
     return {
       totalSales,
       revenueExVat,
+      cogs,
+      grossProfit,
       vatOutput,
       customerDebt,
       supplierDebt,
@@ -1535,6 +1648,42 @@ export function useErpStore() {
       smartAlerts: alerts.filter((a) => !dismissedAlerts.includes(a.id)),
     };
   }, [state, dismissedAlerts]);
+
+  const checkPlanLimit = useCallback(
+    (resource: 'invoices' | 'branches' | 'employees'): { allowed: boolean; message?: string } => {
+      const cur = latestStateRef.current;
+      const elapsedDays = Math.floor((Date.now() - new Date(cur.trialStartIso).getTime()) / 86400000);
+      const trialDays = Math.max(0, Math.min(30, 30 - elapsedDays));
+      const effectivePlan =
+        cur.activePlan === 'trial' && trialDays > 0
+          ? 'enterprise'
+          : cur.subscriptionMeta?.planId ?? (cur.activePlan === 'trial' ? 'free' : cur.activePlan);
+
+      const caps: Record<string, { invoices: number; branches: number; employees: number }> = {
+        free: { invoices: 50, branches: 1, employees: 3 },
+        basic: { invoices: 500, branches: 2, employees: 15 },
+        pro: { invoices: 5000, branches: 10, employees: 100 },
+        enterprise: { invoices: Number.MAX_SAFE_INTEGER, branches: Number.MAX_SAFE_INTEGER, employees: Number.MAX_SAFE_INTEGER },
+      };
+      const limit = caps[effectivePlan]?.[resource] ?? Number.MAX_SAFE_INTEGER;
+      const currentCount =
+        resource === 'invoices'
+          ? cur.invoices.filter((i) => i.status !== 'cancelled').length
+          : resource === 'branches'
+          ? cur.branches.length
+          : cur.employees.length;
+
+      if (currentCount >= limit) {
+        const msg = cur.settings.isArabic
+          ? `تم الوصول للحد الأقصى في باقة (${effectivePlan.toUpperCase()}): ${limit} من ${resource}. قم بالترقية من صفحة الاشتراك.`
+          : `Plan limit reached for (${effectivePlan.toUpperCase()}): max ${limit} ${resource}. Upgrade in Subscription.`;
+        notify(msg, 4500);
+        return { allowed: false, message: msg };
+      }
+      return { allowed: true };
+    },
+    [notify],
+  );
 
   const actions = {
     notify,
@@ -1824,8 +1973,16 @@ export function useErpStore() {
       if (!guardFiscalOpen(inv.date)) {
         return { ok: false as const, fiscalLocked: true };
       }
+      if (!editId) {
+        const limitCheck = checkPlanLimit('invoices');
+        if (!limitCheck.allowed) {
+          return { ok: false as const, planLimitReached: true, message: limitCheck.message };
+        }
+      }
       const s = latestStateRef.current;
-      const rate = Math.max(0, Math.min(100, inv.taxRate ?? s.settings.defaultSalesTaxRate ?? 15));
+      const effectiveTreatment = inv.taxTreatment ?? s.settings.taxTreatmentDefault ?? 'standard';
+      const baseRate = inv.taxRate ?? s.settings.defaultSalesTaxRate ?? 15;
+      const rate = resolveEffectiveTaxRate(baseRate, effectiveTreatment);
       const invCurrency = inv.currency ?? s.settings.currency;
       const fxRate =
         invCurrency === s.settings.currency
@@ -2063,6 +2220,45 @@ export function useErpStore() {
         }
 
         const newInvId = nextSequentialId('INV', 1000, p.invoices.map((x) => x.id));
+        const maxIcv = p.invoices.reduce((m, x) => Math.max(m, x.icv ?? 0), 0);
+        const nextIcv = inv.icv ?? maxIcv + 1;
+        const lastPih =
+          p.invoices.find((x) => Boolean(x.invoiceHash))?.invoiceHash ??
+          'NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWI0NjcyOWQ3M2EyN2ZiNTdlOQ==';
+        const isDraftOrCancelled = inv.status === 'draft' || inv.status === 'cancelled';
+        const isReturnDoc = inv.invoiceType === 'return';
+        const isQuotationDoc = inv.invoiceType === 'quotation';
+        const shouldPost = !isDraftOrCancelled && !isQuotationDoc;
+        const syncUuid = inv.zatcaUuid ?? (shouldPost ? generateZatcaUuid() : undefined);
+        const syncXml =
+          inv.zatcaXml ??
+          (shouldPost && syncUuid
+            ? buildZatcaUblXml({
+                invoiceId: newInvId,
+                uuid: syncUuid,
+                icv: nextIcv,
+                pih: lastPih,
+                issueDateIso: inv.date,
+                currency: invCurrency,
+                sellerName: p.settings.companyName,
+                sellerVat: p.settings.taxNumber,
+                sellerAddress: p.settings.address,
+                customerName: inv.customerName,
+                customerVat: targetCustomer?.taxNumber,
+                subtotal: calc.subtotal,
+                vat: calc.vat,
+                total: calc.total,
+                taxRate: rate,
+                invoiceType: inv.invoiceType,
+                items: inv.items?.map((it) => ({
+                  productName: it.productName,
+                  qty: it.qty,
+                  unitPrice: it.unitPrice,
+                  total: it.total,
+                })),
+              })
+            : undefined);
+
         const newInv: Invoice = {
           ...inv,
           customerId: targetCustomer?.id ?? inv.customerId,
@@ -2072,6 +2268,7 @@ export function useErpStore() {
           shippingFee: calc.shippingFee,
           extraFee: calc.extraFee,
           taxRate: rate,
+          taxTreatment: effectiveTreatment,
           vat: calc.vat,
           total: calc.total,
           currency: invCurrency,
@@ -2082,12 +2279,12 @@ export function useErpStore() {
           branchId: inv.branchId ?? p.settings.defaultBranchId ?? p.branches[0]?.id,
           warehouseId: inv.warehouseId ?? p.settings.defaultWarehouseId ?? p.warehouses[0]?.id,
           createdByRole: p.currentRole,
+          zatcaUuid: syncUuid,
+          icv: shouldPost ? nextIcv : undefined,
+          pih: shouldPost ? lastPih : undefined,
+          zatcaXml: syncXml,
         };
 
-        const isDraftOrCancelled = inv.status === 'draft' || inv.status === 'cancelled';
-        const isReturnDoc = inv.invoiceType === 'return';
-        const isQuotationDoc = inv.invoiceType === 'quotation';
-        const shouldPost = !isDraftOrCancelled && !isQuotationDoc;
         const debtSign = isReturnDoc ? -1 : 1;
 
         const updatedCustomers =
@@ -2164,6 +2361,9 @@ export function useErpStore() {
                     ? `فاتورة مبيعات ${newInvId} - ${inv.customerName}`
                     : `Sales Invoice ${newInvId} - ${inv.customerName}`,
                   date: inv.date,
+                  entryType: 'auto' as const,
+                  branchId: newInv.branchId,
+                  costCenter: newInv.costCenter,
                   lines: isReturnDoc
                     ? lines.map((l) => ({ account: l.account, debit: l.credit, credit: l.debit }))
                     : lines,
@@ -2186,18 +2386,199 @@ export function useErpStore() {
           ],
         };
       });
+
+      if (!editId && isActiveInvoice && inv.status !== 'paid') {
+        const curState = latestStateRef.current;
+        const maxIcv = curState.invoices.reduce((m, x) => Math.max(m, x.icv ?? 0), 0);
+        void buildZatcaPhase2Package({
+          invoiceId: predictedInvId,
+          icv: maxIcv || 1,
+          issueDateIso: inv.date,
+          currency: invCurrency,
+          sellerName: curState.settings.companyName,
+          sellerVat: curState.settings.taxNumber,
+          sellerAddress: curState.settings.address,
+          customerName: inv.customerName,
+          customerVat: matchedCustomer?.taxNumber,
+          subtotal: calc.subtotal,
+          vat: calc.vat,
+          total: calc.total,
+          taxRate: rate,
+          invoiceType: inv.invoiceType,
+          items: inv.items?.map((it) => ({
+            productName: it.productName,
+            qty: it.qty,
+            unitPrice: it.unitPrice,
+            total: it.total,
+          })),
+        }).then((pkg) => {
+          setState((prev) => ({
+            ...prev,
+            invoices: prev.invoices.map((x) =>
+              x.id === predictedInvId
+                ? {
+                    ...x,
+                    zatcaUuid: x.zatcaUuid ?? pkg.zatcaUuid,
+                    icv: x.icv ?? pkg.icv,
+                    pih: x.pih ?? pkg.pih,
+                    invoiceHash: pkg.invoiceHash,
+                    ecdsaSignature: pkg.ecdsaSignature,
+                    zatcaXml: x.zatcaXml ?? pkg.zatcaXml,
+                  }
+                : x,
+            ),
+          }));
+        });
+      }
+
       return { ok: true as const, invoiceId: predictedInvId, lowStockItems };
+    },
+
+    voidInvoice: (id: string, reason: string) => {
+      const target = latestStateRef.current.invoices.find((i) => i.id === id);
+      if (!target || target.status === 'cancelled') return false;
+      if (!guardFiscalOpen(target.date)) return false;
+      const nowIso = new Date().toISOString();
+      const cleanReason = reason.trim() || 'إبطال فاتورة محاسبياً';
+
+      setState((p) => {
+        const inv = p.invoices.find((i) => i.id === id);
+        if (!inv || inv.status === 'cancelled') return p;
+        const revId = nextSequentialId('JRN', 700, p.journals.map((x) => x.id));
+        const origJournal = p.journals.find((j) => j.reference === id && !j.reference.startsWith('REV-'));
+        const invTotalBase = inv.baseTotal ?? fromHalalas(mulFxHalalas(toHalalas(inv.total), inv.exchangeRate ?? 1));
+        const paidBase = inv.paidAmount ?? (inv.status === 'paid' ? invTotalBase : 0);
+        const remBase = inv.remainingAmount ?? fromHalalas(Math.max(0, toHalalas(invTotalBase) - toHalalas(paidBase)));
+
+        const revJournal = origJournal
+          ? buildVoidReversalJournal({
+              reversalId: revId,
+              reference: id,
+              description: `قيد عكسي لإبطال الفاتورة ${id}: ${cleanReason}`,
+              date: nowIso,
+              originalLines: origJournal.lines,
+              branchId: inv.branchId,
+              costCenter: inv.costCenter,
+            })
+          : buildVoidReversalJournal({
+              reversalId: revId,
+              reference: id,
+              description: `قيد عكسي لإبطال الفاتورة ${id}: ${cleanReason}`,
+              date: nowIso,
+              originalLines: buildDoubleEntryForInvoice({
+                customerName: inv.customerName,
+                bankLabel: 'Cash',
+                baseTotal: invTotalBase,
+                baseSubtotal: fromHalalas(mulFxHalalas(toHalalas(inv.subtotal), inv.exchangeRate ?? 1)),
+                baseVat: fromHalalas(mulFxHalalas(toHalalas(inv.vat), inv.exchangeRate ?? 1)),
+                paidAmountBase: paidBase,
+                remainingAmountBase: remBase,
+                status: inv.status,
+              }),
+              branchId: inv.branchId,
+              costCenter: inv.costCenter,
+            });
+
+        const isReturnDoc = inv.invoiceType === 'return';
+        const sign = isReturnDoc ? -1 : 1;
+        let nextMovements = [...p.stockMovements];
+        const updatedProducts =
+          inv.status !== 'draft' && inv.invoiceType !== 'quotation' && inv.items?.length
+            ? p.products.map((pr) => {
+                const sold = inv.items?.find((it) => it.productId === pr.id || it.productName === pr.name);
+                if (!sold) return pr;
+                const restoreDelta = isReturnDoc ? -sold.qty : sold.qty;
+                nextMovements = [
+                  {
+                    id: nextSequentialId('MOV', 100, nextMovements.map((m) => m.id)),
+                    productId: pr.id,
+                    productName: pr.name,
+                    movementType: isReturnDoc ? 'return_out' : 'return_in',
+                    qtyDelta: restoreDelta,
+                    toWarehouseId: inv.warehouseId ?? p.warehouses[0]?.id,
+                    referenceId: `VOID-${id}`,
+                    reason: cleanReason,
+                    notes: `إبطال الفاتورة ${id}`,
+                    date: nowIso,
+                  },
+                  ...nextMovements,
+                ];
+                return { ...pr, qty: Math.max(0, pr.qty + restoreDelta) };
+              })
+            : p.products;
+
+        const updatedCustomers =
+          remBase > 0 && inv.customerId !== 'CASH'
+            ? p.customers.map((c) =>
+                (inv.customerId && c.id === inv.customerId) || c.name.trim() === inv.customerName.trim()
+                  ? { ...c, debt: Math.max(0, fromHalalas(toHalalas(c.debt) - toHalalas(remBase) * sign)) }
+                  : c,
+              )
+            : p.customers;
+
+        const targetBank =
+          (inv.paymentMethod === 'cash' ? p.banks.find((b) => b.id === 'cash') : p.banks.find((b) => b.id === 'alrajhi')) ??
+          p.banks[0];
+        const updatedBanks =
+          paidBase > 0 && targetBank
+            ? p.banks.map((b) =>
+                b.id === targetBank.id
+                  ? { ...b, balance: fromHalalas(toHalalas(b.balance) - toHalalas(paidBase) * sign) }
+                  : b,
+              )
+            : p.banks;
+
+        return {
+          ...p,
+          invoices: p.invoices.map((x) =>
+            x.id === id
+              ? {
+                  ...x,
+                  status: 'cancelled' as const,
+                  voidReason: cleanReason,
+                  voidedAt: nowIso,
+                  voidedBy: actorLabel,
+                  reversalJournalId: revId,
+                }
+              : x,
+          ),
+          products: updatedProducts,
+          stockMovements: nextMovements,
+          customers: updatedCustomers,
+          banks: updatedBanks,
+          journals: origJournal || inv.status !== 'draft' ? [revJournal, ...p.journals] : p.journals,
+          auditLogs: [
+            makeAuditEntry(p, actorLabel, 'void', 'Invoice', id, `إبطال وعكس قيد الفاتورة ${id}: ${cleanReason}`, {
+              screenName: 'الفواتير',
+              oldValue: inv.status,
+              newValue: 'cancelled',
+            }),
+            ...p.auditLogs,
+          ],
+        };
+      });
+      return true;
     },
 
     deleteInvoice: (id: string) => {
       if (!guardDeleteAllowed()) return;
       const target = latestStateRef.current.invoices.find((i) => i.id === id);
-      if (target && !guardFiscalOpen(target.date)) return;
+      if (!target || !guardFiscalOpen(target.date)) return;
+      if (target.status !== 'draft' && target.status !== 'cancelled') {
+        notify(
+          latestStateRef.current.settings.isArabic
+            ? 'لا يمكن حذف فاتورة مرحلة — تم إبطالها وإصدار قيد عكسي بدلاً من الحذف.'
+            : 'Posted invoice cannot be deleted — voided with reversal journal entry.',
+          4000,
+        );
+        actions.voidInvoice(id, 'إبطال تلقائي بدلاً من الحذف المباشر');
+        return;
+      }
       setState((p) => ({
         ...p,
         invoices: p.invoices.filter((i) => i.id !== id),
         auditLogs: [
-          makeAuditEntry(p, actorLabel, 'delete', 'Invoice', id, `حذف الفاتورة ${id}`),
+          makeAuditEntry(p, actorLabel, 'delete', 'Invoice', id, `حذف مسودة الفاتورة ${id}`),
           ...p.auditLogs,
         ],
       }));
@@ -3134,8 +3515,124 @@ export function useErpStore() {
         };
       });
     },
+    voidPurchaseOrder: (poId: string, reason: string) => {
+      const target = latestStateRef.current.purchaseOrders.find((x) => x.id === poId);
+      if (!target || target.status === 'cancelled') return false;
+      if (!guardFiscalOpen(target.date)) return false;
+      const nowIso = new Date().toISOString();
+      const cleanReason = reason.trim() || 'إبطال أمر شراء محاسبياً';
+
+      setState((p) => {
+        const po = p.purchaseOrders.find((x) => x.id === poId);
+        if (!po || po.status === 'cancelled') return p;
+        const revId = nextSequentialId('JRN', 700, p.journals.map((x) => x.id));
+        const origJournal = p.journals.find((j) => j.reference === poId && !j.reference.startsWith('REV-'));
+        const revJournal = origJournal
+          ? buildVoidReversalJournal({
+              reversalId: revId,
+              reference: poId,
+              description: `قيد عكسي لإبطال أمر الشراء ${poId}: ${cleanReason}`,
+              date: nowIso,
+              originalLines: origJournal.lines,
+              branchId: po.branchId,
+            })
+          : null;
+
+        let nextMovements = [...p.stockMovements];
+        let updatedProducts = p.products;
+        let updatedSuppliers = p.suppliers;
+        let updatedBanks = p.banks;
+
+        if (po.status === 'received') {
+          const lines = po.items?.length
+            ? po.items.map((it) => ({
+                productId: it.productId,
+                productName: it.productName,
+                qty: it.receivedQty ?? it.qty,
+              }))
+            : [{ productId: po.productId, productName: po.productName, qty: po.quantity }];
+
+          updatedProducts = p.products.map((pr) => {
+            const match = lines.find((l) => (l.productId && l.productId === pr.id) || l.productName === pr.name);
+            if (!match || match.qty <= 0) return pr;
+            nextMovements = [
+              {
+                id: nextSequentialId('MOV', 100, nextMovements.map((m) => m.id)),
+                productId: pr.id,
+                productName: pr.name,
+                movementType: 'return_out',
+                qtyDelta: -match.qty,
+                fromWarehouseId: po.warehouseId ?? p.warehouses[0]?.id,
+                referenceId: `VOID-${poId}`,
+                reason: cleanReason,
+                notes: `إبطال أمر شراء ${poId}`,
+                date: nowIso,
+              },
+              ...nextMovements,
+            ];
+            return { ...pr, qty: Math.max(0, pr.qty - match.qty) };
+          });
+
+          const totalH = toHalalas(po.total);
+          const paidH = Math.min(totalH, Math.max(0, toHalalas(po.paidAmount ?? 0)));
+          const remH = totalH - paidH;
+          if (remH > 0) {
+            updatedSuppliers = p.suppliers.map((s) =>
+              (po.supplierId && s.id === po.supplierId) || s.name.trim() === po.supplierName.trim()
+                ? { ...s, payable: Math.max(0, fromHalalas(toHalalas(s.payable) - remH)) }
+                : s,
+            );
+          }
+          const targetBank =
+            (po.paymentMethod === 'cash' ? p.banks.find((b) => b.id === 'cash') : p.banks.find((b) => b.id === 'alrajhi')) ??
+            p.banks[0];
+          if (paidH > 0 && targetBank) {
+            updatedBanks = p.banks.map((b) =>
+              b.id === targetBank.id ? { ...b, balance: fromHalalas(toHalalas(b.balance) + paidH) } : b,
+            );
+          }
+        }
+
+        return {
+          ...p,
+          purchaseOrders: p.purchaseOrders.map((x) =>
+            x.id === poId
+              ? {
+                  ...x,
+                  status: 'cancelled' as const,
+                  voidReason: cleanReason,
+                  voidedAt: nowIso,
+                  voidedBy: actorLabel,
+                  reversalJournalId: revJournal ? revId : undefined,
+                }
+              : x,
+          ),
+          products: updatedProducts,
+          stockMovements: nextMovements,
+          suppliers: updatedSuppliers,
+          banks: updatedBanks,
+          journals: revJournal ? [revJournal, ...p.journals] : p.journals,
+          auditLogs: [
+            makeAuditEntry(p, actorLabel, 'void', 'PurchaseOrder', poId, `إبطال أمر الشراء ${poId}: ${cleanReason}`),
+            ...p.auditLogs,
+          ],
+        };
+      });
+      return true;
+    },
     deletePurchaseOrder: (poId: string) => {
       if (!guardDeleteAllowed()) return;
+      const target = latestStateRef.current.purchaseOrders.find((po) => po.id === poId);
+      if (!target || !guardFiscalOpen(target.date)) return;
+      if (target.status === 'received') {
+        notify(
+          latestStateRef.current.settings.isArabic
+            ? 'أمر شراء مستلم لا يحذف — تم إبطاله وإصدار قيد عكسي.'
+            : 'Received PO cannot be deleted — voided with reversal journal.',
+        );
+        actions.voidPurchaseOrder(poId, 'إبطال تلقائي بدلاً من الحذف المباشر');
+        return;
+      }
       setState((p) => ({
         ...p,
         purchaseOrders: p.purchaseOrders.filter((po) => po.id !== poId),
@@ -3324,8 +3821,94 @@ export function useErpStore() {
         };
       });
     },
+    voidVoucher: (id: string, reason: string) => {
+      const target = latestStateRef.current.vouchers.find((v) => v.id === id);
+      if (!target || target.status === 'cancelled') return false;
+      if (!guardFiscalOpen(target.date)) return false;
+      const nowIso = new Date().toISOString();
+      const cleanReason = reason.trim() || 'إبطال سند محاسبياً';
+
+      setState((p) => {
+        const v = p.vouchers.find((x) => x.id === id);
+        if (!v || v.status === 'cancelled') return p;
+        const amtH = toHalalas(v.amount);
+        const revId = nextSequentialId('JRN', 700, p.journals.map((x) => x.id));
+        const origJournal = p.journals.find((j) => j.reference === id && !j.reference.startsWith('REV-'));
+        const revJournal = origJournal
+          ? buildVoidReversalJournal({
+              reversalId: revId,
+              reference: id,
+              description: `قيد عكسي لإبطال السند ${id}: ${cleanReason}`,
+              date: nowIso,
+              originalLines: origJournal.lines,
+              branchId: v.branchId,
+            })
+          : null;
+
+        const matchedBank =
+          (v.bankId ? p.banks.find((b) => b.id === v.bankId) : undefined) ??
+          p.banks.find(
+            (b) =>
+              b.id === v.paymentMethod ||
+              b.nameEn.toLowerCase() === v.paymentMethod.trim().toLowerCase() ||
+              b.nameAr.trim() === v.paymentMethod.trim(),
+          );
+        const bankRevDeltaH = v.status !== 'draft' ? (v.type === 'receipt' ? -amtH : v.type === 'payment' ? amtH : 0) : 0;
+
+        return {
+          ...p,
+          vouchers: p.vouchers.map((x) =>
+            x.id === id
+              ? {
+                  ...x,
+                  status: 'cancelled' as const,
+                  voidReason: cleanReason,
+                  voidedAt: nowIso,
+                  voidedBy: actorLabel,
+                  reversalJournalId: revJournal ? revId : undefined,
+                }
+              : x,
+          ),
+          banks:
+            matchedBank && bankRevDeltaH !== 0
+              ? p.banks.map((b) =>
+                  b.id === matchedBank.id ? { ...b, balance: fromHalalas(toHalalas(b.balance) + bankRevDeltaH) } : b,
+                )
+              : p.banks,
+          customers:
+            v.status !== 'draft' && v.type === 'receipt'
+              ? p.customers.map((c) =>
+                  c.name.trim() === v.partyName.trim() ? { ...c, debt: fromHalalas(toHalalas(c.debt) + amtH) } : c,
+                )
+              : p.customers,
+          suppliers:
+            v.status !== 'draft' && v.type === 'payment'
+              ? p.suppliers.map((s) =>
+                  s.name.trim() === v.partyName.trim() ? { ...s, payable: fromHalalas(toHalalas(s.payable) + amtH) } : s,
+                )
+              : p.suppliers,
+          journals: revJournal ? [revJournal, ...p.journals] : p.journals,
+          auditLogs: [
+            makeAuditEntry(p, actorLabel, 'void', 'Voucher', id, `إبطال السند ${id}: ${cleanReason}`),
+            ...p.auditLogs,
+          ],
+        };
+      });
+      return true;
+    },
     deleteVoucher: (id: string) => {
       if (!guardDeleteAllowed()) return;
+      const target = latestStateRef.current.vouchers.find((v) => v.id === id);
+      if (!target || !guardFiscalOpen(target.date)) return;
+      if (target.status !== 'draft' && target.status !== 'cancelled') {
+        notify(
+          latestStateRef.current.settings.isArabic
+            ? 'لا يمكن حذف سند معتمد — تم إبطاله وإصدار قيد عكسي بدلاً من الحذف.'
+            : 'Approved voucher cannot be deleted — voided with reversal journal.',
+        );
+        actions.voidVoucher(id, 'إبطال تلقائي بدلاً من الحذف المباشر');
+        return;
+      }
       setState((p) => ({
         ...p,
         vouchers: p.vouchers.filter((v) => v.id !== id),
@@ -3550,14 +4133,17 @@ export function useErpStore() {
       return true;
     },
 
-    saveBranch: (br: Omit<Branch, 'id'>, editId?: string) =>
+    saveBranch: (br: Omit<Branch, 'id'>, editId?: string) => {
+      if (!editId && !checkPlanLimit('branches').allowed) return false;
       setState((p) => {
         const id = editId ?? nextSequentialId('BR', 1, p.branches.map((x) => x.id));
         return {
           ...p,
           branches: editId ? p.branches.map((x) => (x.id === editId ? { ...br, id } : x)) : [{ ...br, id }, ...p.branches],
         };
-      }),
+      });
+      return true;
+    },
     deleteBranch: (id: string) => {
       if (!guardDeleteAllowed()) return;
       setState((p) => ({
@@ -3600,7 +4186,8 @@ export function useErpStore() {
       }));
     },
 
-    saveEmployee: (emp: Omit<Employee, 'id'>, editId?: string) =>
+    saveEmployee: (emp: Omit<Employee, 'id'>, editId?: string) => {
+      if (!editId && !checkPlanLimit('employees').allowed) return false;
       setState((p) => {
         const id = editId ?? nextSequentialId('E', 10, p.employees.map((x) => x.id));
         const prevEmp = editId ? p.employees.find((x) => x.id === editId) : undefined;
@@ -3626,7 +4213,9 @@ export function useErpStore() {
             ...p.auditLogs,
           ],
         };
-      }),
+      });
+      return true;
+    },
     paySalary: (id: string) => {
       const nowIso = new Date().toISOString();
       if (!guardFiscalOpen(nowIso)) return;
@@ -3708,6 +4297,34 @@ export function useErpStore() {
         const cleanAmt = fromHalalas(rawAmtH);
         const cleanBaseAmt = fromHalalas(baseAmtH);
 
+        const treatment = exp.taxTreatment ?? 'standard';
+        const effectiveTaxRate = resolveEffectiveTaxRate(exp.taxRate ?? 0, treatment);
+        const rawVatH =
+          typeof exp.vatInput === 'number' && Number.isFinite(exp.vatInput) && effectiveTaxRate > 0
+            ? Math.min(rawAmtH, Math.max(0, toHalalas(exp.vatInput)))
+            : effectiveTaxRate > 0
+            ? Math.round((rawAmtH * effectiveTaxRate) / (100 + effectiveTaxRate))
+            : 0;
+        const baseVatH = expCur === p.settings.currency ? rawVatH : mulFxHalalas(rawVatH, fx);
+        const cleanVat = fromHalalas(rawVatH);
+        const cleanBaseVat = fromHalalas(baseVatH);
+        const netExpenseBase = fromHalalas(Math.max(0, baseAmtH - baseVatH));
+
+        const buildExpenseJournalLines = (bankLabel: string) => {
+          const bankCred = { account: `1010 - ${bankLabel}`, debit: 0, credit: cleanBaseAmt };
+          if (cleanBaseVat > 0) {
+            return [
+              { account: `5010 - مصروفات (${exp.category || 'تشغيل'})`, debit: netExpenseBase, credit: 0 },
+              { account: '1040 - ضريبة مدخلات المصروفات', debit: cleanBaseVat, credit: 0 },
+              bankCred,
+            ];
+          }
+          return [
+            { account: `5010 - مصروفات (${exp.category || 'تشغيل'})`, debit: cleanBaseAmt, credit: 0 },
+            bankCred,
+          ];
+        };
+
         if (editId) {
           const prevExp = p.expenses.find((x) => x.id === editId);
           const prevWasActive = prevExp && (prevExp.status ?? 'paid') !== 'draft';
@@ -3723,6 +4340,7 @@ export function useErpStore() {
 
           const hasJournal = p.journals.some((j) => j.reference === editId);
           const paidBank = p.banks.find((b) => b.id === exp.paidFromBankId);
+          const bankLabel = paidBank ? (p.settings.isArabic ? paidBank.nameAr : paidBank.nameEn) : exp.paidFromBankId;
           const nextJournals =
             nextIsActive && !hasJournal
               ? [
@@ -3734,14 +4352,7 @@ export function useErpStore() {
                     entryType: 'auto' as const,
                     branchId: exp.branchId,
                     costCenter: exp.costCenter,
-                    lines: [
-                      { account: `5010 - مصروفات (${exp.category || 'تشغيل'})`, debit: cleanBaseAmt, credit: 0 },
-                      {
-                        account: `1010 - ${paidBank ? (p.settings.isArabic ? paidBank.nameAr : paidBank.nameEn) : exp.paidFromBankId}`,
-                        debit: 0,
-                        credit: cleanBaseAmt,
-                      },
-                    ],
+                    lines: buildExpenseJournalLines(bankLabel),
                   },
                   ...p.journals,
                 ]
@@ -3755,6 +4366,10 @@ export function useErpStore() {
             currency: expCur,
             exchangeRate: fx,
             baseAmount: cleanBaseAmt,
+            taxRate: effectiveTaxRate,
+            taxTreatment: treatment,
+            vatInput: cleanVat,
+            vatInputBase: cleanBaseVat,
             status: nextStatus,
           };
 
@@ -3778,6 +4393,7 @@ export function useErpStore() {
         const expenseNumber =
           exp.expenseNumber || `EXP-${new Date().getFullYear()}-${newId.replace(/\D/g, '').padStart(4, '0')}`;
         const paidBank = p.banks.find((b) => b.id === exp.paidFromBankId);
+        const bankLabel = paidBank ? (p.settings.isArabic ? paidBank.nameAr : paidBank.nameEn) : exp.paidFromBankId;
         const isActive = nextStatus !== 'draft';
         const updatedBanks =
           isActive && paidBank
@@ -3796,14 +4412,7 @@ export function useErpStore() {
                 entryType: 'auto' as const,
                 branchId: exp.branchId,
                 costCenter: exp.costCenter,
-                lines: [
-                  { account: `5010 - مصروفات (${exp.category || 'تشغيل'})`, debit: cleanBaseAmt, credit: 0 },
-                  {
-                    account: `1010 - ${paidBank ? (p.settings.isArabic ? paidBank.nameAr : paidBank.nameEn) : exp.paidFromBankId}`,
-                    debit: 0,
-                    credit: cleanBaseAmt,
-                  },
-                ],
+                lines: buildExpenseJournalLines(bankLabel),
               },
               ...p.journals,
             ]
@@ -3817,6 +4426,10 @@ export function useErpStore() {
           currency: expCur,
           exchangeRate: fx,
           baseAmount: cleanBaseAmt,
+          taxRate: effectiveTaxRate,
+          taxTreatment: treatment,
+          vatInput: cleanVat,
+          vatInputBase: cleanBaseVat,
           status: nextStatus,
         };
 
@@ -4106,6 +4719,371 @@ export function useErpStore() {
           : prev,
       );
     },
+
+    // Fixed Assets & Monthly Depreciation
+    saveFixedAsset: (asset: Omit<FixedAsset, 'id'>, editId?: string) =>
+      setState((p) => {
+        const id = editId ?? nextSequentialId('AST', 100, (p.fixedAssets ?? []).map((x) => x.id));
+        const item: FixedAsset = { ...asset, id };
+        const nextAssets = editId
+          ? (p.fixedAssets ?? []).map((x) => (x.id === editId ? item : x))
+          : [item, ...(p.fixedAssets ?? [])];
+        const jrnList =
+          !editId && asset.cost > 0
+            ? [
+                {
+                  id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
+                  reference: id,
+                  description: `اقتناء أصل ثابت: ${asset.name} (${id})`,
+                  date: asset.acquisitionDate || new Date().toISOString(),
+                  entryType: 'auto' as const,
+                  branchId: asset.branchId,
+                  costCenter: asset.costCenter,
+                  lines: [
+                    { account: `1050 - الأصول الثابتة (${asset.name})`, debit: fromHalalas(toHalalas(asset.cost)), credit: 0 },
+                    { account: '1010 - الصندوق / البنك', debit: 0, credit: fromHalalas(toHalalas(asset.cost)) },
+                  ],
+                },
+                ...p.journals,
+              ]
+            : p.journals;
+        return {
+          ...p,
+          fixedAssets: nextAssets,
+          journals: jrnList,
+          auditLogs: [
+            makeAuditEntry(p, actorLabel, editId ? 'update' : 'create', 'FixedAsset', id, `أصل ثابت: ${asset.name}`),
+            ...p.auditLogs,
+          ],
+        };
+      }),
+    deleteFixedAsset: (id: string) => {
+      if (!guardDeleteAllowed()) return;
+      setState((p) => ({
+        ...p,
+        fixedAssets: (p.fixedAssets ?? []).filter((a) => a.id !== id),
+      }));
+    },
+    runMonthlyDepreciation: (monthKey?: string) => {
+      const periodKey = monthKey || new Date().toISOString().slice(0, 7);
+      const nowIso = new Date().toISOString();
+      if (!guardFiscalOpen(nowIso)) return 0;
+      let postedCount = 0;
+      setState((p) => {
+        let journals = [...p.journals];
+        const updatedAssets = (p.fixedAssets ?? []).map((asset) => {
+          if (asset.status !== 'active' || asset.usefulLifeMonths <= 0) return asset;
+          if (asset.lastDepreciationDate?.startsWith(periodKey)) return asset;
+          const depreciableH = Math.max(0, toHalalas(asset.cost) - toHalalas(asset.salvageValue));
+          const accH = toHalalas(asset.accumulatedDepreciation);
+          const remainingH = Math.max(0, depreciableH - accH);
+          if (remainingH <= 0) {
+            return { ...asset, status: 'fully_depreciated' as const };
+          }
+          const monthlyH = Math.min(remainingH, Math.max(1, Math.round(depreciableH / asset.usefulLifeMonths)));
+          const depAmt = fromHalalas(monthlyH);
+          const nextAccH = accH + monthlyH;
+          const jrn = buildDepreciationJournal({
+            journalId: nextSequentialId('JRN', 700, journals.map((x) => x.id)),
+            asset,
+            depreciationAmount: depAmt,
+            date: nowIso,
+          });
+          journals = [jrn, ...journals];
+          postedCount += 1;
+          return {
+            ...asset,
+            accumulatedDepreciation: fromHalalas(nextAccH),
+            lastDepreciationDate: nowIso.slice(0, 10),
+            status: nextAccH >= depreciableH ? ('fully_depreciated' as const) : ('active' as const),
+          };
+        });
+        if (postedCount === 0) return p;
+        return {
+          ...p,
+          fixedAssets: updatedAssets,
+          journals,
+          auditLogs: [
+            makeAuditEntry(p, actorLabel, 'depreciation', 'FixedAsset', periodKey, `ترحيل إهلاك ${postedCount} أصل لفترة ${periodKey}`),
+            ...p.auditLogs,
+          ],
+        };
+      });
+      return postedCount;
+    },
+
+    // Loans & Deferred Cheques
+    saveLoan: (loan: Omit<LoanRecord, 'id'>, editId?: string) =>
+      setState((p) => {
+        const id = editId ?? nextSequentialId('LON', 100, (p.loans ?? []).map((x) => x.id));
+        const item: LoanRecord = { ...loan, id };
+        const nextLoans = editId
+          ? (p.loans ?? []).map((x) => (x.id === editId ? item : x))
+          : [item, ...(p.loans ?? [])];
+        return {
+          ...p,
+          loans: nextLoans,
+          auditLogs: [
+            makeAuditEntry(p, actorLabel, editId ? 'update' : 'create', 'Loan', id, `قرض / شيك مؤجل: ${loan.partyName} (${loan.principalAmount})`),
+            ...p.auditLogs,
+          ],
+        };
+      }),
+    deleteLoan: (id: string) => {
+      if (!guardDeleteAllowed()) return;
+      setState((p) => ({
+        ...p,
+        loans: (p.loans ?? []).filter((l) => l.id !== id),
+      }));
+    },
+    settleLoanPayment: (loanId: string, amount: number, bankId?: string) => {
+      const nowIso = new Date().toISOString();
+      if (!guardFiscalOpen(nowIso)) return false;
+      const amtH = toHalalas(amount);
+      if (amtH <= 0) return false;
+      setState((p) => {
+        const target = (p.loans ?? []).find((l) => l.id === loanId);
+        if (!target || target.status === 'settled' || target.status === 'cancelled') return p;
+        const payH = Math.min(amtH, toHalalas(target.remainingAmount));
+        if (payH <= 0) return p;
+        const cleanPay = fromHalalas(payH);
+        const nextPaidH = toHalalas(target.paidAmount) + payH;
+        const nextRemH = Math.max(0, toHalalas(target.remainingAmount) - payH);
+        const targetBank =
+          (bankId ? p.banks.find((b) => b.id === bankId) : p.banks.find((b) => b.id === target.bankId)) ??
+          p.banks.find((b) => b.id === 'alrajhi') ??
+          p.banks[0];
+        const bankDeltaH = target.loanType === 'receivable' ? payH : -payH;
+        const bankLabel = targetBank ? (p.settings.isArabic ? targetBank.nameAr : targetBank.nameEn) : 'Cash';
+        const jrn: JournalEntry = {
+          id: nextSequentialId('JRN', 700, p.journals.map((x) => x.id)),
+          reference: loanId,
+          description: `تسوية دفعة ${target.loanType === 'cheque_deferred' ? 'شيك مؤجل' : 'قرض'} (${loanId}) - ${target.partyName}`,
+          date: nowIso,
+          entryType: 'auto',
+          branchId: target.branchId,
+          lines:
+            target.loanType === 'receivable'
+              ? [
+                  { account: `1010 - ${bankLabel}`, debit: cleanPay, credit: 0 },
+                  { account: `1020 - ذمم وشيكات مستحقة (${target.partyName})`, debit: 0, credit: cleanPay },
+                ]
+              : [
+                  { account: `2040 - التزامات وقروض (${target.partyName})`, debit: cleanPay, credit: 0 },
+                  { account: `1010 - ${bankLabel}`, debit: 0, credit: cleanPay },
+                ],
+        };
+        return {
+          ...p,
+          loans: (p.loans ?? []).map((l) =>
+            l.id === loanId
+              ? {
+                  ...l,
+                  paidAmount: fromHalalas(nextPaidH),
+                  remainingAmount: fromHalalas(nextRemH),
+                  status: nextRemH === 0 ? ('settled' as const) : l.status,
+                }
+              : l,
+          ),
+          banks: targetBank
+            ? p.banks.map((b) =>
+                b.id === targetBank.id ? { ...b, balance: fromHalalas(toHalalas(b.balance) + bankDeltaH) } : b,
+              )
+            : p.banks,
+          journals: [jrn, ...p.journals],
+          auditLogs: [
+            makeAuditEntry(p, actorLabel, 'pay', 'Loan', loanId, `سداد دفعة ${cleanPay} من ${loanId}`),
+            ...p.auditLogs,
+          ],
+        };
+      });
+      return true;
+    },
+
+    // Fiscal Year-End Closing
+    closeFiscalYear: (year: number) => {
+      const cur = latestStateRef.current;
+      const statements = computeStatementsFromJournals(cur);
+      if (statements.unbalancedJournals.length > 0) {
+        notify(
+          cur.settings.isArabic
+            ? `تعذر إغلاق السنة المالية ${year}: توجد ${statements.unbalancedJournals.length} قيود غير متوازنة!`
+            : `Cannot close fiscal year ${year}: ${statements.unbalancedJournals.length} unbalanced journal(s) found!`,
+          5000,
+        );
+        return { ok: false as const, unbalancedIds: statements.unbalancedJournals };
+      }
+      const closeDate = `${year}-12-31`;
+      setState((p) => {
+        const netInc = statements.netIncome;
+        const jrnId = nextSequentialId('JRN', 700, p.journals.map((x) => x.id));
+        const closingEntry: JournalEntry | null =
+          Math.abs(netInc) > 0
+            ? {
+                id: jrnId,
+                reference: `CLOSE-${year}`,
+                description: `قيد إقفال السنة المالية ${year} وترحيل صافي الدخل إلى الأرباح المبقاة`,
+                date: `${closeDate}T23:59:59.000Z`,
+                entryType: 'closing',
+                lines:
+                  netInc >= 0
+                    ? [
+                        { account: '4010 - ملخص الدخل / الإيرادات', debit: netInc, credit: 0 },
+                        { account: '3020 - الأرباح المبقاة', debit: 0, credit: netInc },
+                      ]
+                    : [
+                        { account: '3020 - الأرباح المبقاة', debit: Math.abs(netInc), credit: 0 },
+                        { account: '5010 - ملخص الدخل / الخسائر', debit: 0, credit: Math.abs(netInc) },
+                      ],
+              }
+            : null;
+        return {
+          ...p,
+          settings: { ...p.settings, fiscalLockDate: closeDate },
+          journals: closingEntry ? [closingEntry, ...p.journals] : p.journals,
+          auditLogs: [
+            makeAuditEntry(p, actorLabel, 'year_close', 'FiscalYear', String(year), `إقفال السنة المالية ${year} وتثبيت القفل المحاسبي حتى ${closeDate}`),
+            ...p.auditLogs,
+          ],
+        };
+      });
+      notify(
+        cur.settings.isArabic
+          ? `تم إقفال السنة المالية ${year} بنجاح وترحيل الأرباح المبقاة`
+          : `Fiscal year ${year} closed and locked through ${closeDate}`,
+        4500,
+      );
+      return { ok: true as const };
+    },
+
+    // Multi-Language, Country Tax Regime & Multi-Company
+    setLanguage: (language: LanguageCode) =>
+      setState((p) => ({
+        ...p,
+        settings: {
+          ...p.settings,
+          language,
+          isArabic: language === 'ar' || language === 'ur',
+        },
+      })),
+
+    applyCountryTaxRegime: (countryCode: CountryCode) => {
+      const regime = getCountryTaxRegime(countryCode);
+      setState((p) => {
+        const nextEnabled = p.settings.enabledCurrencies?.includes(regime.defaultCurrency)
+          ? p.settings.enabledCurrencies
+          : [regime.defaultCurrency, ...(p.settings.enabledCurrencies ?? DEFAULT_ENABLED_CURRENCIES)];
+        return {
+          ...p,
+          settings: {
+            ...p.settings,
+            countryCode,
+            currency: regime.defaultCurrency,
+            displayCurrency: regime.defaultCurrency,
+            enabledCurrencies: nextEnabled,
+            exchangeRates: buildDefaultRatesForBase(regime.defaultCurrency),
+            defaultSalesTaxRate: regime.standardVatRate,
+            defaultPurchaseTaxRate: regime.purchaseVatRate,
+          },
+          auditLogs: [
+            makeAuditEntry(p, actorLabel, 'update', 'TaxRegime', countryCode, `تطبيق النظام الضريبي لـ ${regime.nameAr} (${regime.standardVatRate}%)`),
+            ...p.auditLogs,
+          ],
+        };
+      });
+    },
+
+    saveCompanyProfile: (profile: Omit<CompanyProfile, 'id'>) =>
+      setState((p) => {
+        const id = `COMP-${Date.now().toString(36).toUpperCase()}`;
+        const created: CompanyProfile = { ...profile, id };
+        return {
+          ...p,
+          settings: {
+            ...p.settings,
+            companies: [...(p.settings.companies ?? []), created],
+          },
+        };
+      }),
+
+    switchCompanyProfile: (companyId: string) =>
+      setState((p) => {
+        const target = (p.settings.companies ?? []).find((c) => c.id === companyId);
+        if (!target) return p;
+        return {
+          ...p,
+          settings: {
+            ...p.settings,
+            companyId: target.id,
+            companyName: target.companyName,
+            currency: target.currency,
+            displayCurrency: target.currency,
+            taxNumber: target.taxNumber ?? p.settings.taxNumber,
+            countryCode: target.countryCode ?? p.settings.countryCode,
+          },
+          auditLogs: [
+            makeAuditEntry(p, actorLabel, 'update', 'Company', companyId, `تبديل الشركة النشطة إلى ${target.companyName}`),
+            ...p.auditLogs,
+          ],
+        };
+      }),
+
+    // Team Invites & Real RBAC + FCM Push
+    inviteWorkspaceMember: async (email: string, role: RoleId, permissions?: RouteId[]) => {
+      if (!user) return null;
+      const cur = latestStateRef.current;
+      const perms = permissions && permissions.length > 0 ? permissions : (cur.permissionsMatrix[role] ?? DEFAULT_PERMISSIONS_MATRIX[role]);
+      const invite = await createWorkspaceInvite({
+        workspaceId: activeWorkspaceId ?? user.uid,
+        companyName: cur.settings.companyName,
+        email,
+        role,
+        permissions: perms,
+        invitedByUid: user.uid,
+        invitedByEmail: user.email || '',
+      });
+      setOutgoingInvites((prev) => [invite, ...prev]);
+      notify(cur.settings.isArabic ? `تم إرسال دعوة الفريق إلى ${email}` : `Team invite sent to ${email}`);
+      return invite;
+    },
+
+    acceptPendingInvite: async (invite: WorkspaceInvite) => {
+      if (!user || !user.emailVerified) {
+        notify(
+          latestStateRef.current.settings.isArabic
+            ? 'يجب توثيق البريد الإلكتروني أولاً لقبول دعوة الفريق.'
+            : 'Email verification is required before joining a workspace.',
+        );
+        return false;
+      }
+      await acceptWorkspaceInvite(invite, user);
+      setPendingInvites((prev) => prev.filter((x) => x.id !== invite.id));
+      setActiveWorkspaceId(invite.workspaceId);
+      setState((p) => ({
+        ...p,
+        currentRole: invite.role,
+        permissionsMatrix: {
+          ...p.permissionsMatrix,
+          [invite.role]: invite.permissions.length > 0 ? invite.permissions : p.permissionsMatrix[invite.role],
+        },
+      }));
+      notify(
+        latestStateRef.current.settings.isArabic
+          ? `تم الانضمام إلى ${invite.companyName} بصلاحية ${invite.role}`
+          : `Joined ${invite.companyName} as ${invite.role}`,
+      );
+      return true;
+    },
+
+    revokePendingInvite: async (inviteId: string) => {
+      await revokeWorkspaceInvite(inviteId);
+      setOutgoingInvites((prev) => prev.map((x) => (x.id === inviteId ? { ...x, status: 'revoked' } : x)));
+    },
+
+    enablePushNotifications: async () => {
+      const wsId = activeWorkspaceId ?? user?.uid;
+      return await registerFcmForWorkspace(wsId);
+    },
   };
 
   return {
@@ -4117,6 +5095,10 @@ export function useErpStore() {
     toastMsg,
     idbSnapshots,
     cloudBackups,
+    pendingInvites,
+    outgoingInvites,
+    activeWorkspaceId,
+    localeStrings: getLocaleStrings(state.settings.language ?? (state.settings.isArabic ? 'ar' : 'en')),
     posHeldCarts: posRegister.heldCarts,
     posShift: posRegister.shift,
   };

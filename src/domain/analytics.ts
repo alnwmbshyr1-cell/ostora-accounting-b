@@ -1,5 +1,5 @@
 import { PersistedState } from '../types/erp';
-import { computeProfitAnalytics, getExpenseBaseHalalas } from './accounting';
+import { computeProfitAnalytics, computeUnifiedNetProfit, getExpenseBaseHalalas } from './accounting';
 import { fromHalalas, mulFxHalalas, toHalalas } from './halala';
 
 export interface TopProductStat {
@@ -134,11 +134,13 @@ export function computeMonthlySummaryRich(state: PersistedState): MonthlySummary
   }
 
   for (const e of state.expenses) {
-    if (e.status === 'draft') continue;
+    if (e.status === 'draft' || e.status === 'cancelled') continue;
     if (e.date.slice(0, 7) === ym) {
       expH += getExpenseBaseHalalas(e);
     }
   }
+
+  const unified = computeUnifiedNetProfit(state, ym);
 
   let bestCustomer: { name: string; revenue: number } | null = null;
   for (const [name, h] of custRev.entries()) {
@@ -156,8 +158,8 @@ export function computeMonthlySummaryRich(state: PersistedState): MonthlySummary
 
   return {
     revenue: fromHalalas(revH),
-    expenses: fromHalalas(expH),
-    profit: fromHalalas(revH - expH),
+    expenses: unified.operatingExpenses,
+    profit: unified.netProfit,
     invoiceCount,
     bestCustomer,
     topProduct,

@@ -2,6 +2,7 @@ import {
   BankAccount,
   ChartAccount,
   Expense,
+  FixedAsset,
   Invoice,
   JournalEntry,
   JournalLine,
@@ -33,11 +34,14 @@ export const DEFAULT_CHART_OF_ACCOUNTS: ChartAccount[] = [
   { id: 'COA-1020', code: '1020', nameAr: 'ذمم العملاء (المدينون)', nameEn: 'Accounts Receivable', category: 'assets', parentCode: '1000', isSystem: true },
   { id: 'COA-1030', code: '1030', nameAr: 'المخزون السلعي', nameEn: 'Merchandise Inventory', category: 'assets', parentCode: '1000', isSystem: true },
   { id: 'COA-1040', code: '1040', nameAr: 'ضريبة مدخلات المشتريات المستردة', nameEn: 'Input VAT Receivable', category: 'assets', parentCode: '1000', isSystem: true },
+  { id: 'COA-1050', code: '1050', nameAr: 'الأصول الثابتة (بالتكلفة)', nameEn: 'Fixed Assets (Cost)', category: 'assets', parentCode: '1000', isSystem: true },
+  { id: 'COA-1055', code: '1055', nameAr: 'مجمع إهلاك الأصول الثابتة', nameEn: 'Accumulated Depreciation', category: 'assets', parentCode: '1000', normalBalance: 'credit', isSystem: true },
   // 2xxx Liabilities
   { id: 'COA-2000', code: '2000', nameAr: 'الخصوم (الالتزامات)', nameEn: 'Liabilities', category: 'liabilities', isSystem: true },
   { id: 'COA-2010', code: '2010', nameAr: 'ذمم الموردين (الدائنون)', nameEn: 'Accounts Payable', category: 'liabilities', parentCode: '2000', isSystem: true },
   { id: 'COA-2020', code: '2020', nameAr: 'ضريبة القيمة المضافة المستحقة', nameEn: 'Output VAT Payable', category: 'liabilities', parentCode: '2000', isSystem: true },
   { id: 'COA-2030', code: '2030', nameAr: 'الرواتب والمستحقات', nameEn: 'Accrued Payroll', category: 'liabilities', parentCode: '2000', isSystem: true },
+  { id: 'COA-2040', code: '2040', nameAr: 'القروض وأوراق الدفع المؤجلة', nameEn: 'Loans & Deferred Payables', category: 'liabilities', parentCode: '2000', isSystem: true },
   // 3xxx Equity
   { id: 'COA-3000', code: '3000', nameAr: 'حقوق الملكية', nameEn: 'Equity', category: 'equity', isSystem: true },
   { id: 'COA-3010', code: '3010', nameAr: 'رأس المال', nameEn: 'Owner Capital', category: 'equity', parentCode: '3000', isSystem: true },
@@ -47,12 +51,15 @@ export const DEFAULT_CHART_OF_ACCOUNTS: ChartAccount[] = [
   { id: 'COA-4010', code: '4010', nameAr: 'إيرادات المبيعات', nameEn: 'Sales Revenue', category: 'revenue', parentCode: '4000', isSystem: true },
   { id: 'COA-4020', code: '4020', nameAr: 'مردودات ومسموحات المبيعات', nameEn: 'Sales Returns & Allowances', category: 'revenue', parentCode: '4000', isSystem: true },
   { id: 'COA-4030', code: '4030', nameAr: 'إيرادات شحن وخدمات إضافية', nameEn: 'Shipping & Extra Fees Revenue', category: 'revenue', parentCode: '4000', isSystem: true },
+  { id: 'COA-4040', code: '4040', nameAr: 'إيرادات أخرى', nameEn: 'Other Income', category: 'revenue', parentCode: '4000', isSystem: true },
   // 5xxx Expenses
   { id: 'COA-5000', code: '5000', nameAr: 'المصروفات', nameEn: 'Expenses', category: 'expenses', isSystem: true },
   { id: 'COA-5010', code: '5010', nameAr: 'مصروفات تشغيلية وإدارية', nameEn: 'Operating & Admin Expenses', category: 'expenses', parentCode: '5000', isSystem: true },
   { id: 'COA-5020', code: '5020', nameAr: 'تكلفة المبيعات / المشتريات', nameEn: 'Cost of Goods Sold', category: 'expenses', parentCode: '5000', isSystem: true },
   { id: 'COA-5030', code: '5030', nameAr: 'الرواتب والأجور', nameEn: 'Salaries & Wages', category: 'expenses', parentCode: '5000', isSystem: true },
   { id: 'COA-5040', code: '5040', nameAr: 'فروقات جرد وتسوية نقدية', nameEn: 'Inventory & Cash Variance', category: 'expenses', parentCode: '5000', isSystem: true },
+  { id: 'COA-5050', code: '5050', nameAr: 'مصروف الإهلاك', nameEn: 'Depreciation Expense', category: 'expenses', parentCode: '5000', isSystem: true },
+  { id: 'COA-5060', code: '5060', nameAr: 'أرباح وخسائر فروق العملات', nameEn: 'Foreign Exchange Gain / Loss', category: 'expenses', parentCode: '5000', isSystem: true },
 ];
 
 export function isDateFiscalLocked(dateIso: string | undefined, fiscalLockDate: string | undefined): boolean {
@@ -398,3 +405,269 @@ export function computeBankReconciliationDiff(
     isMatched: diffH === 0,
   };
 }
+
+export interface UnifiedProfitSummary {
+  revenueExVat: number;
+  cogs: number;
+  operatingExpenses: number;
+  netProfit: number;
+}
+
+/**
+ * Single authoritative net profit formula used across Store, Dashboard, Analytics, and Reports:
+ * Net Profit = Revenue (Excl. VAT) - COGS - Operating Expenses
+ */
+export function computeUnifiedNetProfit(
+  state: Pick<PersistedState, 'invoices' | 'products' | 'expenses'>,
+  monthPrefix?: string,
+): UnifiedProfitSummary {
+  const costMap = new Map<string, number>();
+  for (const p of state.products) {
+    costMap.set(p.id, toHalalas(p.cost));
+    costMap.set(p.name.trim(), toHalalas(p.cost));
+  }
+
+  let revExVatH = 0;
+  let cogsH = 0;
+  for (const inv of state.invoices) {
+    if (inv.status === 'cancelled' || inv.status === 'draft' || inv.invoiceType === 'quotation') continue;
+    if (monthPrefix && inv.date.slice(0, monthPrefix.length) !== monthPrefix) continue;
+    const fx = inv.exchangeRate ?? 1;
+    const sign = inv.invoiceType === 'return' ? -1 : 1;
+    revExVatH += mulFxHalalas(toHalalas(inv.subtotal), fx) * sign;
+
+    if (inv.items && inv.items.length > 0) {
+      for (const it of inv.items) {
+        const unitCostH =
+          it.costPrice !== undefined
+            ? toHalalas(it.costPrice)
+            : (costMap.get(it.productId) ?? costMap.get(it.productName.trim()) ?? 0);
+        cogsH += Math.round(unitCostH * it.qty) * sign;
+      }
+    }
+  }
+
+  let expH = 0;
+  for (const exp of state.expenses) {
+    if (exp.status === 'draft' || exp.status === 'cancelled') continue;
+    if (monthPrefix && exp.date.slice(0, monthPrefix.length) !== monthPrefix) continue;
+    // Operating expense excludes Input VAT when vatInput is tracked separately
+    const vatInH = exp.vatInput && exp.vatInput > 0 ? mulFxHalalas(toHalalas(exp.vatInput), exp.exchangeRate ?? 1) : 0;
+    expH += Math.max(0, getExpenseBaseHalalas(exp) - vatInH);
+  }
+
+  return {
+    revenueExVat: fromHalalas(revExVatH),
+    cogs: fromHalalas(cogsH),
+    operatingExpenses: fromHalalas(expH),
+    netProfit: fromHalalas(revExVatH - cogsH - expH),
+  };
+}
+
+export interface UnbalancedJournalIssue {
+  journalId: string;
+  reference: string;
+  date: string;
+  totalDebit: number;
+  totalCredit: number;
+  diff: number;
+}
+
+export interface JournalFinancialStatements {
+  unbalancedJournals: UnbalancedJournalIssue[];
+  trialBalance: {
+    lines: TrialBalanceLine[];
+    totalDebit: number;
+    totalCredit: number;
+    isBalanced: boolean;
+  };
+  assetsTotal: number;
+  liabilitiesTotal: number;
+  equityTotal: number;
+  revenueTotal: number;
+  cogsTotal: number;
+  expensesTotal: number;
+  netIncome: number;
+  balanceSheetBalanced: boolean;
+  vatReconciliation: {
+    vatOutput: number;
+    vatInputPurchases: number;
+    vatInputExpenses: number;
+    vatInputTotal: number;
+    netVatPayable: number;
+    isRefundableCredit: boolean;
+  };
+}
+
+function classifyAccountCategory(accountLabel: string, chart: ChartAccount[]): ChartAccount['category'] {
+  const clean = accountLabel.trim();
+  const codeMatch = clean.match(/^(\d{4})/);
+  const code = codeMatch?.[1];
+  if (code) {
+    const matched = chart.find((c) => c.code === code);
+    if (matched) return matched.category;
+    if (code.startsWith('1')) return 'assets';
+    if (code.startsWith('2')) return 'liabilities';
+    if (code.startsWith('3')) return 'equity';
+    if (code.startsWith('4')) return 'revenue';
+    if (code.startsWith('5')) return 'expenses';
+  }
+  const lower = clean.toLowerCase();
+  if (lower.includes('مبيعات') || lower.includes('إيراد') || lower.includes('revenue') || lower.includes('income')) return 'revenue';
+  if (lower.includes('ذمم الموردين') || lower.includes('ضريبة القيمة المضافة المستحقة') || lower.includes('قروض') || lower.includes('payable') || lower.includes('2020') || lower.includes('2010')) return 'liabilities';
+  if (lower.includes('رأس المال') || lower.includes('أرباح مبقاة') || lower.includes('capital') || lower.includes('equity')) return 'equity';
+  if (lower.includes('مصروف') || lower.includes('تكلفة') || lower.includes('رواتب') || lower.includes('إهلاك') || lower.includes('expense') || lower.includes('cogs')) return 'expenses';
+  return 'assets';
+}
+
+export function computeStatementsFromJournals(state: PersistedState): JournalFinancialStatements {
+  const unbalancedJournals: UnbalancedJournalIssue[] = [];
+  for (const j of state.journals) {
+    if (j.status === 'draft') continue;
+    let dH = 0;
+    let cH = 0;
+    for (const l of j.lines) {
+      dH += toHalalas(l.debit);
+      cH += toHalalas(l.credit);
+    }
+    if (dH !== cH) {
+      unbalancedJournals.push({
+        journalId: j.id,
+        reference: j.reference,
+        date: j.date,
+        totalDebit: fromHalalas(dH),
+        totalCredit: fromHalalas(cH),
+        diff: fromHalalas(dH - cH),
+      });
+    }
+  }
+
+  const trialBalance = computeTrialBalanceFromJournals(state.journals);
+  let assetsH = 0;
+  let liabilitiesH = 0;
+  let equityH = 0;
+  let revenueH = 0;
+  let cogsH = 0;
+  let expensesH = 0;
+
+  for (const row of trialBalance.lines) {
+    const cat = classifyAccountCategory(row.account, state.chartOfAccounts);
+    const netH = toHalalas(row.netBalance); // debit - credit
+    if (cat === 'assets') {
+      assetsH += netH;
+    } else if (cat === 'liabilities') {
+      liabilitiesH += -netH;
+    } else if (cat === 'equity') {
+      equityH += -netH;
+    } else if (cat === 'revenue') {
+      revenueH += -netH;
+    } else {
+      const isCogs = row.account.startsWith('5020') || row.account.toLowerCase().includes('cost of goods') || row.account.includes('تكلفة');
+      if (isCogs) cogsH += netH;
+      else expensesH += netH;
+    }
+  }
+
+  const netIncomeH = revenueH - cogsH - expensesH;
+  const totalLiabAndEquityH = liabilitiesH + equityH + netIncomeH;
+
+  // VAT Output vs Input reconciliation across Invoices, PurchaseOrders & Expenses
+  let vatOutputH = 0;
+  for (const inv of state.invoices) {
+    if (inv.status === 'cancelled' || inv.status === 'draft' || inv.invoiceType === 'quotation') continue;
+    const fx = inv.exchangeRate ?? 1;
+    const sign = inv.invoiceType === 'return' ? -1 : 1;
+    vatOutputH += mulFxHalalas(toHalalas(inv.vat), fx) * sign;
+  }
+
+  let vatInputPurchasesH = 0;
+  for (const po of state.purchaseOrders) {
+    if (po.status === 'cancelled' || po.status === 'draft') continue;
+    vatInputPurchasesH += toHalalas(po.vat ?? 0);
+  }
+
+  let vatInputExpensesH = 0;
+  for (const exp of state.expenses) {
+    if (exp.status === 'draft' || exp.status === 'cancelled') continue;
+    if (exp.vatInput && exp.vatInput > 0) {
+      vatInputExpensesH += mulFxHalalas(toHalalas(exp.vatInput), exp.exchangeRate ?? 1);
+    }
+  }
+
+  const vatInputTotalH = vatInputPurchasesH + vatInputExpensesH;
+  const netVatPayableH = vatOutputH - vatInputTotalH;
+
+  return {
+    unbalancedJournals,
+    trialBalance,
+    assetsTotal: fromHalalas(assetsH),
+    liabilitiesTotal: fromHalalas(liabilitiesH),
+    equityTotal: fromHalalas(equityH),
+    revenueTotal: fromHalalas(revenueH),
+    cogsTotal: fromHalalas(cogsH),
+    expensesTotal: fromHalalas(expensesH),
+    netIncome: fromHalalas(netIncomeH),
+    balanceSheetBalanced: Math.abs(assetsH - totalLiabAndEquityH) <= 1,
+    vatReconciliation: {
+      vatOutput: fromHalalas(vatOutputH),
+      vatInputPurchases: fromHalalas(vatInputPurchasesH),
+      vatInputExpenses: fromHalalas(vatInputExpensesH),
+      vatInputTotal: fromHalalas(vatInputTotalH),
+      netVatPayable: fromHalalas(netVatPayableH),
+      isRefundableCredit: netVatPayableH < 0,
+    },
+  };
+}
+
+/**
+ * Generates an exact reversing journal entry for any posted journal (used for Void & Reverse).
+ */
+export function buildVoidReversalJournal(params: {
+  reversalId: string;
+  reference: string;
+  description: string;
+  date: string;
+  originalLines: JournalLine[];
+  branchId?: string;
+  costCenter?: string;
+}): JournalEntry {
+  return {
+    id: params.reversalId,
+    reference: `REV-${params.reference}`,
+    description: params.description,
+    date: params.date,
+    entryType: 'auto',
+    status: 'approved',
+    branchId: params.branchId,
+    costCenter: params.costCenter,
+    lines: params.originalLines.map((l) => ({
+      account: l.account,
+      debit: l.credit,
+      credit: l.debit,
+      description: l.description ? `عكس: ${l.description}` : 'قيد عكسي للإبطال',
+    })),
+  };
+}
+
+export function buildDepreciationJournal(params: {
+  journalId: string;
+  asset: FixedAsset;
+  depreciationAmount: number;
+  date: string;
+}): JournalEntry {
+  return {
+    id: params.journalId,
+    reference: params.asset.id,
+    description: `قيد إهلاك شهري - ${params.asset.name} (${params.asset.id})`,
+    date: params.date,
+    entryType: 'auto',
+    status: 'approved',
+    branchId: params.asset.branchId,
+    costCenter: params.asset.costCenter,
+    lines: [
+      { account: '5050 - مصروف الإهلاك', debit: params.depreciationAmount, credit: 0 },
+      { account: `1055 - مجمع إهلاك الأصول الثابتة (${params.asset.name})`, debit: 0, credit: params.depreciationAmount },
+    ],
+  };
+}
+
