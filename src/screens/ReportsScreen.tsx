@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   BarChart3,
   Download,
   FileSpreadsheet,
+  FileText,
   Filter,
   Landmark,
   Printer,
@@ -25,6 +27,7 @@ import { strings } from '../data/translations';
 import {
   computeAccountLedger,
   computeProfitAnalytics,
+  computeStatementsFromJournals,
   getExpenseBaseHalalas,
 } from '../domain/accounting';
 import { fromHalalas, mulFxHalalas, toHalalas } from '../domain/halala';
@@ -35,7 +38,7 @@ import {
   formatCurrency,
   getCurrencyMeta,
 } from '../utils/currencies';
-import { downloadTextFile, exportMultiSheetExcel } from '../utils/export';
+import { downloadTextFile, exportMultiSheetExcel, exportTableReportToPdf } from '../utils/export';
 import { ScreenProps } from './types';
 
 type ReportTabId =
@@ -219,7 +222,7 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
 
   const filteredExpenses = useMemo(() => {
     return state.expenses.filter((exp) => {
-      if (exp.status === 'draft') return false;
+      if (exp.status === 'draft' || exp.status === 'cancelled') return false;
       if (!inDateRange(exp.date)) return false;
       if (branchFilter !== 'all' && (exp.branchId || state.branches[0]?.id) !== branchFilter) return false;
       return true;
@@ -228,11 +231,14 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
 
   const filteredVouchers = useMemo(() => {
     return state.vouchers.filter((v) => {
+      if (v.status === 'cancelled' || v.status === 'draft') return false;
       if (!inDateRange(v.date)) return false;
       if (branchFilter !== 'all' && (v.branchId || state.branches[0]?.id) !== branchFilter) return false;
       return true;
     });
   }, [state.vouchers, state.branches, dateFrom, dateTo, branchFilter]);
+
+  const jrnStatements = useMemo(() => computeStatementsFromJournals(state), [state]);
 
   // Core KPI metrics (using filtered scope when filters active, or full store metrics when unfiltered)
   const cash = metrics.totalCashAndBanks;
@@ -252,31 +258,35 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
     }
     let revH = 0;
     let vatH = 0;
+    let salesCostH = 0;
     for (const inv of filteredInvoices) {
       const fx = inv.exchangeRate ?? 1;
       const sign = inv.invoiceType === 'return' ? -1 : 1;
       revH += mulFxHalalas(toHalalas(inv.subtotal), fx) * sign;
       vatH += mulFxHalalas(toHalalas(inv.vat), fx) * sign;
+      const lineCostH = (inv.items ?? []).reduce((s, it) => {
+        const unitCost = it.costPrice ?? state.products.find((p) => p.id === it.productId)?.cost ?? 0;
+        return s + Math.round(toHalalas(unitCost) * it.qty);
+      }, 0);
+      salesCostH += lineCostH * sign;
     }
     let expH = 0;
     for (const exp of filteredExpenses) {
-      expH += getExpenseBaseHalalas(exp);
+      const vatInH = exp.vatInput && exp.vatInput > 0 ? mulFxHalalas(toHalalas(exp.vatInput), exp.exchangeRate ?? 1) : 0;
+      expH += Math.max(0, getExpenseBaseHalalas(exp) - vatInH);
     }
     return {
       scopedRevenue: fromHalalas(revH),
       scopedVat: fromHalalas(vatH),
       scopedExpenses: fromHalalas(expH),
-      scopedNetProfit: fromHalalas(revH - expH),
+      scopedNetProfit: fromHalalas(revH - salesCostH - expH),
     };
-  }, [hasFilters, metrics, filteredInvoices, filteredExpenses]);
+  }, [hasFilters, metrics, filteredInvoices, filteredExpenses, state.products]);
 
   const revenue = scopedRevenue;
   const vat = scopedVat;
   const expenses = scopedExpenses;
   const netProfit = scopedNetProfit;
-  const totalLiabilities = payables + metrics.vatOutput;
-  const equity = totalAssets - totalLiabilities;
-  const openingCapital = equity - metrics.netProfit;
   const profitMarginPct = revenue > 0 ? ((netProfit / revenue) * 100).toFixed(1) : '0.0';
 
   const monthlySeries = useMemo<MonthlyChartPoint[]>(() => {
@@ -329,35 +339,35 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
   const activePoint =
     monthlySeries.find((p) => p.monthKey === selectedMonthKey) ?? monthlySeries[monthlySeries.length - 1];
 
-  // 1. Trial Balance
+  // 1. Trial Balance (100% derived from actual posted ledger entries — zero synthetic capital)
   const trialRows: string[][] = useMemo(() => {
-    const totalTrialDebit =
-      cash + receivables + currentStockTotal + metrics.totalExpenses + (openingCapital < 0 ? Math.abs(openingCapital) : 0);
-    const totalTrialCredit = payables + metrics.vatOutput + metrics.revenueExVat + (openingCapital >= 0 ? openingCapital : 0);
     const zeroStr = fmtRpt(0);
+    const ledgerLines = jrnStatements.trialBalance.lines.map((line) => [
+      line.account,
+      line.debit > 0 ? fmtRpt(line.debit) : zeroStr,
+      line.credit > 0 ? fmtRpt(line.credit) : zeroStr,
+    ]);
+    const balancedLabel = jrnStatements.trialBalance.isBalanced
+      ? isAr
+        ? 'الإجمالي (متوازن ✓)'
+        : 'Total (Balanced ✓)'
+      : isAr
+      ? 'الإجمالي (غير متوازن ⚠)'
+      : 'Total (Unbalanced ⚠)';
     return [
       [t.account, `${t.debit} (${reportCurrency})`, `${t.credit} (${reportCurrency})`],
-      [isAr ? 'البنوك والصندوق' : 'Cash & Banks', fmtRpt(cash), zeroStr],
-      [isAr ? 'ذمم العملاء' : 'Accounts Receivable', fmtRpt(receivables), zeroStr],
-      [t.currentStock, fmtRpt(currentStockTotal), zeroStr],
-      [isAr ? 'المصروفات' : 'Expenses', fmtRpt(metrics.totalExpenses), zeroStr],
-      [isAr ? 'ذمم الموردين' : 'Accounts Payable', zeroStr, fmtRpt(payables)],
-      [isAr ? 'ضريبة القيمة المضافة' : 'VAT Output', zeroStr, fmtRpt(metrics.vatOutput)],
-      [isAr ? 'المبيعات' : 'Sales Revenue', zeroStr, fmtRpt(metrics.revenueExVat)],
+      ...(ledgerLines.length > 0
+        ? ledgerLines
+        : [[isAr ? 'لا توجد قيود مرحلة بعد' : 'No posted journal entries yet', zeroStr, zeroStr]]),
       [
-        isAr ? 'رأس المال والأرباح المبقاة' : 'Capital & Retained Equity',
-        openingCapital < 0 ? fmtRpt(Math.abs(openingCapital)) : zeroStr,
-        openingCapital >= 0 ? fmtRpt(openingCapital) : zeroStr,
-      ],
-      [
-        isAr ? 'الإجمالي (متوازن ✓)' : 'Total (Balanced ✓)',
-        fmtRpt(totalTrialDebit),
-        fmtRpt(totalTrialCredit),
+        balancedLabel,
+        fmtRpt(jrnStatements.trialBalance.totalDebit),
+        fmtRpt(jrnStatements.trialBalance.totalCredit),
       ],
     ];
-  }, [cash, receivables, currentStockTotal, metrics.totalExpenses, metrics.vatOutput, metrics.revenueExVat, payables, openingCapital, reportCurrency, cur, state.settings.exchangeRates, isAr, t]);
+  }, [jrnStatements.trialBalance, reportCurrency, cur, state.settings.exchangeRates, isAr, t]);
 
-  // 2. Income Statement
+  // 2. Income Statement (aligned with computeUnifiedNetProfit: Sales Excl. VAT - COGS - Operating Expenses)
   const incomeRows: string[][] = useMemo(() => {
     const salesCostH = filteredInvoices.reduce((sum, inv) => {
       const sign = inv.invoiceType === 'return' ? -1 : 1;
@@ -381,25 +391,75 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
     ];
   }, [filteredInvoices, state.products, revenue, expenses, reportCurrency, cur, state.settings.exchangeRates, isAr, t]);
 
-  // 3. Balance Sheet
-  const balanceRows: string[][] = useMemo(
-    () => [
+  // 3. Balance Sheet (100% derived from genuine Asset / Liability / Equity ledger accounts + Period Net Income)
+  const balanceRows: string[][] = useMemo(() => {
+    const classifyRow = (accLabel: string): 'assets' | 'liabilities' | 'equity' | 'other' => {
+      const clean = accLabel.trim();
+      const codeMatch = clean.match(/^(\d{4})/);
+      const code = codeMatch?.[1];
+      if (code) {
+        const coa = state.chartOfAccounts.find((c) => c.code === code);
+        if (coa) {
+          return coa.category === 'assets' || coa.category === 'liabilities' || coa.category === 'equity'
+            ? coa.category
+            : 'other';
+        }
+        if (code.startsWith('1')) return 'assets';
+        if (code.startsWith('2')) return 'liabilities';
+        if (code.startsWith('3')) return 'equity';
+        return 'other';
+      }
+      const low = clean.toLowerCase();
+      if (low.includes('ذمم الموردين') || low.includes('ضريبة') || low.includes('payable') || low.includes('قروض')) {
+        return 'liabilities';
+      }
+      if (low.includes('رأس المال') || low.includes('أرباح مبقاة') || low.includes('capital') || low.includes('equity')) {
+        return 'equity';
+      }
+      if (low.includes('مبيعات') || low.includes('إيراد') || low.includes('مصروف') || low.includes('تكلفة') || low.includes('revenue') || low.includes('expense')) {
+        return 'other';
+      }
+      return 'assets';
+    };
+
+    const assetLines: [string, string][] = [];
+    const liabilityLines: [string, string][] = [];
+    const equityLines: [string, string][] = [];
+
+    for (const line of jrnStatements.trialBalance.lines) {
+      const cat = classifyRow(line.account);
+      if (cat === 'assets') {
+        assetLines.push([line.account, fmtRpt(line.netBalance)]);
+      } else if (cat === 'liabilities') {
+        liabilityLines.push([line.account, fmtRpt(-line.netBalance)]);
+      } else if (cat === 'equity') {
+        equityLines.push([line.account, fmtRpt(-line.netBalance)]);
+      }
+    }
+
+    const totalLiabAndEq = fromHalalas(
+      toHalalas(jrnStatements.liabilitiesTotal) + toHalalas(jrnStatements.equityTotal) + toHalalas(jrnStatements.netIncome),
+    );
+    const verifiedSuffix = jrnStatements.balanceSheetBalanced
+      ? isAr
+        ? '(متوازن ✓)'
+        : '(Balanced ✓)'
+      : isAr
+      ? '(فرق قيد المراجعة ⚠)'
+      : '(Variance ⚠)';
+
+    return [
       [t.account, `${t.amount} (${reportCurrency})`],
-      [isAr ? 'النقد والبنوك (ملخص)' : 'Cash & Banks (Total)', fmtRpt(cash)],
-      [isAr ? 'ذمم العملاء (ملخص)' : 'Accounts Receivable (Total)', fmtRpt(receivables)],
-      [t.currentStock, fmtRpt(currentStockTotal)],
-      [isAr ? 'إجمالي الأصول' : 'Total Assets', fmtRpt(totalAssets)],
-      [isAr ? 'ذمم الموردين (ملخص)' : 'Accounts Payable (Total)', fmtRpt(payables)],
-      [isAr ? 'الضريبة المستحقة' : 'VAT Liability', fmtRpt(metrics.vatOutput)],
-      [isAr ? 'إجمالي الالتزامات' : 'Total Liabilities', fmtRpt(totalLiabilities)],
-      [isAr ? 'صافي حقوق الملكية' : 'Total Owner Equity', fmtRpt(equity)],
-      [
-        isAr ? 'إجمالي الالتزامات وحقوق الملكية (مطابق)' : 'Total Liabilities & Equity (Verified)',
-        fmtRpt(totalLiabilities + equity),
-      ],
-    ],
-    [cash, receivables, currentStockTotal, totalAssets, payables, metrics.vatOutput, totalLiabilities, equity, reportCurrency, cur, state.settings.exchangeRates, isAr, t],
-  );
+      ...(assetLines.length > 0 ? assetLines : [[isAr ? 'لا توجد حسابات أصول مرحلة' : 'No posted asset accounts', fmtRpt(0)]]),
+      [isAr ? 'إجمالي الأصول' : 'Total Assets', fmtRpt(jrnStatements.assetsTotal)],
+      ...(liabilityLines.length > 0 ? liabilityLines : [[isAr ? 'الالتزامات المسجلة' : 'Recorded Liabilities', fmtRpt(0)]]),
+      [isAr ? 'إجمالي الالتزامات' : 'Total Liabilities', fmtRpt(jrnStatements.liabilitiesTotal)],
+      ...equityLines,
+      [isAr ? 'صافي دخل الفترة المرحلة' : 'Current Period Net Income', fmtRpt(jrnStatements.netIncome)],
+      [isAr ? 'إجمالي حقوق الملكية والدخل' : 'Total Equity & Current Income', fmtRpt(jrnStatements.equityTotal + jrnStatements.netIncome)],
+      [`${isAr ? 'إجمالي الالتزامات وحقوق الملكية' : 'Total Liabilities & Equity'} ${verifiedSuffix}`, fmtRpt(totalLiabAndEq)],
+    ];
+  }, [jrnStatements, state.chartOfAccounts, reportCurrency, cur, state.settings.exchangeRates, isAr, t]);
 
   // 4. General Ledger (respects date/branch filters)
   const scopedJournals = useMemo(() => {
@@ -697,16 +757,24 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
     ];
   }, [profitAnalytics, profitDimension, reportCurrency, cur, state.settings.exchangeRates, isAr, t]);
 
-  // 10. VAT Report
-  const inputVatTotal = useMemo(() => {
-    let h = 0;
+  // 10. VAT Report (includes Purchases Input VAT + Expenses Input VAT)
+  const { inputVatPurchases, inputVatExpenses, inputVatTotal } = useMemo(() => {
+    let poH = 0;
     for (const po of filteredPurchases) {
-      if (po.status === 'received') {
-        h += toHalalas(po.vat ?? 0);
+      poH += toHalalas(po.vat ?? 0);
+    }
+    let expVatH = 0;
+    for (const exp of filteredExpenses) {
+      if (exp.vatInput && exp.vatInput > 0) {
+        expVatH += mulFxHalalas(toHalalas(exp.vatInput), exp.exchangeRate ?? 1);
       }
     }
-    return fromHalalas(h);
-  }, [filteredPurchases]);
+    return {
+      inputVatPurchases: fromHalalas(poH),
+      inputVatExpenses: fromHalalas(expVatH),
+      inputVatTotal: fromHalalas(poH + expVatH),
+    };
+  }, [filteredPurchases, filteredExpenses]);
   const netVatPayable = fromHalalas(toHalalas(vat) - toHalalas(inputVatTotal));
 
   const vatRows: string[][] = useMemo(
@@ -714,10 +782,17 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
       [t.account, `${t.amount} (${reportCurrency})`],
       [isAr ? 'إجمالي المبيعات الخاضعة للضريبة' : 'Taxable Sales Base (Excl. VAT)', fmtRpt(revenue)],
       [isAr ? 'ضريبة المخرجات (المبيعات)' : 'Output VAT (Sales)', fmtRpt(vat)],
-      [isAr ? 'ضريبة المدخلات (المشتريات المستلمة)' : 'Input VAT (Received Purchases)', fmtRpt(inputVatTotal)],
-      [isAr ? 'صافي الضريبة المستحقة للدفع' : 'Net VAT Payable', fmtRpt(netVatPayable)],
+      [isAr ? 'ضريبة المدخلات (المشتريات)' : 'Input VAT (Purchases)', fmtRpt(inputVatPurchases)],
+      [isAr ? 'ضريبة المدخلات (المصروفات)' : 'Input VAT (Expenses)', fmtRpt(inputVatExpenses)],
+      [isAr ? 'إجمالي ضريبة المدخلات القابلة للخصم' : 'Total Deductible Input VAT', fmtRpt(inputVatTotal)],
+      [
+        netVatPayable < 0
+          ? (isAr ? 'رصيد ضريبي قابل للاسترداد' : 'Refundable VAT Credit')
+          : (isAr ? 'صافي الضريبة المستحقة للدفع' : 'Net VAT Payable'),
+        fmtRpt(Math.abs(netVatPayable)),
+      ],
     ],
-    [reportCurrency, cur, state.settings.exchangeRates, revenue, vat, inputVatTotal, netVatPayable, isAr, t],
+    [reportCurrency, cur, state.settings.exchangeRates, revenue, vat, inputVatPurchases, inputVatExpenses, inputVatTotal, netVatPayable, isAr, t],
   );
 
   // 11. Expenses Report
@@ -910,6 +985,26 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
   return (
     <div className="space-y-5">
       <div className={`space-y-5 ${printAllMode ? 'no-print' : ''}`}>
+        {jrnStatements.unbalancedJournals.length > 0 && (
+          <div className="p-4 rounded-[20px] bg-rose-50 dark:bg-rose-950/40 border-2 border-rose-500 text-rose-800 dark:text-rose-200 space-y-1.5">
+            <div className="flex items-center gap-2 font-extrabold text-sm">
+              <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0" />
+              <span>
+                {isAr
+                  ? `تنبيه تدقيق محاسبي: يوجد ${jrnStatements.unbalancedJournals.length} قيد محاسبي غير متوازن!`
+                  : `Accounting Audit Alert: ${jrnStatements.unbalancedJournals.length} unbalanced journal(s) detected!`}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs font-mono">
+              {jrnStatements.unbalancedJournals.map((u) => (
+                <span key={u.journalId} className="px-2.5 py-1 rounded-lg bg-rose-500/15 border border-rose-500/30 font-bold">
+                  {isAr ? `قيد غير متوازن رقم ${u.journalId}` : `Unbalanced #${u.journalId}`} (Δ {fmtRpt(u.diff)})
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Visual Dashboard Summary KPI Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
           <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 flex items-center justify-between gap-3">
@@ -1333,6 +1428,28 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
             </button>
             <button
               type="button"
+              onClick={async () => {
+                try {
+                  await exportTableReportToPdf({
+                    filename: `ostora_${reportTab}_${new Date().toISOString().slice(0, 10)}.pdf`,
+                    title: `${state.settings.companyName} — ${activeTabLabel}`,
+                    subtitle: `${isAr ? 'العملة' : 'Currency'}: ${reportCurrency} · ${new Date().toISOString().slice(0, 10)}`,
+                    isRtl: isAr,
+                    headers: rows[0] ?? [],
+                    rows: rows.slice(1),
+                  });
+                  actions.notify(isAr ? 'تم تصدير التقرير بصيغة PDF بنجاح' : 'Report exported to PDF');
+                } catch {
+                  actions.notify(isAr ? 'تعذر إنشاء ملف PDF' : 'Failed to export PDF');
+                }
+              }}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-rose-600/30 text-rose-700 dark:text-rose-400 bg-white dark:bg-[#121E19] text-xs font-bold cursor-pointer"
+            >
+              <FileText className="w-4 h-4" />
+              <span>{isAr ? 'تصدير PDF' : 'Export PDF'}</span>
+            </button>
+            <button
+              type="button"
               onClick={() =>
                 downloadTextFile(
                   `ostora_${reportTab}.csv`,
@@ -1346,22 +1463,26 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
             </button>
             <button
               type="button"
-              onClick={() => {
-                exportMultiSheetExcel(`ostora_financial_reports_${new Date().toISOString().slice(0, 10)}.xls`, [
-                  { name: 'Trial Balance', rows: trialRows },
-                  { name: 'Income Statement', rows: incomeRows },
-                  { name: 'Balance Sheet', rows: balanceRows },
-                  { name: 'General Ledger', rows: ledgerRows },
-                  { name: 'Sales Report', rows: salesRows },
-                  { name: 'Purchases Report', rows: purchasesRows },
-                  { name: 'Inventory Report', rows: inventoryRows },
-                  { name: 'Profit Analysis', rows: profitRows },
-                  { name: 'VAT Report', rows: vatRows },
-                  { name: 'Expenses Report', rows: expensesRows },
-                  { name: 'Overdue Aging', rows: overdueRows },
-                  { name: 'Payroll Report', rows: payrollRows },
-                ]);
-                actions.notify(isAr ? 'تم تصدير جميع التقارير الـ 13 إلى Excel' : 'All financial reports exported to Excel');
+              onClick={async () => {
+                try {
+                  await exportMultiSheetExcel(`ostora_financial_reports_${new Date().toISOString().slice(0, 10)}.xlsx`, [
+                    { name: 'Trial Balance', rows: trialRows },
+                    { name: 'Income Statement', rows: incomeRows },
+                    { name: 'Balance Sheet', rows: balanceRows },
+                    { name: 'General Ledger', rows: ledgerRows },
+                    { name: 'Sales Report', rows: salesRows },
+                    { name: 'Purchases Report', rows: purchasesRows },
+                    { name: 'Inventory Report', rows: inventoryRows },
+                    { name: 'Profit Analysis', rows: profitRows },
+                    { name: 'VAT Report', rows: vatRows },
+                    { name: 'Expenses Report', rows: expensesRows },
+                    { name: 'Overdue Aging', rows: overdueRows },
+                    { name: 'Payroll Report', rows: payrollRows },
+                  ]);
+                  actions.notify(isAr ? 'تم تصدير جميع التقارير الـ 13 إلى Excel' : 'All financial reports exported to Excel');
+                } catch {
+                  actions.notify(isAr ? 'تعذر تصدير ملف Excel' : 'Failed to export Excel');
+                }
               }}
               className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-emerald-600/30 text-emerald-700 dark:text-emerald-400 bg-white dark:bg-[#121E19] text-xs font-bold cursor-pointer"
             >
@@ -1396,7 +1517,10 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
         <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] overflow-x-auto">
           <div className="min-w-[540px]">
             {rows.map((cols, idx) => {
-              const isTotalRow = idx === rows.length - 1 || (reportTab === 'balance_sheet' && idx === 4);
+              const firstCell = cols[0] ?? '';
+              const isTotalRow =
+                idx === rows.length - 1 ||
+                (reportTab === 'balance_sheet' && (firstCell.startsWith('إجمالي') || firstCell.startsWith('Total')));
               return (
                 <div
                   key={idx}
@@ -1502,7 +1626,10 @@ export const ReportsScreen: React.FC<ScreenProps> = ({ store }) => {
               </h2>
               <div className="border border-slate-300 rounded-xl overflow-hidden">
                 {section.data.map((cols, idx) => {
-                  const isTotalRow = idx === section.data.length - 1 || (section.tabId === 'balance_sheet' && idx === 4);
+                  const firstCell = cols[0] ?? '';
+                  const isTotalRow =
+                    idx === section.data.length - 1 ||
+                    (section.tabId === 'balance_sheet' && (firstCell.startsWith('إجمالي') || firstCell.startsWith('Total')));
                   return (
                     <div
                       key={idx}

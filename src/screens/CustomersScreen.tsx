@@ -174,8 +174,40 @@ export const CustomersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
 
   const enabledCurrencies = state.settings.enabledCurrencies ?? [state.settings.currency];
 
+  const custKpis = useMemo(() => {
+    const totalDebt = visibleCustomers.reduce((s, c) => s + (c.debt || 0), 0);
+    const overLimit = visibleCustomers.filter(
+      (c) => typeof c.creditLimit === 'number' && c.debt >= c.creditLimit && (c.debt > c.creditLimit || c.creditLimit === 0),
+    ).length;
+    const vipCount = visibleCustomers.filter((c) => c.customerType === 'VIP' || c.rating === 'A').length;
+    return { count: visibleCustomers.length, totalDebt, overLimit, vipCount };
+  }, [visibleCustomers]);
+
   return (
     <div className="space-y-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <p className="text-[11px] font-bold text-slate-500">{isAr ? 'إجمالي العملاء' : 'Total Customers'}</p>
+          <p className="text-lg font-extrabold font-mono tabular-nums mt-1">{custKpis.count}</p>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <p className="text-[11px] font-bold text-slate-500">{isAr ? 'إجمالي المديونيات' : 'Total Receivables'}</p>
+          <p className="text-lg font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227] mt-1">
+            {formatCurrency(custKpis.totalDebt, cur, { isAr })}
+          </p>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <p className="text-[11px] font-bold text-slate-500">{isAr ? 'تجاوز الحد الائتماني' : 'At/Over Credit Limit'}</p>
+          <p className={`text-lg font-extrabold font-mono tabular-nums mt-1 ${custKpis.overLimit > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+            {custKpis.overLimit}
+          </p>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <p className="text-[11px] font-bold text-slate-500">{isAr ? 'عملاء مميزون (VIP / A)' : 'VIP / Rating A'}</p>
+          <p className="text-lg font-extrabold font-mono tabular-nums text-emerald-600 mt-1">{custKpis.vipCount}</p>
+        </div>
+      </div>
+
       <div className="flex flex-wrap justify-between items-center gap-2.5">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="w-4 h-4 text-slate-400 absolute top-1/2 -translate-y-1/2 start-3.5" />
@@ -569,16 +601,46 @@ export const CustomersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
 
             {formSection === 'contact' && (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <input type="tel" value={custForm.whatsapp} onChange={(e) => setCustForm({ ...custForm, whatsapp: e.target.value })} placeholder={t.whatsapp} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
-                <input type="tel" value={custForm.landline} onChange={(e) => setCustForm({ ...custForm, landline: e.target.value })} placeholder={isAr ? 'الهاتف الثابت' : 'Landline'} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
-                <input type="email" value={custForm.email} onChange={(e) => setCustForm({ ...custForm, email: e.target.value })} placeholder={t.email} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
-                <input value={custForm.website} onChange={(e) => setCustForm({ ...custForm, website: e.target.value })} placeholder={isAr ? 'الموقع الإلكتروني' : 'Website'} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
-                <input value={custForm.country} onChange={(e) => setCustForm({ ...custForm, country: e.target.value })} placeholder={isAr ? 'الدولة' : 'Country'} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
-                <input value={custForm.city} onChange={(e) => setCustForm({ ...custForm, city: e.target.value })} placeholder={isAr ? 'المدينة' : 'City'} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
-                <input value={custForm.district} onChange={(e) => setCustForm({ ...custForm, district: e.target.value })} placeholder={isAr ? 'الحي' : 'District'} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
-                <input value={custForm.address} onChange={(e) => setCustForm({ ...custForm, address: e.target.value })} placeholder={t.address} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
-                <input value={custForm.mapUrl} onChange={(e) => setCustForm({ ...custForm, mapUrl: e.target.value })} placeholder={isAr ? 'رابط Google Maps' : 'Google Maps URL'} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
-                <input value={custForm.gpsCoords} onChange={(e) => setCustForm({ ...custForm, gpsCoords: e.target.value })} placeholder={isAr ? 'إحداثيات GPS (Lat, Lng)' : 'GPS Coords'} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{t.whatsapp}</label>
+                  <input type="tel" value={custForm.whatsapp} onChange={(e) => setCustForm({ ...custForm, whatsapp: e.target.value })} placeholder="9665XXXXXXXX" className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{isAr ? 'الهاتف الثابت' : 'Landline'}</label>
+                  <input type="tel" value={custForm.landline} onChange={(e) => setCustForm({ ...custForm, landline: e.target.value })} placeholder="011XXXXXXX" className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{t.email}</label>
+                  <input type="email" value={custForm.email} onChange={(e) => setCustForm({ ...custForm, email: e.target.value })} placeholder="name@company.com" className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{isAr ? 'الموقع الإلكتروني' : 'Website'}</label>
+                  <input value={custForm.website} onChange={(e) => setCustForm({ ...custForm, website: e.target.value })} placeholder="https://" className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{isAr ? 'الدولة' : 'Country'}</label>
+                  <input value={custForm.country} onChange={(e) => setCustForm({ ...custForm, country: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{isAr ? 'المدينة' : 'City'}</label>
+                  <input value={custForm.city} onChange={(e) => setCustForm({ ...custForm, city: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{isAr ? 'الحي' : 'District'}</label>
+                  <input value={custForm.district} onChange={(e) => setCustForm({ ...custForm, district: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{t.address}</label>
+                  <input value={custForm.address} onChange={(e) => setCustForm({ ...custForm, address: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{isAr ? 'رابط Google Maps' : 'Google Maps URL'}</label>
+                  <input value={custForm.mapUrl} onChange={(e) => setCustForm({ ...custForm, mapUrl: e.target.value })} placeholder="https://maps.google.com/..." className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{isAr ? 'إحداثيات GPS' : 'GPS Coordinates'}</label>
+                  <input value={custForm.gpsCoords} onChange={(e) => setCustForm({ ...custForm, gpsCoords: e.target.value })} placeholder="24.7136, 46.6753" className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+                </div>
               </div>
             )}
 
@@ -688,8 +750,14 @@ export const CustomersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                     <span className="text-xs text-emerald-600 font-bold">✓ {isAr ? 'مرفق محفوظ' : 'Attached'}</span>
                   )}
                 </div>
-                <textarea rows={2} value={custForm.callLogs} onChange={(e) => setCustForm({ ...custForm, callLogs: e.target.value })} placeholder={isAr ? 'سجل المكالمات والمتابعة' : 'Call & Follow-up Logs'} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
-                <textarea rows={2} value={custForm.notes} onChange={(e) => setCustForm({ ...custForm, notes: e.target.value })} placeholder={t.notes} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{isAr ? 'سجل المكالمات والمتابعة' : 'Call & Follow-up Logs'}</label>
+                  <textarea rows={2} value={custForm.callLogs} onChange={(e) => setCustForm({ ...custForm, callLogs: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{t.notes}</label>
+                  <textarea rows={2} value={custForm.notes} onChange={(e) => setCustForm({ ...custForm, notes: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
               </div>
             )}
 

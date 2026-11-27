@@ -44,6 +44,7 @@ export const InventoryScreen: React.FC<ScreenProps> = ({ store }) => {
   const [scanCodeInput, setScanCodeInput] = useState('');
   const [ledgerProductId, setLedgerProductId] = useState<string | null>(null);
   const [prdModal, setPrdModal] = useState<{ open: boolean; editId?: string }>({ open: false });
+  const [prdSection, setPrdSection] = useState<'all' | 'basic' | 'pricing' | 'stock'>('all');
   const [formError, setFormError] = useState('');
   const [prdForm, setPrdForm] = useState({
     name: '',
@@ -163,8 +164,30 @@ export const InventoryScreen: React.FC<ScreenProps> = ({ store }) => {
     ? profitByProduct.get(ledgerProduct.id) ?? profitByProduct.get(ledgerProduct.name)
     : undefined;
 
+  const invKpis = useMemo(() => {
+    let costH = 0;
+    let retailH = 0;
+    let alertsCount = 0;
+    for (const p of state.products) {
+      if (p.status !== 'service') {
+        costH += Math.round(p.qty * toHalalas(p.cost));
+        retailH += Math.round(p.qty * toHalalas(p.price));
+      }
+      const low = p.qty <= (p.minStock ?? 10) && p.status !== 'service';
+      const expDays = p.expiryDate ? Math.ceil((new Date(p.expiryDate).getTime() - todayMs) / 86400000) : null;
+      if (low || (expDays !== null && expDays <= 30)) alertsCount += 1;
+    }
+    return {
+      totalCount: state.products.length,
+      costValue: costH / 100,
+      retailValue: retailH / 100,
+      alertsCount,
+    };
+  }, [state.products, todayMs]);
+
   const openNewProductModal = () => {
     setFormError('');
+    setPrdSection('all');
     setPrdForm({
       name: '',
       nameEn: '',
@@ -203,6 +226,7 @@ export const InventoryScreen: React.FC<ScreenProps> = ({ store }) => {
 
   const openEditProductModal = (p: Product) => {
     setFormError('');
+    setPrdSection('all');
     setPrdForm({
       name: p.name,
       nameEn: p.nameEn ?? '',
@@ -295,6 +319,32 @@ export const InventoryScreen: React.FC<ScreenProps> = ({ store }) => {
           <Plus className="w-4 h-4" />
           <span>{t.addProduct}</span>
         </button>
+      </div>
+
+      {/* KPI Summary Strip */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'إجمالي الأصناف' : 'Total Products'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums mt-1 block">{invKpis.totalCount}</span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'تكلفة المخزون' : 'Inventory Cost'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227] mt-1 block">
+            {formatCurrency(invKpis.costValue, cur, { isAr })}
+          </span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'القيمة البيعية المتوقعة' : 'Potential Retail Value'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-emerald-700 dark:text-emerald-400 mt-1 block">
+            {formatCurrency(invKpis.retailValue, cur, { isAr })}
+          </span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/35 rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'تنبيهات النقص والصلاحية' : 'Stock & Expiry Alerts'}</span>
+          <span className={`text-lg font-extrabold font-mono tabular-nums mt-1 block ${invKpis.alertsCount > 0 ? 'text-rose-600' : 'text-emerald-700 dark:text-emerald-400'}`}>
+            {invKpis.alertsCount}
+          </span>
+        </div>
       </div>
 
       {/* Filters Bar */}
@@ -511,6 +561,31 @@ export const InventoryScreen: React.FC<ScreenProps> = ({ store }) => {
               </div>
             )}
 
+            {/* Modal Section Switcher */}
+            <div className="flex flex-wrap gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0A120F]">
+              {([
+                ['all', isAr ? 'الكل' : 'All'],
+                ['basic', isAr ? 'البيانات الأساسية' : 'Basic Info'],
+                ['pricing', isAr ? 'الوحدات والتسعير والضريبة' : 'Units & Pricing'],
+                ['stock', isAr ? 'المخزون والتتبع' : 'Stock & Tracking'],
+              ] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setPrdSection(key)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
+                    prdSection === key
+                      ? 'bg-[#0A3D2C] text-white'
+                      : 'text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {(prdSection === 'all' || prdSection === 'basic') && (
+              <>
             <div className="flex items-center gap-3">
               <img
                 src={prdForm.imageBase64 || DEFAULT_PRODUCT_IMAGE}
@@ -680,16 +755,23 @@ export const InventoryScreen: React.FC<ScreenProps> = ({ store }) => {
               )}
             </div>
 
-            <textarea
-              rows={2}
-              maxLength={300}
-              value={prdForm.description}
-              onChange={(e) => setPrdForm({ ...prdForm, description: e.target.value })}
-              placeholder={isAr ? 'وصف الصنف والمواصفات...' : 'Item description & specs...'}
-              className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
-            />
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 block mb-0.5">{isAr ? 'وصف الصنف والمواصفات' : 'Description'}</label>
+              <textarea
+                rows={2}
+                maxLength={300}
+                value={prdForm.description}
+                onChange={(e) => setPrdForm({ ...prdForm, description: e.target.value })}
+                placeholder={isAr ? 'وصف الصنف والمواصفات...' : 'Item description & specs...'}
+                className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+              />
+            </div>
+              </>
+            )}
 
             {/* Units */}
+            {(prdSection === 'all' || prdSection === 'pricing') && (
+              <>
             <div className="grid grid-cols-3 gap-2">
               <div>
                 <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
@@ -849,8 +931,12 @@ export const InventoryScreen: React.FC<ScreenProps> = ({ store }) => {
                 />
               </div>
             </div>
+              </>
+            )}
 
             {/* Stock & Tracking */}
+            {(prdSection === 'all' || prdSection === 'stock') && (
+              <>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div>
                 <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
@@ -1014,6 +1100,8 @@ export const InventoryScreen: React.FC<ScreenProps> = ({ store }) => {
                 </select>
               </div>
             </div>
+              </>
+            )}
 
             <div className="flex gap-2 pt-2">
               <button

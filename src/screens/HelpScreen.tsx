@@ -11,10 +11,12 @@ import {
   Printer,
   Search,
   Send,
+  ShieldCheck,
   Sparkles,
   Ticket,
   X,
 } from 'lucide-react';
+import { PrivacyPolicyContent, PrivacyPolicyModal } from '../components/PrivacyPolicyModal';
 import { strings } from '../data/translations';
 import { RouteId, SupportTicket } from '../types/erp';
 import { compressImageToBase64 } from '../utils/image';
@@ -137,6 +139,7 @@ export const HelpScreen: React.FC<ScreenProps> = ({ store, onNavigate }) => {
   const [openHelpId, setOpenHelpId] = useState<string>('h1');
   const [openFaqId, setOpenFaqId] = useState<string>('faq1');
   const [activeVideo, setActiveVideo] = useState<VideoTutorial | null>(null);
+  const [privacyOpen, setPrivacyOpen] = useState(false);
 
   // Support ticket state
   const [ticketTitle, setTicketTitle] = useState('');
@@ -487,6 +490,24 @@ export const HelpScreen: React.FC<ScreenProps> = ({ store, onNavigate }) => {
         </div>
       </div>
 
+      {/* Privacy Policy & Data Security */}
+      <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-4 print-avoid-break">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-extrabold flex items-center gap-2">
+            <ShieldCheck className="w-5 h-5 text-[#0A3D2C] dark:text-[#C9A227]" />
+            <span>{isAr ? 'سياسة الخصوصية وحماية البيانات' : 'Privacy Policy & Data Protection'}</span>
+          </h2>
+          <button
+            type="button"
+            onClick={() => setPrivacyOpen(true)}
+            className="no-print px-3 py-1.5 rounded-xl border border-slate-200 dark:border-[#1F332B] hover:border-[#0A3D2C] dark:hover:border-[#C9A227] text-xs font-bold text-[#0A3D2C] dark:text-[#C9A227] cursor-pointer"
+          >
+            {isAr ? 'عرض السياسة كاملة' : 'Full Policy View'}
+          </button>
+        </div>
+        <PrivacyPolicyContent isAr={isAr} companyName={state.settings.companyName} />
+      </div>
+
       {/* Support Tickets Form & History */}
       <div className="no-print grid grid-cols-1 lg:grid-cols-2 gap-4">
         <form
@@ -659,6 +680,13 @@ export const HelpScreen: React.FC<ScreenProps> = ({ store, onNavigate }) => {
           </div>
         </div>
       )}
+
+      <PrivacyPolicyModal
+        open={privacyOpen}
+        onClose={() => setPrivacyOpen(false)}
+        isAr={isAr}
+        companyName={state.settings.companyName}
+      />
     </div>
   );
 };

@@ -370,7 +370,7 @@ export interface JournalEntry {
   description: string;
   date: string;
   lines: JournalLine[];
-  entryType?: 'manual' | 'auto';
+  entryType?: 'manual' | 'auto' | 'closing';
   branchId?: string;
   costCenter?: string;
   status?: 'draft' | 'approved';
@@ -455,6 +455,7 @@ export interface Expense {
   amount: number;
   taxRate?: number;
   vatInput?: number;
+  vatInputBase?: number;
   taxTreatment?: TaxTreatment;
   currency?: CurrencyCode;
   exchangeRate?: number;

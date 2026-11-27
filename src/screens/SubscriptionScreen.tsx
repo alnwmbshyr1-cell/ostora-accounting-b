@@ -106,6 +106,7 @@ export const SubscriptionScreen: React.FC<ScreenProps> = ({ store }) => {
 
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>(meta.billingCycle);
   const [invoiceModalOpen, setInvoiceModalOpen] = useState(false);
+  const [checkoutBusy, setCheckoutBusy] = useState(false);
 
   const activeSpec = PLANS.find((p) => p.id === meta.planId) ?? PLANS[2];
   const currentPrice = billingCycle === 'yearly' ? activeSpec.yearlyPrice : activeSpec.monthlyPrice;
@@ -131,7 +132,7 @@ export const SubscriptionScreen: React.FC<ScreenProps> = ({ store }) => {
     [state.employees.length, state.branches.length, state.invoices.length, activeSpec, isAr],
   );
 
-  const selectPlan = (plan: PlanSpec) => {
+  const activatePlanLocally = (plan: PlanSpec) => {
     const days = billingCycle === 'yearly' ? 365 : 30;
     const today = new Date().toISOString().slice(0, 10);
     const endDate = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
@@ -143,14 +144,81 @@ export const SubscriptionScreen: React.FC<ScreenProps> = ({ store }) => {
       endDate,
       status: 'active',
     });
-    actions.notify(
-      isAr
-        ? `تم تفعيل ${plan.nameAr} (${billingCycle === 'yearly' ? 'سنوي' : 'شهري'})`
-        : `Activated ${plan.nameEn} (${billingCycle})`,
-    );
   };
 
-  const handleRenew = () => {
+  const selectPlan = async (plan: PlanSpec) => {
+    if (plan.id === 'free') {
+      activatePlanLocally(plan);
+      actions.notify(isAr ? `تم تفعيل ${plan.nameAr}` : `Activated ${plan.nameEn}`);
+      return;
+    }
+    setCheckoutBusy(true);
+    try {
+      const resp = await fetch('/api/subscriptions/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          planId: plan.id,
+          billingCycle,
+          customerEmail: state.settings.email,
+        }),
+      });
+      const json = (await resp.json()) as {
+        configured?: boolean;
+        checkoutUrl?: string;
+        messageAr?: string;
+        messageEn?: string;
+        error?: string;
+      };
+      if (json.configured && json.checkoutUrl) {
+        window.location.href = json.checkoutUrl;
+        return;
+      }
+      activatePlanLocally(plan);
+      actions.notify(
+        (isAr ? json.messageAr : json.messageEn) ||
+          (isAr
+            ? `تم تفعيل ${plan.nameAr} محلياً (بوابة Stripe غير مهيأة على الخادم)`
+            : `Activated ${plan.nameEn} locally (Stripe not configured on server)`),
+      );
+    } catch {
+      activatePlanLocally(plan);
+      actions.notify(isAr ? `تم تفعيل ${plan.nameAr} (${billingCycle === 'yearly' ? 'سنوي' : 'شهري'})` : `Activated ${plan.nameEn}`);
+    } finally {
+      setCheckoutBusy(false);
+    }
+  };
+
+  const handleRenew = async () => {
+    const spec = PLANS.find((p) => p.id === meta.planId) ?? PLANS[2];
+    if (spec.id !== 'free') {
+      setCheckoutBusy(true);
+      try {
+        const resp = await fetch('/api/subscriptions/checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            planId: spec.id,
+            billingCycle,
+            customerEmail: state.settings.email,
+          }),
+        });
+        const json = (await resp.json()) as {
+          configured?: boolean;
+          checkoutUrl?: string;
+          messageAr?: string;
+          messageEn?: string;
+        };
+        if (json.configured && json.checkoutUrl) {
+          window.location.href = json.checkoutUrl;
+          return;
+        }
+      } catch {
+        // Fallback to extending period locally when Stripe is unconfigured
+      } finally {
+        setCheckoutBusy(false);
+      }
+    }
     const baseMs = Math.max(Date.now(), new Date(meta.endDate || Date.now()).getTime());
     const days = billingCycle === 'yearly' ? 365 : 30;
     const nextEnd = new Date(baseMs + days * 86400000).toISOString().slice(0, 10);
@@ -165,8 +233,8 @@ export const SubscriptionScreen: React.FC<ScreenProps> = ({ store }) => {
   const subVat = Number((currentPrice * 0.15).toFixed(2));
   const subTotalWithVat = Number((currentPrice + subVat).toFixed(2));
   const subQrPayload = buildZatcaTlvBase64(
-    'أسطورة المحاسبة ERP',
-    '310000000000003',
+    state.settings.companyName || 'أسطورة المحاسبة ERP',
+    state.settings.taxNumber || '310000000000003',
     new Date().toISOString(),
     subTotalWithVat.toFixed(2),
     subVat.toFixed(2),
@@ -214,10 +282,11 @@ export const SubscriptionScreen: React.FC<ScreenProps> = ({ store }) => {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={handleRenew}
-              className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#C9A227] text-slate-950 text-xs font-extrabold cursor-pointer"
+              disabled={checkoutBusy}
+              onClick={() => void handleRenew()}
+              className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#C9A227] text-slate-950 text-xs font-extrabold cursor-pointer disabled:opacity-60"
             >
-              <RefreshCw className="w-4 h-4" />
+              <RefreshCw className={`w-4 h-4 ${checkoutBusy ? 'animate-spin' : ''}`} />
               <span>{isAr ? 'تجديد الاشتراك' : 'Renew Now'}</span>
             </button>
             <button
@@ -401,8 +470,9 @@ export const SubscriptionScreen: React.FC<ScreenProps> = ({ store }) => {
               </div>
               <button
                 type="button"
-                onClick={() => selectPlan(p)}
-                className={`w-full py-2.5 rounded-xl font-bold text-xs cursor-pointer ${
+                disabled={checkoutBusy}
+                onClick={() => void selectPlan(p)}
+                className={`w-full py-2.5 rounded-xl font-bold text-xs cursor-pointer disabled:opacity-60 ${
                   active ? 'bg-[#C9A227] text-slate-950' : 'bg-[#0A3D2C] text-white'
                 }`}
               >

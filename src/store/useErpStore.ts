@@ -1161,15 +1161,16 @@ export function useErpStore() {
 
   // Daily automatic Firebase Cloud Backup when signed in
   useEffect(() => {
-    if (!authReady || !user || !state.settings.autoBackupDaily) return;
-    if (cloudHydratedUidRef.current !== user.uid) return;
+    if (!authReady || !user || !user.emailVerified || !state.settings.autoBackupDaily) return;
+    const wsId = activeWorkspaceId ?? user.uid;
+    if (cloudHydratedUidRef.current !== wsId) return;
     const todayKey = getLocalDateKey();
     let active = true;
-    listCloudBackupSnapshots(user.uid).then((list) => {
+    listCloudBackupSnapshots(wsId).then((list) => {
       if (!active) return;
       setCloudBackups(list);
       if (!list.some((b) => b.dateKey === todayKey)) {
-        void saveCloudBackupSnapshot(user.uid, latestStateRef.current, todayKey).then((meta) => {
+        void saveCloudBackupSnapshot(wsId, latestStateRef.current, todayKey).then((meta) => {
           if (meta && active) {
             setCloudBackups((prev) => [meta, ...prev.filter((x) => x.id !== meta.id)]);
           }
@@ -1179,7 +1180,7 @@ export function useErpStore() {
     return () => {
       active = false;
     };
-  }, [authReady, user, state.settings.autoBackupDaily]);
+  }, [authReady, user, activeWorkspaceId, state.settings.autoBackupDaily]);
 
   useEffect(() => {
     const lang = state.settings.language ?? (state.settings.isArabic ? 'ar' : 'en');
@@ -1194,7 +1195,7 @@ export function useErpStore() {
 
   useEffect(() => {
     if (!authReady) return;
-    if (!user) {
+    if (!user || !user.emailVerified) {
       cloudHydratedUidRef.current = null;
       lastSyncedStateRef.current = null;
       setActiveWorkspaceId(null);
@@ -1306,8 +1307,9 @@ export function useErpStore() {
   const autoSyncIntervalMinutes = Math.max(0, state.settings.autoSyncIntervalMinutes ?? 0);
 
   useEffect(() => {
-    if (!authReady || !user) return;
-    if (cloudHydratedUidRef.current !== user.uid || !lastSyncedStateRef.current) return;
+    if (!authReady || !user || !user.emailVerified) return;
+    const wsId = activeWorkspaceId ?? user.uid;
+    if (cloudHydratedUidRef.current !== wsId || !lastSyncedStateRef.current) return;
 
     if (applyingRemoteRef.current) {
       applyingRemoteRef.current = false;
@@ -1331,7 +1333,7 @@ export function useErpStore() {
       const nextState = latestStateRef.current;
       if (!prevSynced) return;
       setSyncStatus('syncing');
-      syncStateDiffToFirestore(user.uid, user.email, prevSynced, nextState)
+      syncStateDiffToFirestore(wsId, user.email, prevSynced, nextState)
         .then(() => {
           lastSyncedStateRef.current = nextState;
           setSyncStatus('synced');
@@ -1348,6 +1350,7 @@ export function useErpStore() {
     state,
     authReady,
     user,
+    activeWorkspaceId,
     autoCloudSyncEnabled,
     autoSyncIntervalMinutes,
     setSyncStatus,
@@ -1367,19 +1370,20 @@ export function useErpStore() {
       wasOfflineRef.current = false;
 
       const lang = latestStateRef.current.settings.isArabic ? 'ar' : 'en';
-      if (!user) {
+      if (!user || !user.emailVerified) {
         notify(strings[lang].backOnlineSignInToSync, 4500);
         return;
       }
 
+      const wsId = activeWorkspaceId ?? user.uid;
       setSyncStatus('syncing');
       notify(strings[lang].backOnlineSyncStarted, 4500);
 
       const prevSynced = lastSyncedStateRef.current;
       const nextState = latestStateRef.current;
       const syncPromise =
-        cloudHydratedUidRef.current === user.uid && prevSynced && prevSynced !== nextState
-          ? syncStateDiffToFirestore(user.uid, user.email, prevSynced, nextState).then(() => {
+        cloudHydratedUidRef.current === wsId && prevSynced && prevSynced !== nextState
+          ? syncStateDiffToFirestore(wsId, user.email, prevSynced, nextState).then(() => {
               lastSyncedStateRef.current = nextState;
             })
           : Promise.resolve();
@@ -1406,20 +1410,21 @@ export function useErpStore() {
       window.removeEventListener('offline', handleOffline);
       window.removeEventListener('online', handleOnline);
     };
-  }, [user, notify, setSyncStatus, setLastCloudSyncAt]);
+  }, [user, activeWorkspaceId, notify, setSyncStatus, setLastCloudSyncAt]);
 
   useEffect(() => {
-    if (!authReady || !user) return;
+    if (!authReady || !user || !user.emailVerified) return;
     if (!autoCloudSyncEnabled || autoSyncIntervalMinutes <= 0) return;
 
+    const wsId = activeWorkspaceId ?? user.uid;
     const intervalMs = autoSyncIntervalMinutes * 60 * 1000;
     const timer = setInterval(() => {
-      if (cloudHydratedUidRef.current !== user.uid) return;
+      if (cloudHydratedUidRef.current !== wsId) return;
       const prevSynced = lastSyncedStateRef.current;
       const nextState = latestStateRef.current;
       if (!prevSynced || prevSynced === nextState) return;
       setSyncStatus('syncing');
-      syncStateDiffToFirestore(user.uid, user.email, prevSynced, nextState)
+      syncStateDiffToFirestore(wsId, user.email, prevSynced, nextState)
         .then(() => {
           lastSyncedStateRef.current = nextState;
           setSyncStatus('synced');
@@ -1435,6 +1440,7 @@ export function useErpStore() {
   }, [
     authReady,
     user,
+    activeWorkspaceId,
     autoCloudSyncEnabled,
     autoSyncIntervalMinutes,
     setSyncStatus,
@@ -1443,7 +1449,8 @@ export function useErpStore() {
 
   useEffect(() => {
     if (!state.isLoggedIn) return;
-    if (user && cloudHydratedUidRef.current !== user.uid) return;
+    const wsId = activeWorkspaceId ?? user?.uid;
+    if (user && wsId && cloudHydratedUidRef.current !== wsId) return;
     const todayKey = new Date().toISOString().slice(0, 10);
     const hasDue = state.recurringInvoices.some(
       (r) => r.active && r.autoGenerate && r.nextRunDate <= todayKey,
@@ -1790,10 +1797,11 @@ export function useErpStore() {
       }
     },
     syncNowToCloud: async () => {
-      if (!user) return false;
+      if (!user || !user.emailVerified) return false;
+      const wsId = activeWorkspaceId ?? user.uid;
       setSyncStatus('syncing');
       try {
-        await pushFullStateToCloud(user.uid, latestStateRef.current);
+        await pushFullStateToCloud(wsId, latestStateRef.current);
         lastSyncedStateRef.current = latestStateRef.current;
         setSyncStatus('synced');
         setLastCloudSyncAt(new Date().toISOString());
@@ -1805,9 +1813,10 @@ export function useErpStore() {
       }
     },
     saveCloudBackupNow: async (): Promise<CloudBackupMeta | null> => {
-      if (!user) return null;
+      if (!user || !user.emailVerified) return null;
+      const wsId = activeWorkspaceId ?? user.uid;
       const dateKey = getLocalDateKey();
-      const meta = await saveCloudBackupSnapshot(user.uid, latestStateRef.current, dateKey);
+      const meta = await saveCloudBackupSnapshot(wsId, latestStateRef.current, dateKey);
       if (meta) {
         setCloudBackups((prev) => [meta, ...prev.filter((x) => x.id !== meta.id)]);
         setState((p) => ({
@@ -1823,7 +1832,8 @@ export function useErpStore() {
     },
     restoreCloudBackupById: async (backupId: string): Promise<boolean> => {
       if (!user) return false;
-      const json = await fetchCloudBackupSnapshotJson(user.uid, backupId);
+      const wsId = activeWorkspaceId ?? user.uid;
+      const json = await fetchCloudBackupSnapshotJson(wsId, backupId);
       if (!json) return false;
       const parsed = JSON.parse(json) as Partial<PersistedState>;
       const inner = (parsed as { state?: Partial<PersistedState> }).state ?? parsed;
@@ -5081,7 +5091,7 @@ export function useErpStore() {
     },
 
     enablePushNotifications: async () => {
-      const wsId = activeWorkspaceId ?? user?.uid;
+      const wsId = user?.emailVerified ? (activeWorkspaceId ?? user.uid) : undefined;
       return await registerFcmForWorkspace(wsId);
     },
   };

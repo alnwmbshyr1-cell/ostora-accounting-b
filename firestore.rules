@@ -660,7 +660,7 @@ service cloud.firestore {
         isNonEmptyString(data.description, 400) &&
         isNonEmptyString(data.date, 64) &&
         isValidJournalLines(data.lines) &&
-        (!('entryType' in data) || data.entryType in ['manual', 'auto']) &&
+        (!('entryType' in data) || data.entryType in ['manual', 'auto', 'closing']) &&
         (!('branchId' in data) || isBoundedString(data.branchId, 128)) &&
         (!('costCenter' in data) || isBoundedString(data.costCenter, 120)) &&
         (!('status' in data) || data.status in ['draft', 'approved']) &&
@@ -1132,6 +1132,14 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function isValidFcmToken(data) {
+      return data.keys().hasAll(['token', 'updatedAt']) &&
+        data.keys().hasOnly(['token', 'updatedAt']) &&
+        isNonEmptyString(data.token, 512) &&
+        data.updatedAt is timestamp &&
+        data.updatedAt == request.time;
+    }
+
     // =========================================================================
     // Production Collection Match Blocks
     // =========================================================================
@@ -1198,7 +1206,7 @@ service cloud.firestore {
     }
 
     match /workspaces/{workspaceId} {
-      allow get: if isSignedIn() && isValidId(workspaceId) && (existing().ownerId == request.auth.uid || isWorkspaceMember(workspaceId) || isAdmin());
+      allow get: if isSignedIn() && isValidId(workspaceId) && (isOwner(workspaceId) || (resource != null && (existing().ownerId == request.auth.uid || isWorkspaceMember(workspaceId))) || isAdmin());
       allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || ('memberUids' in existing() && request.auth.uid in existing().memberUids) || isAdmin());
       allow create: if isVerifiedUser() &&
         isValidId(workspaceId) &&
@@ -1249,10 +1257,14 @@ service cloud.firestore {
       }
 
       match /fcmTokens/{tokenId} {
-        allow get: if isSignedIn() && isValidId(workspaceId) && (isWorkspaceMember(workspaceId) || isAdmin());
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(tokenId) && (isWorkspaceMember(workspaceId) || isAdmin());
         allow list: if isAdmin();
-        allow create, update: if isVerifiedUser() && isValidId(workspaceId) && (isWorkspaceMember(workspaceId) || isAdmin());
-        allow delete: if isVerifiedUser() && isValidId(workspaceId) && (isWorkspaceOwner(workspaceId) || isAdmin());
+        allow create, update: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(tokenId) &&
+          isValidFcmToken(incoming()) &&
+          (isWorkspaceMember(workspaceId) || isAdmin());
+        allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(tokenId) && (isWorkspaceOwner(workspaceId) || isAdmin());
       }
 
       match /invoices/{invoiceId} {
@@ -1773,7 +1785,14 @@ service cloud.firestore {
           hasValidTimestampsUpdate() &&
           incoming().id == existing().id &&
           incoming().ownerId == existing().ownerId &&
-          (isWorkspaceMember(workspaceId) || isAdmin());
+          (isWorkspaceMember(workspaceId) || isAdmin()) && (
+            isAdmin() ||
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'code', 'name', 'category', 'acquisitionDate', 'cost',
+              'salvageValue', 'usefulLifeMonths', 'accumulatedDepreciation', 'depreciationMethod',
+              'branchId', 'costCenter', 'status', 'lastDepreciationDate', 'notes', 'updatedAt'
+            ])
+          );
         allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(assetId) && (isWorkspaceOwner(workspaceId) || isAdmin());
       }
 
@@ -1794,7 +1813,14 @@ service cloud.firestore {
           hasValidTimestampsUpdate() &&
           incoming().id == existing().id &&
           incoming().ownerId == existing().ownerId &&
-          (isWorkspaceMember(workspaceId) || isAdmin());
+          (isWorkspaceMember(workspaceId) || isAdmin()) && (
+            isAdmin() ||
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'loanType', 'partyName', 'principalAmount', 'paidAmount', 'remainingAmount',
+              'interestRate', 'startDate', 'dueDate', 'bankId', 'chequeNumber', 'status',
+              'branchId', 'notes', 'updatedAt'
+            ])
+          );
         allow delete: if isVerifiedUser() && isValidId(workspaceId) && isValidId(loanId) && (isWorkspaceOwner(workspaceId) || isAdmin());
       }
 

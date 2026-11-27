@@ -1,7 +1,9 @@
-import React from 'react';
-import { Layers, Printer, ShieldCheck, X } from 'lucide-react';
+import React, { useRef, useState } from 'react';
+import { FileDown, Layers, Printer, ShieldCheck, X } from 'lucide-react';
 import { BatchPrintItem, CompanySettings } from '../types/erp';
 import { formatCurrency, formatCurrencyNumber } from '../utils/currencies';
+import { exportElementToPdf } from '../utils/export';
+import { numberToWordsTafqeet } from '../utils/tafqeet';
 import { buildZatcaTlvBase64 } from '../utils/zatca';
 import { QrMatrix } from './QrMatrix';
 
@@ -16,6 +18,9 @@ export const BatchPrintModal: React.FC<BatchPrintModalProps> = ({
   company,
   onClose,
 }) => {
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const printableRef = useRef<HTMLDivElement>(null);
+
   if (!items || items.length === 0) return null;
 
   const isAr = company.isArabic;
@@ -36,14 +41,31 @@ export const BatchPrintModal: React.FC<BatchPrintModalProps> = ({
           <div className="flex items-center gap-2">
             <button
               type="button"
+              disabled={pdfBusy}
+              onClick={async () => {
+                if (!printableRef.current) return;
+                setPdfBusy(true);
+                try {
+                  await exportElementToPdf(printableRef.current, `ostora_batch_${items.length}_docs.pdf`);
+                } finally {
+                  setPdfBusy(false);
+                }
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/15 text-white font-bold text-xs hover:bg-white/25 cursor-pointer disabled:opacity-60"
+            >
+              <FileDown className="w-4 h-4" />
+              <span>{pdfBusy ? (isAr ? 'جاري التصدير...' : 'Exporting...') : isAr ? 'تحميل PDF' : 'Download PDF'}</span>
+            </button>
+            <button
+              type="button"
               onClick={() => window.print()}
               className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#C9A227] text-slate-950 font-bold text-xs hover:opacity-90 cursor-pointer"
             >
               <Printer className="w-4 h-4" />
               <span>
                 {isAr
-                  ? `طباعة الكل (${items.length}) / حفظ PDF`
-                  : `Print All (${items.length}) / Save PDF`}
+                  ? `طباعة الكل (${items.length})`
+                  : `Print All (${items.length})`}
               </span>
             </button>
             <button
@@ -57,7 +79,7 @@ export const BatchPrintModal: React.FC<BatchPrintModalProps> = ({
           </div>
         </div>
 
-        <div className="divide-y-8 divide-slate-200 print:divide-y-0" dir={isAr ? 'rtl' : 'ltr'}>
+        <div ref={printableRef} className="divide-y-8 divide-slate-200 print:divide-y-0" dir={isAr ? 'rtl' : 'ltr'}>
           {items.map((item, idx) => {
             const sheetKey = `${item.kind}-${item.data.id}-${idx}`;
 
@@ -77,6 +99,10 @@ export const BatchPrintModal: React.FC<BatchPrintModalProps> = ({
                 inv.date,
                 inv.total.toFixed(2),
                 inv.vat.toFixed(2),
+                {
+                  invoiceHash: inv.invoiceHash,
+                  ecdsaSignature: inv.ecdsaSignature,
+                },
               );
 
               return (
@@ -194,6 +220,10 @@ export const BatchPrintModal: React.FC<BatchPrintModalProps> = ({
                         </div>
                       )}
                     </div>
+                  </div>
+                  <div className="bg-[#0A3D2C]/5 border border-[#0A3D2C]/20 rounded-xl px-4 py-2 text-xs font-bold text-[#0A3D2C]">
+                    {isAr ? 'المبلغ بالحروف:' : 'Amount in Words:'}{' '}
+                    <span className="font-extrabold">{numberToWordsTafqeet(inv.total, invCur, isAr ? 'ar' : 'en')}</span>
                   </div>
 
                   <div className="pt-4 grid grid-cols-2 gap-8 text-center text-xs text-slate-600">

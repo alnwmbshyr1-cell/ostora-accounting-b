@@ -12,6 +12,7 @@ import {
   Plus,
   Receipt,
   RotateCcw,
+  ShieldCheck,
   ShoppingBag,
   TrendingUp,
   Truck,
@@ -26,8 +27,11 @@ import {
   computeDashboardTodayKpis,
   computeMonthlySummaryRich,
 } from '../domain/analytics';
+import { computeUnifiedNetProfit, getExpenseBaseHalalas } from '../domain/accounting';
 import { fromHalalas, mulFxHalalas, toHalalas } from '../domain/halala';
 import { CurrencyCode, RouteId } from '../types/erp';
+import { DashboardQuickActionsFab } from '../components/DashboardQuickActionsFab';
+import { PrivacyPolicyModal } from '../components/PrivacyPolicyModal';
 import { HealthScoreRing } from '../components/QrMatrix';
 import {
   convertFromBaseCurrency,
@@ -36,15 +40,20 @@ import {
 } from '../utils/currencies';
 import { ScreenProps } from './types';
 
-export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) => {
+export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate, onPrintInvoice }) => {
   const { state, metrics, actions, hasPermission } = store;
   const isAr = state.settings.isArabic;
   const cur = state.settings.currency;
   const dispCur = state.settings.displayCurrency ?? cur;
   const t = strings[isAr ? 'ar' : 'en'];
   const [tourStep, setTourStep] = useState<number | null>(null);
-  const enabledCurrencies = Array.from(
-    new Set<CurrencyCode>([cur, ...(state.settings.enabledCurrencies ?? DEFAULT_ENABLED_CURRENCIES)]),
+  const [privacyOpen, setPrivacyOpen] = useState(false);
+  const enabledCurrencies = useMemo(
+    () =>
+      Array.from(
+        new Set<CurrencyCode>([cur, ...(state.settings.enabledCurrencies ?? DEFAULT_ENABLED_CURRENCIES)]),
+      ),
+    [cur, state.settings.enabledCurrencies],
   );
   const toDispVal = (baseVal: number) =>
     convertFromBaseCurrency(baseVal, dispCur, cur, state.settings.exchangeRates);
@@ -53,7 +62,7 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
     if (state.settings.displayCurrency && !enabledCurrencies.includes(state.settings.displayCurrency)) {
       actions.updateSettings({ displayCurrency: cur });
     }
-  }, [state.settings.displayCurrency, cur]);
+  }, [state.settings.displayCurrency, enabledCurrencies, cur, actions]);
 
   const todayKpis = useMemo(() => computeDashboardTodayKpis(state), [state]);
   const richMonth = useMemo(() => computeMonthlySummaryRich(state), [state]);
@@ -101,15 +110,17 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
 
     let monthExpensesH = 0;
     for (const exp of state.expenses) {
+      if (exp.status === 'draft' || exp.status === 'cancelled') continue;
       if (toMonthKey(exp.date) === curMonthKey) {
-        monthExpensesH += toHalalas(exp.amount);
+        monthExpensesH += getExpenseBaseHalalas(exp);
       }
     }
 
+    const unifiedMo = computeUnifiedNetProfit(state, curMonthKey);
     const monthRevenue = fromHalalas(monthRevenueH);
     const monthSalesGross = fromHalalas(monthSalesGrossH);
     const monthExpenses = fromHalalas(monthExpensesH);
-    const monthNet = fromHalalas(monthRevenueH - monthExpensesH);
+    const monthNet = unifiedMo.netProfit;
     const prevMonthRevenue = fromHalalas(prevMonthRevenueH);
     const goal = Math.max(1, state.settings.monthlySalesGoal || 120000);
     const goalPct = Math.min(100, Math.round((monthSalesGross / goal) * 100));
@@ -132,7 +143,10 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
       goalPct,
       momDeltaPct,
     };
-  }, [state.invoices, state.expenses, state.settings.monthlySalesGoal, isAr]);
+  }, [state, isAr]);
+
+  const unifiedProfitAll = useMemo(() => computeUnifiedNetProfit(state), [state]);
+  const grossProfitAll = fromHalalas(toHalalas(unifiedProfitAll.revenueExVat) - toHalalas(unifiedProfitAll.cogs));
 
   // Last 6 Months Sales vs Expenses Chart Data (Halala precision)
   const chart6Months = useMemo(() => {
@@ -153,9 +167,10 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
       bucket.salesH += mulFxHalalas(toHalalas(inv.total), inv.exchangeRate ?? 1) * sign;
     }
     for (const exp of state.expenses) {
+      if (exp.status === 'draft' || exp.status === 'cancelled') continue;
       const bucket = map.get(exp.date.slice(0, 7));
       if (!bucket) continue;
-      bucket.expH += toHalalas(exp.amount);
+      bucket.expH += getExpenseBaseHalalas(exp);
     }
     const rows = months.map((m) => ({
       key: m.key,
@@ -296,6 +311,10 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
           </div>
           <p className="text-2xl font-extrabold text-[#C9A227] tabular-nums">
             {t.netProfit}: {fmtDisp(metrics.netProfit)}
+          </p>
+          <p className="text-xs text-white/80 font-mono tabular-nums">
+            {isAr ? 'مجمل الربح' : 'Gross Profit'}: {fmtDisp(grossProfitAll)} ·{' '}
+            {isAr ? 'تكلفة البضاعة (COGS)' : 'COGS'}: {fmtDisp(unifiedProfitAll.cogs)}
           </p>
           <div className="flex flex-wrap justify-center sm:justify-start gap-2 pt-1">
             {hasPermission('ai_analytics') && (
@@ -469,6 +488,9 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
               { routeId: 'customers' as RouteId, label: isAr ? 'عميل جديد' : 'New Customer', icon: UserPlus },
               { routeId: 'vouchers' as RouteId, label: t.createReceipt, icon: Receipt },
               { routeId: 'expenses' as RouteId, label: isAr ? 'مصروف جديد' : 'New Expense', icon: Wallet },
+              { routeId: 'purchase_orders' as RouteId, label: isAr ? 'أمر شراء' : 'Purchase Order', icon: Truck },
+              { routeId: 'banks' as RouteId, label: t.banks, icon: Landmark },
+              { routeId: 'reports' as RouteId, label: t.reports, icon: BarChart2 },
               { routeId: 'pos' as RouteId, label: t.pos, icon: ShoppingBag },
               { routeId: 'quotations' as RouteId, label: t.addQuotation, icon: Plus },
               { routeId: 'returns' as RouteId, label: t.addReturn, icon: RotateCcw },
@@ -930,6 +952,45 @@ export const DashboardScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
           )}
         </div>
       )}
+
+      {/* Executive Compliance & Privacy Footer */}
+      <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4 flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+          <ShieldCheck className="w-4 h-4 text-[#0A3D2C] dark:text-[#C9A227] shrink-0" />
+          <span className="font-bold">
+            {isAr
+              ? 'حماية مالية متكاملة · حسابات بالهللة الصحيحة · متوافق مع ZATCA'
+              : 'Integer Halala Precision · Encrypted Cloud Sync · ZATCA Compliant'}
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setPrivacyOpen(true)}
+            className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-[#1F332B] hover:border-[#0A3D2C] dark:hover:border-[#C9A227] font-bold text-[#0A3D2C] dark:text-[#C9A227] cursor-pointer"
+          >
+            {isAr ? 'سياسة الخصوصية وحماية البيانات' : 'Privacy Policy'}
+          </button>
+          {hasPermission('help') && (
+            <button
+              type="button"
+              onClick={() => onNavigate('help')}
+              className="px-3 py-1.5 rounded-xl bg-[#0A3D2C] text-white font-bold cursor-pointer"
+            >
+              {isAr ? 'مركز المساعدة والدليل' : 'Help & User Manual'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      <PrivacyPolicyModal
+        open={privacyOpen}
+        onClose={() => setPrivacyOpen(false)}
+        isAr={isAr}
+        companyName={state.settings.companyName}
+      />
+
+      <DashboardQuickActionsFab store={store} onPrintInvoice={onPrintInvoice} />
     </div>
   );
 };

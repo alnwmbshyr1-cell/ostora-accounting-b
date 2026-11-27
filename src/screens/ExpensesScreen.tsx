@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Bell,
+  Download,
   Edit2,
   FileImage,
   Plus,
@@ -12,16 +13,19 @@ import {
   X,
 } from 'lucide-react';
 import { strings } from '../data/translations';
-import { getExpenseBaseAmount } from '../domain/accounting';
+import { getExpenseBaseAmount, getExpenseBaseHalalas } from '../domain/accounting';
 import { fromHalalas, mulFxHalalas, toHalalas } from '../domain/halala';
 import {
   CurrencyCode,
   ExpenseStatus,
   ExpenseType,
   PaymentMethodType,
+  TaxTreatment,
 } from '../types/erp';
 import { DEFAULT_ENABLED_CURRENCIES, formatCurrency, getCurrencyMeta } from '../utils/currencies';
+import { downloadTextFile } from '../utils/export';
 import { compressImageToBase64 } from '../utils/image';
+import { resolveEffectiveTaxRate } from '../utils/taxRegimes';
 import { ScreenProps } from './types';
 
 export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
@@ -37,6 +41,7 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
 
   const [expSearch, setExpSearch] = useState('');
   const [catFilter, setCatFilter] = useState('all');
+  const [branchFilter, setBranchFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState<'all' | ExpenseType>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | ExpenseStatus>('all');
   const [expModal, setExpModal] = useState<{ open: boolean; editId?: string }>({ open: false });
@@ -53,6 +58,7 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
     return `EXP-${new Date().getFullYear()}-${String(Math.max(900, ...nums) + 1).padStart(4, '0')}`;
   }, [state.expenses]);
 
+  const defaultPurchaseTaxRate = state.settings.defaultPurchaseTaxRate ?? 15;
   const [expForm, setExpForm] = useState<{
     expenseNumber: string;
     date: string;
@@ -63,6 +69,9 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
     branchId: string;
     costCenter: string;
     amount: string;
+    taxRate: string;
+    taxTreatment: TaxTreatment;
+    vatInput: string;
     currency: CurrencyCode;
     exchangeRate: string;
     paymentMethod: PaymentMethodType;
@@ -82,6 +91,9 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
     branchId: state.settings.defaultBranchId ?? state.branches[0]?.id ?? '',
     costCenter: 'CC-MAIN',
     amount: '',
+    taxRate: String(defaultPurchaseTaxRate),
+    taxTreatment: 'standard',
+    vatInput: '',
     currency: cur,
     exchangeRate: '1',
     paymentMethod: 'cash',
@@ -131,6 +143,12 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
         cls: 'bg-slate-200/70 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
       };
     }
+    if (s === 'cancelled') {
+      return {
+        label: t.cancelled,
+        cls: 'bg-red-500/15 text-red-700 dark:text-red-400',
+      };
+    }
     if (s === 'approved') {
       return {
         label: isAr ? 'معتمد' : 'Approved',
@@ -146,6 +164,7 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
   const categories = Array.from(new Set(state.expenses.map((e) => e.category).filter(Boolean)));
   const q = expSearch.trim().toLowerCase();
   const visibleExpenses = state.expenses.filter((e) => {
+    if (branchFilter !== 'all' && (e.branchId ?? '') !== branchFilter) return false;
     if (catFilter !== 'all' && e.category !== catFilter) return false;
     if (typeFilter !== 'all' && (e.expenseType ?? 'other') !== typeFilter) return false;
     if (statusFilter !== 'all' && (e.status ?? 'paid') !== statusFilter) return false;
@@ -161,8 +180,31 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
   });
 
   const totalShown = fromHalalas(
-    visibleExpenses.reduce((sumH, e) => sumH + toHalalas(getExpenseBaseAmount(e)), 0),
+    visibleExpenses.reduce((sumH, e) => sumH + getExpenseBaseHalalas(e), 0),
   );
+
+  const expKpis = useMemo(() => {
+    let totalH = 0;
+    let paidH = 0;
+    let vatInH = 0;
+    let recurringCount = 0;
+    for (const e of state.expenses) {
+      if (e.status === 'cancelled') continue;
+      const baseH = getExpenseBaseHalalas(e);
+      totalH += baseH;
+      if ((e.status ?? 'paid') === 'paid') paidH += baseH;
+      if (e.vatInput && e.vatInput > 0) {
+        vatInH += mulFxHalalas(toHalalas(e.vatInput), e.exchangeRate ?? 1);
+      }
+      if (e.isRecurringMonthly) recurringCount += 1;
+    }
+    return {
+      total: fromHalalas(totalH),
+      paid: fromHalalas(paidH),
+      vatInput: fromHalalas(vatInH),
+      recurringCount,
+    };
+  }, [state.expenses]);
 
   const bankLabel = (bankId: string) => {
     const found = state.banks.find((b) => b.id === bankId);
@@ -174,6 +216,19 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
   const activeFxRate =
     expForm.currency === cur ? 1 : Number.isFinite(parsedFx) && parsedFx > 0 ? parsedFx : ratesMap[expForm.currency] ?? 1;
   const parsedAmt = parseFloat(expForm.amount) || 0;
+  const parsedExpTax = parseFloat(expForm.taxRate);
+  const effectiveExpTaxRate = resolveEffectiveTaxRate(
+    Number.isFinite(parsedExpTax) ? parsedExpTax : defaultPurchaseTaxRate,
+    expForm.taxTreatment,
+  );
+  const autoVatInputH =
+    effectiveExpTaxRate > 0
+      ? Math.round((toHalalas(parsedAmt) * effectiveExpTaxRate) / (100 + effectiveExpTaxRate))
+      : 0;
+  const previewVatInput =
+    expForm.vatInput.trim() !== ''
+      ? Math.max(0, parseFloat(expForm.vatInput) || 0)
+      : fromHalalas(autoVatInputH);
   const equivBaseAmt = fromHalalas(
     expForm.currency === cur ? toHalalas(parsedAmt) : mulFxHalalas(toHalalas(parsedAmt), activeFxRate),
   );
@@ -200,6 +255,24 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
           </span>
         </div>
         <button
+          type="button"
+          onClick={() => {
+            const csv = ['Number,Date,Type,Title,Beneficiary,Category,CostCenter,Currency,Amount,BaseAmount,InputVAT,Status']
+              .concat(
+                visibleExpenses.map(
+                  (e) =>
+                    `${e.expenseNumber ?? e.id},${e.date.slice(0, 10)},${e.expenseType ?? 'other'},"${e.title.replace(/"/g, '""')}","${(e.beneficiary ?? '').replace(/"/g, '""')}","${e.category.replace(/"/g, '""')}","${(e.costCenter ?? '').replace(/"/g, '""')}",${e.currency ?? cur},${e.amount},${getExpenseBaseAmount(e)},${e.vatInput ?? 0},${e.status ?? 'paid'}`,
+                ),
+              )
+              .join('\n');
+            downloadTextFile('ostora_expenses.csv', csv);
+          }}
+          className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-[#1F332B] bg-white dark:bg-[#121E19] text-xs font-bold cursor-pointer"
+        >
+          <Download className="w-4 h-4" />
+          <span>{t.exportCsv}</span>
+        </button>
+        <button
           onClick={() => {
             setFormError('');
             setExpForm({
@@ -212,6 +285,9 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
               branchId: state.settings.defaultBranchId ?? state.branches[0]?.id ?? '',
               costCenter: 'CC-MAIN',
               amount: '',
+              taxRate: String(defaultPurchaseTaxRate),
+              taxTreatment: 'standard',
+              vatInput: '',
               currency: cur,
               exchangeRate: '1',
               paymentMethod: 'cash',
@@ -231,8 +307,44 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
         </button>
       </div>
 
+      {/* KPI Summary Strip */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'إجمالي المصروفات' : 'Total Expenses'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-rose-600 mt-1 block">
+            {formatCurrency(expKpis.total, cur, { isAr })}
+          </span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'المدفوعة فعلياً' : 'Paid Expenses'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227] mt-1 block">
+            {formatCurrency(expKpis.paid, cur, { isAr })}
+          </span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'ضريبة المدخلات' : 'Input VAT'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-emerald-700 dark:text-emerald-400 mt-1 block">
+            {formatCurrency(expKpis.vatInput, cur, { isAr })}
+          </span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/35 rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'مصروفات متكررة شهرياً' : 'Monthly Recurring'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums mt-1 block">{expKpis.recurringCount}</span>
+        </div>
+      </div>
+
       {/* Filters Row */}
       <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-3 flex flex-wrap items-center gap-2">
+        <select
+          value={branchFilter}
+          onChange={(e) => setBranchFilter(e.target.value)}
+          className="px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+        >
+          <option value="all">{isAr ? 'كل الفروع' : 'All Branches'}</option>
+          {state.branches.map((b) => (
+            <option key={b.id} value={b.id}>{isAr ? b.nameAr : b.nameEn}</option>
+          ))}
+        </select>
         <select
           value={typeFilter}
           onChange={(e) => setTypeFilter(e.target.value as 'all' | ExpenseType)}
@@ -256,6 +368,7 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
           <option value="draft">{isAr ? 'مسودة' : 'Draft'}</option>
           <option value="approved">{isAr ? 'معتمد' : 'Approved'}</option>
           <option value="paid">{isAr ? 'مدفوع' : 'Paid'}</option>
+          <option value="cancelled">{t.cancelled}</option>
         </select>
 
         {categories.length > 0 && (
@@ -315,6 +428,11 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
                         <FileImage className="w-3 h-3" /> {isAr ? 'مرفق' : 'Receipt'}
                       </span>
                     )}
+                    {(e.vatInput ?? 0) > 0 && (
+                      <span className="px-1.5 py-0.5 rounded bg-teal-500/10 text-teal-700 dark:text-teal-300 text-[10px] font-mono font-bold">
+                        {isAr ? 'ضريبة مدخلات:' : 'Input VAT:'} {formatCurrency(e.vatInput ?? 0, expCur, { isAr })}
+                      </span>
+                    )}
                   </div>
                   <h4 className="font-bold text-sm truncate">{e.title}</h4>
                   <p className="text-xs text-slate-500">
@@ -350,6 +468,9 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
                         branchId: e.branchId ?? state.settings.defaultBranchId ?? state.branches[0]?.id ?? '',
                         costCenter: e.costCenter ?? 'CC-MAIN',
                         amount: String(e.amount),
+                        taxRate: String(e.taxRate ?? defaultPurchaseTaxRate),
+                        taxTreatment: e.taxTreatment ?? 'standard',
+                        vatInput: e.vatInput !== undefined ? String(e.vatInput) : '',
                         currency: expCur,
                         exchangeRate: String(e.exchangeRate ?? (expCur === cur ? 1 : ratesMap[expCur] ?? 1)),
                         paymentMethod: e.paymentMethod ?? 'cash',
@@ -583,6 +704,48 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
               </div>
             </div>
 
+            {/* VAT Input Deduction & Tax Treatment */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 p-3 rounded-xl bg-teal-500/5 border border-teal-500/20">
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-0.5">{isAr ? 'المعاملة الضريبية' : 'Tax Treatment'}</label>
+                <select
+                  value={expForm.taxTreatment}
+                  onChange={(e) => setExpForm({ ...expForm, taxTreatment: e.target.value as TaxTreatment })}
+                  className="w-full px-2.5 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+                >
+                  <option value="standard">{isAr ? 'خاضع للضريبة الأساسية' : 'Standard Rated'}</option>
+                  <option value="zero">{isAr ? 'نسبة صفرية (0%)' : 'Zero Rated (0%)'}</option>
+                  <option value="exempt">{isAr ? 'معفى من الضريبة' : 'Tax Exempt'}</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-0.5">{t.vat} %</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step="0.5"
+                  value={expForm.taxRate}
+                  onChange={(e) => setExpForm({ ...expForm, taxRate: e.target.value })}
+                  className="w-full px-2.5 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
+                  {isAr ? `ضريبة المدخلات (تلقائي: ${previewVatInput.toFixed(2)})` : `Input VAT (Auto: ${previewVatInput.toFixed(2)})`}
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={expForm.vatInput}
+                  onChange={(e) => setExpForm({ ...expForm, vatInput: e.target.value })}
+                  placeholder={previewVatInput.toFixed(2)}
+                  className="w-full px-2.5 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+                />
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               <div>
                 <label className="text-[10px] font-bold text-slate-500 block mb-0.5">{t.paymentMethodLabel}</label>
@@ -620,6 +783,7 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
                   <option value="draft">{isAr ? 'مسودة' : 'Draft'}</option>
                   <option value="approved">{isAr ? 'معتمد' : 'Approved'}</option>
                   <option value="paid">{isAr ? 'مدفوع' : 'Paid'}</option>
+                  <option value="cancelled">{t.cancelled}</option>
                 </select>
               </div>
             </div>
@@ -672,14 +836,17 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
               </div>
             )}
 
-            <textarea
-              rows={2}
-              maxLength={500}
-              value={expForm.notes}
-              onChange={(e) => setExpForm({ ...expForm, notes: e.target.value })}
-              placeholder={t.notes}
-              className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
-            />
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 block mb-0.5">{t.notes}</label>
+              <textarea
+                rows={2}
+                maxLength={500}
+                value={expForm.notes}
+                onChange={(e) => setExpForm({ ...expForm, notes: e.target.value })}
+                placeholder={t.notes}
+                className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+              />
+            </div>
 
             <div className="flex gap-2 pt-2">
               <button
@@ -709,6 +876,9 @@ export const ExpensesScreen: React.FC<ScreenProps> = ({ store }) => {
                       branchId: expForm.branchId || undefined,
                       costCenter: expForm.costCenter.trim() || undefined,
                       amount: amt,
+                      taxRate: effectiveExpTaxRate,
+                      taxTreatment: expForm.taxTreatment,
+                      vatInput: expForm.vatInput.trim() !== '' ? (parseFloat(expForm.vatInput) || 0) : undefined,
                       currency: expForm.currency,
                       exchangeRate: activeFxRate,
                       baseAmount: equivBaseAmt,

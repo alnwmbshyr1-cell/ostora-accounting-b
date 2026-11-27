@@ -1,13 +1,15 @@
 import React, { useMemo, useState } from 'react';
-import { Check, CheckCircle2, Edit2, Lock, MessageCircle, Paperclip, Plus, Printer, Search, Trash2, UserPlus, X } from 'lucide-react';
+import { Check, CheckCircle2, Download, Edit2, Lock, MessageCircle, Paperclip, Plus, Printer, RotateCcw, Search, Trash2, UserPlus, X } from 'lucide-react';
 import { DEFAULT_PRODUCT_IMAGE } from '../constants/permissions';
 import { strings } from '../data/translations';
 import { computeInvoiceTotalsHalala } from '../domain/accounting';
 import { fromHalalas, toHalalas } from '../domain/halala';
-import { LineItem, PaymentMethodType, PurchaseOrder, PurchaseOrderStatus } from '../types/erp';
+import { LineItem, PaymentMethodType, PurchaseOrder, PurchaseOrderStatus, TaxTreatment } from '../types/erp';
 import { formatCurrency, formatCurrencyNumber } from '../utils/currencies';
+import { downloadTextFile } from '../utils/export';
 import { compressImageToBase64 } from '../utils/image';
 import { buildWhatsAppLink } from '../utils/messaging';
+import { resolveEffectiveTaxRate } from '../utils/taxRegimes';
 import { ScreenProps } from './types';
 
 export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
@@ -20,8 +22,12 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
   const defaultPurchaseTaxRate = state.settings.defaultPurchaseTaxRate ?? 15;
   const [poSearch, setPoSearch] = useState('');
   const [poStatusFilter, setPoStatusFilter] = useState<'all' | PurchaseOrderStatus>('all');
+  const [poBranchFilter, setPoBranchFilter] = useState('all');
+  const [poProdSearch, setPoProdSearch] = useState('');
   const [poModal, setPoModal] = useState<{ open: boolean; editId?: string }>({ open: false });
   const [previewPo, setPreviewPo] = useState<PurchaseOrder | null>(null);
+  const [voidModalPo, setVoidModalPo] = useState<PurchaseOrder | null>(null);
+  const [voidReason, setVoidReason] = useState('');
   const [quickSupOpen, setQuickSupOpen] = useState(false);
   const [quickSupName, setQuickSupName] = useState('');
   const [quickSupPhone, setQuickSupPhone] = useState('');
@@ -40,6 +46,8 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
     paymentMethod: 'credit' as PaymentMethodType,
     status: 'ordered' as PurchaseOrderStatus,
     taxRate: String(defaultPurchaseTaxRate),
+    taxTreatment: 'standard' as TaxTreatment,
+    costCenter: '',
     discountTotal: '0',
     shippingFee: '0',
     paidAmount: '0',
@@ -61,7 +69,8 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
 
   const itemsSubH = poForm.items.reduce((s, i) => s + toHalalas(i.total), 0);
   const poParsedRate = parseFloat(poForm.taxRate);
-  const poTaxRate = Number.isFinite(poParsedRate) ? Math.max(0, Math.min(100, poParsedRate)) : defaultPurchaseTaxRate;
+  const basePoTaxRate = Number.isFinite(poParsedRate) ? Math.max(0, Math.min(100, poParsedRate)) : defaultPurchaseTaxRate;
+  const poTaxRate = resolveEffectiveTaxRate(basePoTaxRate, poForm.taxTreatment);
   const calc = computeInvoiceTotalsHalala({
     subtotal: fromHalalas(itemsSubH),
     discountTotal: Math.max(0, parseFloat(poForm.discountTotal) || 0),
@@ -124,6 +133,7 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
 
   const q = poSearch.trim().toLowerCase();
   const visibleOrders = state.purchaseOrders.filter((po) => {
+    if (poBranchFilter !== 'all' && (po.branchId ?? '') !== poBranchFilter) return false;
     const okStatus = poStatusFilter === 'all' || po.status === poStatusFilter;
     const okQ =
       !q ||
@@ -132,6 +142,37 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
       po.id.toLowerCase().includes(q);
     return okStatus && okQ;
   });
+
+  const poKpis = useMemo(() => {
+    let totalH = 0;
+    let pendingCount = 0;
+    let receivedCount = 0;
+    let inputVatH = 0;
+    for (const po of state.purchaseOrders) {
+      if (po.status === 'cancelled') continue;
+      totalH += toHalalas(po.total);
+      inputVatH += toHalalas(po.vat ?? 0);
+      if (po.status === 'received') receivedCount += 1;
+      else if (po.status !== 'draft') pendingCount += 1;
+    }
+    return {
+      totalAmount: fromHalalas(totalH),
+      pendingCount,
+      receivedCount,
+      inputVat: fromHalalas(inputVatH),
+    };
+  }, [state.purchaseOrders]);
+
+  const modalFilteredProducts = useMemo(() => {
+    const pq = poProdSearch.trim().toLowerCase();
+    if (!pq) return state.products;
+    return state.products.filter(
+      (p) =>
+        p.name.toLowerCase().includes(pq) ||
+        p.barcode.toLowerCase().includes(pq) ||
+        p.sku.toLowerCase().includes(pq),
+    );
+  }, [state.products, poProdSearch]);
 
   const openCreateModal = () => {
     const pr = state.products[0];
@@ -151,6 +192,8 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
       paymentMethod: 'credit',
       status: 'ordered',
       taxRate: String(defaultPurchaseTaxRate),
+      taxTreatment: 'standard',
+      costCenter: '',
       discountTotal: '0',
       shippingFee: '0',
       paidAmount: '0',
@@ -176,6 +219,16 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
             className="w-full ps-10 pe-4 py-2.5 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-sm outline-none focus:border-[#0A3D2C]"
           />
         </div>
+        <select
+          value={poBranchFilter}
+          onChange={(e) => setPoBranchFilter(e.target.value)}
+          className="px-3 py-2.5 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+        >
+          <option value="all">{isAr ? 'كل الفروع' : 'All Branches'}</option>
+          {state.branches.map((b) => (
+            <option key={b.id} value={b.id}>{isAr ? b.nameAr : b.nameEn}</option>
+          ))}
+        </select>
         <div className="flex flex-wrap items-center gap-1 p-1 bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-xl">
           {(['all', 'draft', 'approved', 'ordered', 'received', 'cancelled'] as const).map((st) => (
             <button
@@ -190,12 +243,52 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
           ))}
         </div>
         <button
+          type="button"
+          onClick={() => {
+            const csv = ['ID,Date,Supplier,Phone,Status,Subtotal,VAT,Total']
+              .concat(
+                visibleOrders.map(
+                  (po) =>
+                    `${po.id},${po.date.slice(0, 10)},"${po.supplierName.replace(/"/g, '""')}",${po.supplierPhone},${po.status},${po.subtotal ?? po.total},${po.vat ?? 0},${po.total}`,
+                ),
+              )
+              .join('\n');
+            downloadTextFile('ostora_purchase_orders.csv', csv);
+          }}
+          className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-[#1F332B] bg-white dark:bg-[#121E19] text-xs font-bold cursor-pointer"
+        >
+          <Download className="w-4 h-4" />
+          <span>{t.exportCsv}</span>
+        </button>
+        <button
           onClick={openCreateModal}
           className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0A3D2C] text-white font-bold text-sm cursor-pointer"
         >
           <Plus className="w-4 h-4" />
           <span>{t.createPo}</span>
         </button>
+      </div>
+
+      {/* KPI Summary Strip */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'إجمالي المشتريات' : 'Total Purchases'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227] mt-1 block">
+            {formatCurrency(poKpis.totalAmount, cur, { isAr })}
+          </span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'بانتظار الاستلام' : 'Pending Receipt'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-amber-600 mt-1 block">{poKpis.pendingCount}</span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'أوامر مستلمة' : 'Received Orders'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-emerald-700 dark:text-emerald-400 mt-1 block">{poKpis.receivedCount}</span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/35 rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'ضريبة المدخلات المستردة' : 'Recoverable Input VAT'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums mt-1 block">{formatCurrency(poKpis.inputVat, cur, { isAr })}</span>
+        </div>
       </div>
 
       {visibleOrders.length === 0 ? (
@@ -235,6 +328,12 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
                   {t.subtotal}: {formatCurrency(po.subtotal ?? po.quantity * po.unitCost, cur, { isAr })} · {t.vat} ({po.taxRate ?? defaultPurchaseTaxRate}%): {formatCurrency(po.vat, cur, { isAr })}
                 </p>
               )}
+              {po.status === 'cancelled' && (po.voidReason || po.reversalJournalId) && (
+                <p className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-red-500/10 text-red-700 dark:text-red-400 text-[11px] font-bold">
+                  <span>{isAr ? 'ملغى:' : 'Voided:'} {po.voidReason || '—'}</span>
+                  {po.reversalJournalId && <span className="font-mono">({po.reversalJournalId})</span>}
+                </p>
+              )}
               <div className="flex flex-wrap gap-1.5 pt-2 border-t border-slate-100 dark:border-[#1F332B]">
                 {(po.status === 'draft' || po.status === 'ordered') && (
                   <button
@@ -271,6 +370,19 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
                   <Printer className="w-3.5 h-3.5" />
                   <span>{t.printPdf}</span>
                 </button>
+                {po.status !== 'draft' && po.status !== 'cancelled' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setVoidReason('');
+                      setVoidModalPo(po);
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-400 text-xs font-bold cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'إلغاء (قيد عكسي)' : 'Void & Reverse'}</span>
+                  </button>
+                )}
                 <a
                   href={buildWhatsAppLink(
                     po.supplierPhone,
@@ -301,6 +413,8 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
                         paymentMethod: po.paymentMethod ?? 'credit',
                         status: po.status,
                         taxRate: String(po.taxRate ?? defaultPurchaseTaxRate),
+                        taxTreatment: po.taxTreatment ?? 'standard',
+                        costCenter: po.costCenter ?? '',
                         discountTotal: String(po.discountTotal ?? 0),
                         shippingFee: String(po.shippingFee ?? 0),
                         paidAmount: String(po.paidAmount ?? 0),
@@ -434,9 +548,21 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
 
             {/* Multi-line Items Builder */}
             <div className="border border-slate-200 dark:border-[#1F332B] rounded-xl p-3 space-y-2.5">
-              <p className="text-xs font-bold text-slate-500">{t.addItem} *</p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-bold text-slate-500">{t.addItem} *</p>
+                <div className="relative flex-1 max-w-xs">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute top-1/2 -translate-y-1/2 start-2.5" />
+                  <input
+                    type="text"
+                    value={poProdSearch}
+                    onChange={(e) => setPoProdSearch(e.target.value)}
+                    placeholder={isAr ? 'بحث بالصنف أو الباركود...' : 'Search item or barcode...'}
+                    className="w-full ps-8 pe-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs outline-none"
+                  />
+                </div>
+              </div>
               <div className="max-h-28 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                {state.products.map((p) => (
+                {modalFilteredProducts.map((p) => (
                   <button
                     key={p.id}
                     type="button"
@@ -573,6 +699,21 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
               </select>
             </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div>
+                <label className="text-[11px] font-bold text-slate-500">{isAr ? 'المعاملة الضريبية' : 'Tax Treatment'}</label>
+                <select value={poForm.taxTreatment} onChange={(e) => setPoForm({ ...poForm, taxTreatment: e.target.value as TaxTreatment })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-bold">
+                  <option value="standard">{isAr ? 'خاضع للضريبة الأساسية' : 'Standard Rated'}</option>
+                  <option value="zero">{isAr ? 'نسبة صفرية (0%)' : 'Zero Rated (0%)'}</option>
+                  <option value="exempt">{isAr ? 'معفى من الضريبة' : 'Tax Exempt'}</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] font-bold text-slate-500">{t.costCenter}</label>
+                <input value={poForm.costCenter} maxLength={120} onChange={(e) => setPoForm({ ...poForm, costCenter: e.target.value })} placeholder="CC-PURCH" className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+              </div>
+            </div>
+
             <input value={poForm.notes} onChange={(e) => setPoForm({ ...poForm, notes: e.target.value })} placeholder={t.notes} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
 
             <div className="p-3 rounded-xl bg-slate-100 dark:bg-[#0A120F] flex flex-wrap justify-between gap-2 text-xs font-bold tabular-nums">
@@ -615,6 +756,8 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
                       discountTotal: Math.max(0, parseFloat(poForm.discountTotal) || 0),
                       shippingFee: Math.max(0, parseFloat(poForm.shippingFee) || 0),
                       taxRate: poTaxRate,
+                      taxTreatment: poForm.taxTreatment,
+                      costCenter: poForm.costCenter.trim() || undefined,
                       date: new Date(`${poForm.date}T12:00:00`).toISOString(),
                       expectedDeliveryDate: poForm.expectedDeliveryDate || undefined,
                       paymentTermDays: parseInt(poForm.paymentTermDays, 10) || 30,
@@ -725,6 +868,52 @@ export const PurchaseOrdersScreen: React.FC<ScreenProps> = ({ store }) => {
             <div className="flex justify-end gap-6 text-xs font-bold pt-2 border-t">
               <span>{t.vat}: {formatCurrency(previewPo.vat ?? 0, cur, { isAr })}</span>
               <span className="text-base text-[#0A3D2C]">{t.total}: {formatCurrency(previewPo.total, cur, { isAr })}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {voidModalPo && (
+        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] max-w-sm w-full p-6 space-y-4">
+            <h3 className="text-base font-extrabold text-rose-600">
+              {isAr ? `إلغاء أمر شراء بقيد عكسي · ${voidModalPo.id}` : `Void & Reverse PO · ${voidModalPo.id}`}
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              {isAr
+                ? 'سيتم إبطال أمر الشراء وعكس القيد والمخزون والذمم الدائنة عند الاستلام السابق.'
+                : 'This voids the PO and reverses posted journal, stock, and supplier payable if previously received.'}
+            </p>
+            <input
+              type="text"
+              value={voidReason}
+              onChange={(e) => setVoidReason(e.target.value)}
+              placeholder={isAr ? 'سبب الإلغاء *' : 'Void reason *'}
+              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setVoidModalPo(null)}
+                className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-[#1F332B] font-bold text-xs cursor-pointer"
+              >
+                {t.cancel}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const ok = actions.voidPurchaseOrder(voidModalPo.id, voidReason || (isAr ? 'إبطال أمر شراء محاسبياً' : 'Accounting void'));
+                  if (ok) {
+                    actions.notify(isAr ? `تم إبطال أمر الشراء ${voidModalPo.id} وتوليد القيد العكسي` : `Voided ${voidModalPo.id} with reversal journal`);
+                    setVoidModalPo(null);
+                  } else {
+                    actions.notify(t.fiscalLockBlocked);
+                  }
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 text-white font-bold text-xs cursor-pointer"
+              >
+                {isAr ? 'تأكيد الإبطال' : 'Confirm Void'}
+              </button>
             </div>
           </div>
         </div>

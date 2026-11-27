@@ -294,9 +294,36 @@ class _AuthScreenState extends State<AuthScreen> {
                   controller: _passCtrl,
                   obscureText: true,
                   decoration: InputDecoration(labelText: AppStrings.t('password', ar)),
-                  validator: (v) => (v == null || v.length < 4) ? '*' : null,
+                  validator: (v) => (v == null || v.length < 6)
+                      ? AppStrings.t('password_min_6', ar)
+                      : null,
                 ),
-                const SizedBox(height: 22),
+                if (!_isRegister)
+                  Align(
+                    alignment: AlignmentDirectional.centerEnd,
+                    child: TextButton(
+                      onPressed: prov.authLoading
+                          ? null
+                          : () async {
+                              final ok = await prov.sendPasswordReset(_emailCtrl.text);
+                              if (ok && context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text(AppStrings.t('reset_sent', ar))),
+                                );
+                              }
+                            },
+                      child: Text(AppStrings.t('forgot_password', ar)),
+                    ),
+                  ),
+                if (prov.authError != null && prov.authError!.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    prov.authError!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: AppTheme.dangerRed, fontSize: 12, fontWeight: FontWeight.w600),
+                  ),
+                ],
+                const SizedBox(height: 16),
                 SizedBox(
                   height: 52,
                   child: FilledButton(
@@ -304,44 +331,85 @@ class _AuthScreenState extends State<AuthScreen> {
                       backgroundColor: AppTheme.primaryEmerald,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                     ),
-                    onPressed: () {
-                      if (_formKey.currentState!.validate()) {
-                        prov.loginDemo();
-                      }
-                    },
-                    child: Text(
-                      AppStrings.t(_isRegister ? 'register' : 'login', ar),
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  height: 50,
-                  child: OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: AppTheme.accentGold, width: 1.5),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                    ),
-                    onPressed: prov.loginDemo,
-                    icon: const Icon(Icons.flash_on_rounded, color: AppTheme.accentGold),
-                    label: Text(
-                      AppStrings.t('demo_login', ar),
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
+                    onPressed: prov.authLoading
+                        ? null
+                        : () async {
+                            if (!_formKey.currentState!.validate()) return;
+                            if (_isRegister) {
+                              await prov.registerWithEmail(
+                                _nameCtrl.text,
+                                _emailCtrl.text,
+                                _passCtrl.text,
+                              );
+                            } else {
+                              await prov.signInWithEmail(
+                                _emailCtrl.text,
+                                _passCtrl.text,
+                              );
+                            }
+                          },
+                    child: prov.authLoading
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white),
+                          )
+                        : Text(
+                            AppStrings.t(_isRegister ? 'register' : 'login', ar),
+                            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                          ),
                   ),
                 ),
                 const SizedBox(height: 14),
                 TextButton(
-                  onPressed: () => setState(() => _isRegister = !_isRegister),
+                  onPressed: () {
+                    prov.clearAuthError();
+                    setState(() => _isRegister = !_isRegister);
+                  },
                   child: Text(
                     AppStrings.t(_isRegister ? 'login' : 'register', ar),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextButton.icon(
+                  onPressed: () => _showPrivacyDialog(context, ar),
+                  icon: const Icon(Icons.shield_outlined, size: 18),
+                  label: Text(
+                    AppStrings.t('privacy_policy', ar),
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
                   ),
                 ),
               ],
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  void _showPrivacyDialog(BuildContext context, bool ar) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(AppStrings.t('privacy_policy', ar)),
+        content: SingleChildScrollView(
+          child: Text(
+            ar
+                ? 'يعالج تطبيق أسطورة المحاسبة العالمية بيانات المنشأة والفواتير والعملاء والموردين والبنوك والمخزون حصراً لأغراض المحاسبة والامتثال لمتطلبات الفوترة الإلكترونية ZATCA.\n\n'
+                    'تُحفظ البيانات محلياً على جهازك وتُزامن بأمان عبر Firebase Auth & Firestore مع عزل كامل لمساحات العمل. لا يقوم التطبيق بتخزين كلمات مرور الموظفين.\n\n'
+                    'يمكنك تصدير بياناتك أو حذفها في أي وقت من الإعدادات. للتواصل: alnwmbshyr1@gmail.com.'
+                : 'Global Accounting Legend processes company profile, tax invoices, customers, suppliers, banks, and inventory strictly for accounting & ZATCA compliance.\n\n'
+                    'Data is persisted locally and synced securely with Firebase Auth & Firestore using workspace-isolated rules. Employee passwords are never stored.\n\n'
+                    'You can export or clear workspace data anytime in Settings. Contact: alnwmbshyr1@gmail.com.',
+            style: const TextStyle(fontSize: 13, height: 1.5),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(ar ? 'إغلاق' : 'Close'),
+          ),
+        ],
       ),
     );
   }

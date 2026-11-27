@@ -1,7 +1,10 @@
 import React, { useRef, useState } from 'react';
 import {
   ArrowLeftRight,
+  Bell,
+  Briefcase,
   Building2,
+  CalendarCheck2,
   Cloud,
   CloudOff,
   CloudUpload,
@@ -10,6 +13,7 @@ import {
   Download,
   FileSpreadsheet,
   FileText,
+  Globe,
   ImagePlus,
   Lock,
   LogOut,
@@ -19,9 +23,11 @@ import {
   Printer,
   RefreshCw,
   RotateCcw,
+  Send,
   Shield,
   Trash2,
   Upload,
+  UserPlus,
   Warehouse,
 } from 'lucide-react';
 import { DataImportModal } from '../components/DataImportModal';
@@ -29,7 +35,7 @@ import { ALL_ROUTES } from '../constants/permissions';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { strings } from '../data/translations';
 import { uploadAssetWithOfflineFallback } from '../services/firebaseExtras';
-import { CurrencyCode, RoleId } from '../types/erp';
+import { CountryCode, CurrencyCode, LanguageCode, RoleId } from '../types/erp';
 import {
   buildDefaultRatesForBase,
   convertCurrencyAmount,
@@ -43,10 +49,11 @@ import {
 } from '../utils/currencies';
 import { downloadTextFile, exportMultiSheetExcel } from '../utils/export';
 import { compressImageToBase64 } from '../utils/image';
+import { COUNTRY_TAX_REGIMES, getCountryTaxRegime } from '../utils/taxRegimes';
 import { ScreenProps } from './types';
 
 export const SettingsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) => {
-  const { state, metrics, actions, idbSnapshots, cloudBackups } = store;
+  const { state, metrics, actions, idbSnapshots, cloudBackups, outgoingInvites, activeWorkspaceId } = store;
   const { user, signingIn, syncStatus, lastCloudSyncAt, authError, signInWithGoogle, signOutFirebase } = useFirebase();
   const isAr = state.settings.isArabic;
   const t = strings[isAr ? 'ar' : 'en'];
@@ -63,6 +70,17 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) => 
   const [convTo, setConvTo] = useState<CurrencyCode>(state.settings.currency === 'USD' ? 'SAR' : 'USD');
   const [bulkImportOpen, setBulkImportOpen] = useState(false);
   const [savingCloudBackup, setSavingCloudBackup] = useState(false);
+  const [newCompanyOpen, setNewCompanyOpen] = useState(false);
+  const [newCompName, setNewCompName] = useState('');
+  const [newCompCountry, setNewCompCountry] = useState<CountryCode>(state.settings.countryCode ?? 'SA');
+  const [newCompCurrency, setNewCompCurrency] = useState<CurrencyCode>(state.settings.currency);
+  const [newCompTax, setNewCompTax] = useState('');
+  const [closeYear, setCloseYear] = useState<number>(new Date().getFullYear());
+  const [closeErr, setCloseErr] = useState('');
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState<RoleId>('accountant');
+  const [sendingInvite, setSendingInvite] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
   const [branchModal, setBranchModal] = useState<{ open: boolean; editId?: string }>({ open: false });
   const [branchForm, setBranchForm] = useState({
     nameAr: '',
@@ -211,6 +229,139 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) => 
         </div>
       </div>
 
+      {/* Multi-Company Switcher & Profile Manager */}
+      <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Briefcase className="w-5 h-5 text-[#0A3D2C] dark:text-[#C9A227]" />
+            <div>
+              <h3 className="text-base font-extrabold">{isAr ? 'تعدد الشركات والكيانات' : 'Multi-Company Switcher'}</h3>
+              <p className="text-[11px] text-slate-500">
+                {isAr
+                  ? 'أنشئ ملفات شركات متعددة وبدّل بينها مع حفظ الضريبة والعملة والرقم الضريبي لكل كيان'
+                  : 'Create and switch between company profiles with independent currency and tax numbers'}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setNewCompanyOpen((v) => !v)}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer"
+          >
+            <Plus className="w-3.5 h-3.5 text-[#C9A227]" />
+            <span>{isAr ? 'إضافة شركة' : 'Add Company'}</span>
+          </button>
+        </div>
+
+        {(state.settings.companies ?? []).length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            {(state.settings.companies ?? []).map((comp) => {
+              const isActive = state.settings.companyId === comp.id || (!state.settings.companyId && comp.companyName === state.settings.companyName);
+              return (
+                <div
+                  key={comp.id}
+                  className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
+                    isActive
+                      ? 'bg-[#0A3D2C]/5 dark:bg-[#C9A227]/10 border-[#0A3D2C] dark:border-[#C9A227]'
+                      : 'bg-slate-50 dark:bg-[#0A120F] border-slate-200 dark:border-[#1F332B]'
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <p className="text-xs font-extrabold truncate">{comp.companyName}</p>
+                    <p className="text-[10px] font-mono text-slate-500 truncate">
+                      {comp.countryCode ?? 'SA'} · {comp.currency} {comp.taxNumber ? `· VAT: ${comp.taxNumber}` : ''}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isActive}
+                    onClick={() => {
+                      actions.switchCompanyProfile(comp.id);
+                      actions.notify(isAr ? `تم التبديل إلى ${comp.companyName}` : `Switched to ${comp.companyName}`);
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold shrink-0 cursor-pointer disabled:cursor-default ${
+                      isActive ? 'bg-[#0A3D2C] text-white' : 'border border-slate-200 dark:border-[#1F332B] hover:border-[#0A3D2C]'
+                    }`}
+                  >
+                    {isActive ? (isAr ? 'نشطة ✓' : 'Active ✓') : isAr ? 'تبديل' : 'Switch'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="text-xs text-slate-500">
+            {isAr
+              ? `الشركة النشطة حالياً: ${state.settings.companyName} (${state.settings.currency}). يمكنك إضافة شركة جديدة للتبديل السريع.`
+              : `Current active company: ${state.settings.companyName} (${state.settings.currency}). Add another company profile to switch easily.`}
+          </p>
+        )}
+
+        {newCompanyOpen && (
+          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+            <input
+              value={newCompName}
+              onChange={(e) => setNewCompName(e.target.value)}
+              placeholder={isAr ? 'اسم الشركة الجديدة *' : 'New Company Name *'}
+              className="sm:col-span-2 px-3 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+            />
+            <select
+              value={newCompCountry}
+              onChange={(e) => {
+                const c = e.target.value as CountryCode;
+                setNewCompCountry(c);
+                setNewCompCurrency(getCountryTaxRegime(c).defaultCurrency);
+              }}
+              className="px-2.5 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+            >
+              {COUNTRY_TAX_REGIMES.map((r) => (
+                <option key={r.countryCode} value={r.countryCode}>
+                  {r.countryCode} — {isAr ? r.nameAr : r.nameEn}
+                </option>
+              ))}
+            </select>
+            <select
+              value={newCompCurrency}
+              onChange={(e) => setNewCompCurrency(e.target.value as CurrencyCode)}
+              className="px-2.5 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-mono font-bold"
+            >
+              {SUPPORTED_CURRENCIES.map((c) => (
+                <option key={c.code} value={c.code}>{c.code}</option>
+              ))}
+            </select>
+            <input
+              value={newCompTax}
+              onChange={(e) => setNewCompTax(e.target.value)}
+              placeholder={isAr ? 'الرقم الضريبي (اختياري)' : 'Tax Number (optional)'}
+              className="sm:col-span-3 px-3 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (!newCompName.trim()) {
+                  actions.notify(isAr ? 'أدخل اسم الشركة الجديدة *' : 'Company name is required *');
+                  return;
+                }
+                actions.saveCompanyProfile({
+                  workspaceId: activeWorkspaceId ?? user?.uid ?? 'local',
+                  companyName: newCompName.trim(),
+                  countryCode: newCompCountry,
+                  currency: newCompCurrency,
+                  taxNumber: newCompTax.trim() || undefined,
+                });
+                setNewCompName('');
+                setNewCompTax('');
+                setNewCompanyOpen(false);
+                actions.notify(isAr ? 'تم إضافة ملف الشركة بنجاح' : 'Company profile added');
+              }}
+              className="px-3 py-2 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer"
+            >
+              {t.save}
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* Branches Management & Fiscal Period Lock */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-3">
@@ -338,19 +489,71 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) => 
               </button>
             )}
           </div>
+
+          {/* Fiscal Year-End Closing */}
+          <div className="pt-3 border-t border-slate-100 dark:border-[#1F332B] space-y-2">
+            <div className="flex items-center gap-1.5 text-xs font-extrabold text-[#0A3D2C] dark:text-[#C9A227]">
+              <CalendarCheck2 className="w-4 h-4" />
+              <span>{isAr ? 'إقفال السنة المالية وترحيل الأرباح المبقاة' : 'Fiscal Year-End Closing'}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={2000}
+                max={2100}
+                value={closeYear}
+                onChange={(e) => setCloseYear(parseInt(e.target.value, 10) || new Date().getFullYear())}
+                className="w-28 px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono font-bold"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setCloseErr('');
+                  const res = actions.closeFiscalYear(closeYear);
+                  if (!res.ok) {
+                    const ids = res.unbalancedIds
+                      .map((u) => (typeof u === 'string' ? u : u.journalId))
+                      .join(', ');
+                    setCloseErr(
+                      isAr
+                        ? `يوجد قيود غير متوازنة يجب تصحيحها أولاً: ${ids}`
+                        : `Fix unbalanced journal(s) first: ${ids}`,
+                    );
+                  }
+                }}
+                className="flex-1 px-3 py-2 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer"
+              >
+                {isAr ? 'إقفال السنة المالية' : 'Close Fiscal Year'}
+              </button>
+            </div>
+            {closeErr && <p className="text-[11px] font-bold text-red-600">{closeErr}</p>}
+          </div>
         </div>
       </div>
 
       {/* Language, Currency, Dark Mode */}
       <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] divide-y divide-slate-100 dark:divide-[#1F332B]">
-        <div className="p-4 flex items-center justify-between">
-          <span className="text-sm font-bold">{t.language}</span>
-          <button
-            onClick={actions.toggleLanguage}
+        <div className="p-4 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Globe className="w-4 h-4 text-[#0A3D2C] dark:text-[#C9A227]" />
+            <span className="text-sm font-bold">{t.language}</span>
+          </div>
+          <select
+            value={state.settings.language ?? (isAr ? 'ar' : 'en')}
+            onChange={(e) => {
+              const lang = e.target.value as LanguageCode;
+              actions.setLanguage(lang);
+              actions.notify(lang === 'ar' || lang === 'ur' ? 'تم تحديث لغة النظام (RTL)' : 'Interface language updated');
+            }}
             className="px-3.5 py-1.5 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer"
           >
-            {isAr ? 'العربية (RTL) → EN' : 'English (LTR) → عربي'}
-          </button>
+            <option value="ar">العربية (RTL)</option>
+            <option value="en">English (LTR)</option>
+            <option value="fr">Français (LTR)</option>
+            <option value="es">Español (LTR)</option>
+            <option value="tr">Türkçe (LTR)</option>
+            <option value="ur">اردو (RTL)</option>
+          </select>
         </div>
         <div className="p-4 flex items-center justify-between gap-3">
           <span className="text-sm font-bold">{t.baseCurrency}</span>
@@ -779,6 +982,42 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) => 
             />
           </div>
         </div>
+
+        {/* Country Tax Regime Preset Selector */}
+        <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] flex flex-wrap items-center justify-between gap-2.5">
+          <div>
+            <p className="text-xs font-extrabold text-[#0A3D2C] dark:text-[#C9A227]">
+              {isAr ? 'النظام الضريبي حسب الدولة' : 'Country Tax Regime'}
+            </p>
+            <p className="text-[11px] text-slate-500">
+              {(() => {
+                const reg = getCountryTaxRegime(state.settings.countryCode ?? 'SA');
+                return `${isAr ? reg.taxAuthorityAr : reg.taxAuthorityEn} · ${reg.standardVatRate}% (${reg.defaultCurrency})`;
+              })()}
+            </p>
+          </div>
+          <select
+            value={state.settings.countryCode ?? 'SA'}
+            onChange={(e) => {
+              const code = e.target.value as CountryCode;
+              actions.applyCountryTaxRegime(code);
+              const reg = getCountryTaxRegime(code);
+              actions.notify(
+                isAr
+                  ? `تم تطبيق النظام الضريبي لـ ${reg.nameAr} (${reg.standardVatRate}% - ${reg.defaultCurrency})`
+                  : `Applied ${reg.nameEn} tax regime (${reg.standardVatRate}% - ${reg.defaultCurrency})`,
+              );
+            }}
+            className="px-3 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+          >
+            {COUNTRY_TAX_REGIMES.map((r) => (
+              <option key={r.countryCode} value={r.countryCode}>
+                {r.countryCode} — {isAr ? r.nameAr : r.nameEn} ({r.standardVatRate}% VAT)
+              </option>
+            ))}
+          </select>
+        </div>
+
         <p className="text-xs text-slate-500">{t.taxConfigHint}</p>
       </div>
 
@@ -1091,6 +1330,121 @@ export const SettingsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) => 
         </div>
 
         {authError && <p className="text-xs text-red-600 font-semibold">{authError}</p>}
+      </div>
+
+      {/* Team Invites (RBAC) & Push Notifications */}
+      <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <UserPlus className="w-5 h-5 text-[#0A3D2C] dark:text-[#C9A227]" />
+            <div>
+              <h3 className="text-base font-extrabold">{isAr ? 'دعوات الفريق والإشعارات الفورية' : 'Team Invites & Push Notifications'}</h3>
+              <p className="text-[11px] text-slate-500">
+                {isAr
+                  ? 'ادعُ أعضاء فريقك بصلاحيات محددة عبر البريد الموثق وفعّل تنبيهات المتصفح'
+                  : 'Invite workspace members with RBAC roles and enable push alerts'}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={pushBusy}
+            onClick={async () => {
+              setPushBusy(true);
+              try {
+                const res = await actions.enablePushNotifications();
+                actions.notify(
+                  res.permission === 'granted'
+                    ? isAr
+                      ? 'تم تفعيل الإشعارات الفورية بنجاح'
+                      : 'Push notifications enabled'
+                    : isAr
+                    ? `حالة الإشعارات: ${res.permission}`
+                    : `Notification permission: ${res.permission}`,
+                );
+              } finally {
+                setPushBusy(false);
+              }
+            }}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0A3D2C]/10 dark:bg-[#C9A227]/15 text-[#0A3D2C] dark:text-[#C9A227] text-xs font-bold cursor-pointer disabled:opacity-50"
+          >
+            <Bell className="w-3.5 h-3.5" />
+            <span>{isAr ? 'تفعيل الإشعارات الفورية' : 'Enable Push Alerts'}</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-center">
+          <input
+            type="email"
+            value={inviteEmail}
+            onChange={(e) => setInviteEmail(e.target.value)}
+            placeholder={isAr ? 'البريد الإلكتروني للعضو *' : 'Team member email *'}
+            className="sm:col-span-6 px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+          />
+          <select
+            value={inviteRole}
+            onChange={(e) => setInviteRole(e.target.value as RoleId)}
+            className="sm:col-span-3 px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+          >
+            <option value="owner">{t.roleOwner}</option>
+            <option value="accountant">{t.roleAccountant}</option>
+            <option value="cashier">{t.roleCashier}</option>
+            <option value="salesman">{t.roleSalesman}</option>
+            <option value="warehouse">{t.roleWarehouse}</option>
+          </select>
+          <button
+            type="button"
+            disabled={!user || sendingInvite}
+            onClick={async () => {
+              const clean = inviteEmail.trim();
+              if (!clean || !clean.includes('@')) {
+                actions.notify(isAr ? 'أدخل بريداً إلكترونياً صحيحاً *' : 'Enter a valid email *');
+                return;
+              }
+              setSendingInvite(true);
+              try {
+                await actions.inviteWorkspaceMember(clean, inviteRole);
+                setInviteEmail('');
+              } finally {
+                setSendingInvite(false);
+              }
+            }}
+            className="sm:col-span-3 flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer disabled:opacity-50"
+          >
+            <Send className="w-3.5 h-3.5" />
+            <span>{isAr ? 'إرسال دعوة' : 'Send Invite'}</span>
+          </button>
+        </div>
+
+        {!user && (
+          <p className="text-[11px] text-amber-600 font-semibold">
+            {isAr ? 'سجّل الدخول بحسابك السحابي لإرسال الدعوات وإدارتها.' : 'Sign in to Firebase Cloud to send and manage team invites.'}
+          </p>
+        )}
+
+        {outgoingInvites.length > 0 && (
+          <div className="divide-y divide-slate-100 dark:divide-[#1F332B] border border-slate-200 dark:border-[#1F332B] rounded-xl overflow-hidden">
+            {outgoingInvites.map((inv) => (
+              <div key={inv.id} className="px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs bg-slate-50/70 dark:bg-[#0A120F]/50">
+                <div>
+                  <span className="font-bold">{inv.email}</span>
+                  <span className="text-[11px] text-slate-500 ms-2 font-mono">
+                    {inv.role} · {inv.status}
+                  </span>
+                </div>
+                {inv.status === 'pending' && (
+                  <button
+                    type="button"
+                    onClick={() => void actions.revokePendingInvite(inv.id)}
+                    className="px-2.5 py-1 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-600 font-bold cursor-pointer"
+                  >
+                    {isAr ? 'إلغاء الدعوة' : 'Revoke'}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Cloud Backup & Sync Section */}

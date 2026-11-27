@@ -1,12 +1,16 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
-import { Check, Copy, Download, Eye, Printer, ShieldCheck, X } from 'lucide-react';
+import { Check, Copy, Download, Eye, FileDown, Printer, ShieldCheck, X } from 'lucide-react';
 import {
   buildZatcaTlvBase64,
+  buildZatcaUblXml,
   decodeZatcaTlvBase64,
+  generateZatcaUuid,
   validateZatcaPhase1,
 } from '../utils/zatca';
 import { formatCurrency, formatCurrencyNumber } from '../utils/currencies';
+import { downloadTextFile, exportElementToPdf } from '../utils/export';
+import { numberToWordsTafqeet } from '../utils/tafqeet';
 import { CompanySettings, Invoice, Quotation, ReturnRecord, Voucher } from '../types/erp';
 import { QrMatrix } from './QrMatrix';
 
@@ -29,6 +33,8 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
 }) => {
   const [showTlvDetails, setShowTlvDetails] = useState(false);
   const [copiedTlv, setCopiedTlv] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const printableRef = useRef<HTMLDivElement>(null);
 
   const zatcaQrBase64 = useMemo(() => {
     if (invoice) {
@@ -38,6 +44,10 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
         invoice.date,
         invoice.total.toFixed(2),
         invoice.vat.toFixed(2),
+        {
+          invoiceHash: invoice.invoiceHash,
+          ecdsaSignature: invoice.ecdsaSignature,
+        },
       );
     }
     if (returnRecord) {
@@ -113,13 +123,62 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
           <span className="font-bold text-sm">
             {docTitle} · {docId}
           </span>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {invoice && (
+              <button
+                type="button"
+                onClick={() => {
+                  const xml =
+                    invoice.zatcaXml ||
+                    buildZatcaUblXml({
+                      invoiceId: invoice.id,
+                      uuid: invoice.zatcaUuid || generateZatcaUuid(),
+                      icv: invoice.icv ?? 1,
+                      pih: invoice.pih || 'NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWI0NjcyOWQ3M2EyN2ZiNTdlOQ==',
+                      issueDateIso: invoice.date,
+                      currency: invoice.currency ?? company.currency,
+                      sellerName: company.companyName,
+                      sellerVat: company.taxNumber,
+                      sellerAddress: company.address,
+                      customerName: invoice.customerName,
+                      subtotal: invoice.subtotal,
+                      vat: invoice.vat,
+                      total: invoice.total,
+                      taxRate: invoice.taxRate ?? company.defaultSalesTaxRate,
+                      invoiceType: invoice.invoiceType,
+                      items: invoice.items,
+                    });
+                  downloadTextFile(`${invoice.id}_zatca.xml`, xml, 'application/xml;charset=utf-8');
+                }}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/10 text-white font-bold text-xs hover:bg-white/20 cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>{isAr ? 'تنزيل XML' : 'ZATCA XML'}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={pdfBusy}
+              onClick={async () => {
+                if (!printableRef.current) return;
+                setPdfBusy(true);
+                try {
+                  await exportElementToPdf(printableRef.current, `${docId || 'document'}.pdf`);
+                } finally {
+                  setPdfBusy(false);
+                }
+              }}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-white/15 text-white font-bold text-xs hover:bg-white/25 cursor-pointer disabled:opacity-60"
+            >
+              <FileDown className="w-3.5 h-3.5" />
+              <span>{pdfBusy ? (isAr ? 'جاري التصدير...' : 'Exporting...') : isAr ? 'تحميل PDF' : 'Download PDF'}</span>
+            </button>
             <button
               onClick={() => window.print()}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#C9A227] text-slate-950 font-bold text-xs hover:opacity-90 cursor-pointer"
             >
               <Printer className="w-4 h-4" />
-              <span>{isAr ? 'طباعة / حفظ PDF' : 'Print / Save PDF'}</span>
+              <span>{isAr ? 'طباعة' : 'Print'}</span>
             </button>
             <button
               onClick={onClose}
@@ -131,7 +190,7 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
           </div>
         </div>
 
-        <div className="p-6 sm:p-8 space-y-6 text-sm" dir={isAr ? 'rtl' : 'ltr'}>
+        <div ref={printableRef} className="p-6 sm:p-8 space-y-6 text-sm" dir={isAr ? 'rtl' : 'ltr'}>
           {/* Company Header */}
           <div className="bg-[#0A3D2C] text-white p-5 rounded-2xl flex flex-col sm:flex-row justify-between gap-4">
             <div className="flex items-start gap-3">
@@ -211,8 +270,17 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                   <QrMatrix data={zatcaQrBase64} size={124} />
                   <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
                     <ShieldCheck className="w-3 h-3 text-[#0A3D2C]" />
-                    <span>{isAr ? 'رمز الزكاة والدخل (المرحلة 1)' : 'ZATCA Phase-1 QR'}</span>
+                    <span>
+                      {invoice.invoiceHash
+                        ? isAr ? 'رمز ZATCA (المرحلة 2)' : 'ZATCA Phase-2 QR'
+                        : isAr ? 'رمز الزكاة والدخل (المرحلة 1)' : 'ZATCA Phase-1 QR'}
+                    </span>
                   </span>
+                  {invoice.zatcaUuid && (
+                    <span className="text-[9px] font-mono text-slate-400">
+                      UUID: {invoice.zatcaUuid.slice(0, 8)}… · ICV #{invoice.icv ?? 1}
+                    </span>
+                  )}
                   <div className="no-print flex items-center gap-1">
                     <button
                       type="button"
@@ -404,6 +472,10 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                         )}
                       </div>
                     </div>
+                    <div className="bg-[#0A3D2C]/5 border border-[#0A3D2C]/20 rounded-xl px-4 py-2.5 text-xs font-bold text-[#0A3D2C]">
+                      {isAr ? 'المبلغ بالحروف:' : 'Amount in Words:'}{' '}
+                      <span className="font-extrabold">{numberToWordsTafqeet(invoice.total, invCur, isAr ? 'ar' : 'en')}</span>
+                    </div>
                     {(invoice.notes || invoice.terms) && (
                       <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs space-y-1">
                         {invoice.notes && <p><span className="font-bold">{isAr ? 'ملاحظات:' : 'Notes:'}</span> {invoice.notes}</p>}
@@ -543,6 +615,10 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                         </div>
                       </div>
                     </div>
+                    <div className="bg-[#0A3D2C]/5 border border-[#0A3D2C]/20 rounded-xl px-4 py-2 text-xs font-bold text-[#0A3D2C]">
+                      {isAr ? 'المبلغ بالحروف:' : 'Amount in Words:'}{' '}
+                      <span className="font-extrabold">{numberToWordsTafqeet(quotation.total, qtCur, isAr ? 'ar' : 'en')}</span>
+                    </div>
                   </>
                 );
               })()}
@@ -569,6 +645,9 @@ export const PrintPreviewModal: React.FC<PrintPreviewProps> = ({
                 </p>
                 <p className="text-3xl font-extrabold text-[#0A3D2C] font-mono tabular-nums mt-1">
                   {formatCurrency(voucher.amount, company.currency, { isAr })}
+                </p>
+                <p className="text-xs font-bold text-[#0A3D2C] mt-2">
+                  {numberToWordsTafqeet(voucher.amount, company.currency, isAr ? 'ar' : 'en')}
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-3 text-xs bg-slate-50 p-4 rounded-xl border border-slate-200">

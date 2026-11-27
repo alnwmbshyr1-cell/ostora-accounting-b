@@ -36,8 +36,8 @@ import {
   Wifi,
   X,
 } from 'lucide-react';
-import { strings } from './data/translations';
-import { BatchPrintItem, Invoice, Quotation, ReturnRecord, RoleId, RouteId, Voucher } from './types/erp';
+import { LANGUAGE_OPTIONS, strings } from './data/translations';
+import { BatchPrintItem, Invoice, LanguageCode, Quotation, ReturnRecord, RouteId, Voucher } from './types/erp';
 import { useFirebase } from './contexts/FirebaseContext';
 import { useErpStore } from './store/useErpStore';
 import { AuthOnboardingFlow } from './components/AuthOnboardingFlow';
@@ -54,11 +54,12 @@ const FlutterStudioView = React.lazy(() =>
 );
 
 export default function App() {
-  const { user, syncStatus } = useFirebase();
+  const { user, syncStatus, resendVerificationEmail } = useFirebase();
   const store = useErpStore();
-  const { state, actions, allowedRoutes, hasPermission, toastMsg } = store;
-  const isAr = state.settings.isArabic;
-  const t = strings[isAr ? 'ar' : 'en'];
+  const { state, actions, allowedRoutes, hasPermission, toastMsg, pendingInvites, localeStrings } = store;
+  const currentLang: LanguageCode = state.settings.language ?? (state.settings.isArabic ? 'ar' : 'en');
+  const isAr = currentLang === 'ar' || currentLang === 'ur';
+  const t = localeStrings;
 
   const [workspaceMode, setWorkspaceMode] = useState<'erp' | 'flutter'>('erp');
   const [route, setRoute] = useState<RouteId>('dashboard');
@@ -98,28 +99,6 @@ export default function App() {
     };
   }, []);
 
-  if (!state.onboardingSeen || !state.isLoggedIn) {
-    return (
-      <AuthOnboardingFlow
-        isAr={isAr}
-        onboardingSeen={state.onboardingSeen}
-        currentRole={state.currentRole}
-        onToggleLanguage={actions.toggleLanguage}
-        onFinishOnboarding={() => actions.setOnboardingSeen(true)}
-        onSelectRole={actions.setCurrentRole}
-        onLoginSuccess={() => {
-          actions.setLoggedIn(true);
-          const nextAllowed = state.permissionsMatrix[state.currentRole] ?? ['dashboard'];
-          if (!nextAllowed.includes(route)) {
-            setRoute(nextAllowed[0] ?? 'dashboard');
-          }
-        }}
-        onRestoreBackupJson={actions.importBackupJson}
-        onRestoreAutosave={actions.restoreFromAutosave}
-      />
-    );
-  }
-
   const allNavItems: { id: RouteId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
     { id: 'dashboard', label: t.dashboard, icon: LayoutDashboard },
     { id: 'pos', label: t.pos, icon: ScanBarcode },
@@ -147,30 +126,6 @@ export default function App() {
     { id: 'help', label: t.help, icon: HelpCircle },
   ];
 
-  const navItems = allNavItems.filter((item) => hasPermission(item.id));
-
-  const candidateBottomTabs: { id: RouteId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-    { id: 'dashboard', label: t.dashboard, icon: LayoutDashboard },
-    { id: 'invoices', label: t.invoices, icon: Receipt },
-    { id: 'quotations', label: t.quotations, icon: ClipboardList },
-    { id: 'inventory', label: t.inventory, icon: Package },
-    { id: 'reports', label: t.reports, icon: BarChart3 },
-  ];
-  const visibleBottomTabs = candidateBottomTabs.filter((tab) => hasPermission(tab.id));
-  const bottomTabs =
-    visibleBottomTabs.length > 0
-      ? visibleBottomTabs
-      : navItems.slice(0, 5);
-
-  const navigateTo = (r: RouteId) => {
-    setWorkspaceMode('erp');
-    setRoute(r);
-    setDrawerOpen(false);
-  };
-
-  const roleText = isAr ? ROLE_LABELS[state.currentRole].ar : ROLE_LABELS[state.currentRole].en;
-  const routeAllowed = hasPermission(route);
-
   interface SmartSearchItem {
     key: string;
     route: RouteId;
@@ -182,6 +137,7 @@ export default function App() {
   }
 
   const smartSearchResults = useMemo<SmartSearchItem[]>(() => {
+    if (!state.onboardingSeen || !state.isLoggedIn || !user) return [];
     const q = smartQuery.trim().toLowerCase();
     if (!q) return [];
     const results: SmartSearchItem[] = [];
@@ -395,6 +351,9 @@ export default function App() {
     return results.slice(0, 12);
   }, [
     smartQuery,
+    state.onboardingSeen,
+    state.isLoggedIn,
+    user,
     state.invoices,
     state.recurringInvoices,
     state.documents,
@@ -408,8 +367,57 @@ export default function App() {
     state.settings.currency,
     state.permissionsMatrix,
     state.currentRole,
+    currentLang,
     isAr,
   ]);
+
+  if (!state.onboardingSeen || !state.isLoggedIn || !user) {
+    return (
+      <AuthOnboardingFlow
+        isAr={isAr}
+        language={currentLang}
+        onboardingSeen={state.onboardingSeen}
+        onToggleLanguage={actions.toggleLanguage}
+        onSelectLanguage={actions.setLanguage}
+        onFinishOnboarding={() => actions.setOnboardingSeen(true)}
+        onLoginSuccess={() => {
+          actions.setLoggedIn(true);
+          const nextAllowed = state.permissionsMatrix[state.currentRole] ?? ['dashboard'];
+          if (!nextAllowed.includes(route)) {
+            setRoute(nextAllowed[0] ?? 'dashboard');
+          }
+        }}
+        onRestoreBackupJson={actions.importBackupJson}
+        onRestoreAutosave={actions.restoreFromAutosave}
+      />
+    );
+  }
+
+
+  const navItems = allNavItems.filter((item) => hasPermission(item.id));
+
+  const candidateBottomTabs: { id: RouteId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+    { id: 'dashboard', label: t.dashboard, icon: LayoutDashboard },
+    { id: 'invoices', label: t.invoices, icon: Receipt },
+    { id: 'quotations', label: t.quotations, icon: ClipboardList },
+    { id: 'inventory', label: t.inventory, icon: Package },
+    { id: 'reports', label: t.reports, icon: BarChart3 },
+  ];
+  const visibleBottomTabs = candidateBottomTabs.filter((tab) => hasPermission(tab.id));
+  const bottomTabs =
+    visibleBottomTabs.length > 0
+      ? visibleBottomTabs
+      : navItems.slice(0, 5);
+
+  const navigateTo = (r: RouteId) => {
+    setWorkspaceMode('erp');
+    setRoute(r);
+    setDrawerOpen(false);
+  };
+
+  const roleText = isAr ? ROLE_LABELS[state.currentRole].ar : ROLE_LABELS[state.currentRole].en;
+  const routeAllowed = hasPermission(route);
+
 
   const hasPrintModalOpen = Boolean(
     printInvoice || printVoucher || printReturn || printQuotation || batchPrintItems.length > 0,
@@ -457,16 +465,24 @@ export default function App() {
             </button>
           </nav>
 
-          {/* PWA Install, Language عربي | EN & Theme Toggle */}
+          {/* PWA Install, 6-Language Switcher & Theme Toggle */}
           <div className="flex items-center gap-1.5 shrink-0">
             <PWAInstallButton isAr={isAr} />
-            <button
-              onClick={actions.toggleLanguage}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-bold whitespace-nowrap cursor-pointer"
-            >
-              <Languages className="w-3.5 h-3.5 text-[#C9A227]" />
-              <span>{isAr ? 'عربي | EN' : 'EN | عربي'}</span>
-            </button>
+            <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-bold">
+              <Languages className="w-3.5 h-3.5 text-[#C9A227] shrink-0" />
+              <select
+                value={currentLang}
+                onChange={(e) => actions.setLanguage(e.target.value as LanguageCode)}
+                aria-label="Language"
+                className="bg-transparent text-white text-xs font-bold outline-none cursor-pointer"
+              >
+                {LANGUAGE_OPTIONS.map((opt) => (
+                  <option key={opt.code} value={opt.code} className="bg-[#0A3D2C] text-white">
+                    {opt.nativeLabel}
+                  </option>
+                ))}
+              </select>
+            </div>
             <button
               onClick={actions.toggleDarkMode}
               className="p-2 rounded-lg hover:bg-white/10 cursor-pointer"
@@ -539,31 +555,9 @@ export default function App() {
             </div>
 
             <div className="pt-2 mt-2 border-t border-slate-200 dark:border-[#1F332B] space-y-2">
-              <div className="px-1">
-                <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-                  {t.loginAs}
-                </label>
-                <select
-                  value={state.currentRole}
-                  onChange={(e) => {
-                    const nextRole = e.target.value as RoleId;
-                    actions.setCurrentRole(nextRole);
-                    const nextAllowed = state.permissionsMatrix[nextRole] ?? ['dashboard'];
-                    if (!nextAllowed.includes(route)) {
-                      setRoute(nextAllowed[0] ?? 'dashboard');
-                    }
-                    actions.notify(
-                      `${t.loginAs}: ${isAr ? ROLE_LABELS[nextRole].ar : ROLE_LABELS[nextRole].en}`,
-                    );
-                  }}
-                  className="w-full px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
-                >
-                  {(['owner', 'accountant', 'cashier', 'salesman', 'warehouse'] as RoleId[]).map((r) => (
-                    <option key={r} value={r}>
-                      {isAr ? ROLE_LABELS[r].ar : ROLE_LABELS[r].en}
-                    </option>
-                  ))}
-                </select>
+              <div className="px-2 py-1.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B]">
+                <p className="text-[10px] text-slate-400 font-semibold truncate">{user?.email}</p>
+                <p className="text-[11px] font-bold text-[#0A3D2C] dark:text-[#C9A227] truncate">{roleText}</p>
               </div>
               <button
                 onClick={() => actions.logoutPreserveData()}
@@ -657,8 +651,56 @@ export default function App() {
               )}
             </div>
 
+            {/* Pending Workspace Team Invites & Email Verification Banner */}
+            {user && !user.emailVerified && (
+              <div className="no-print mb-3 px-4 py-2.5 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 flex items-center justify-between gap-3 text-xs">
+                <span className="font-bold text-amber-800 dark:text-amber-300">
+                  {isAr
+                    ? 'يرجى توثيق بريدك الإلكتروني لتفعيل المزامنة السحابية الكاملة.'
+                    : 'Please verify your email address to enable full cloud sync.'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void resendVerificationEmail()}
+                  className="px-3 py-1 rounded-lg bg-amber-600 text-white font-bold shrink-0 cursor-pointer"
+                >
+                  {isAr ? 'إعادة الإرسال' : 'Resend'}
+                </button>
+              </div>
+            )}
+            {pendingInvites.length > 0 && (
+              <div className="no-print mb-3 space-y-2">
+                {pendingInvites.map((inv) => (
+                  <div
+                    key={inv.id}
+                    className="px-4 py-2.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-300 dark:border-emerald-800 flex flex-wrap items-center justify-between gap-3 text-xs"
+                  >
+                    <span className="font-bold text-[#0A3D2C] dark:text-emerald-200">
+                      {isAr
+                        ? `دعوة فريق معلقة من "${inv.companyName}" بصلاحية (${ROLE_LABELS[inv.role].ar})`
+                        : `Pending workspace invite from "${inv.companyName}" (${ROLE_LABELS[inv.role].en})`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void actions.acceptPendingInvite(inv)}
+                      className="px-3 py-1.5 rounded-lg bg-[#0A3D2C] text-white font-bold cursor-pointer"
+                    >
+                      {isAr ? 'قبول والانضمام' : 'Accept & Join'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div className="mb-4 flex items-center justify-between gap-2">
-              <h1 className="text-xl font-extrabold truncate">{t[route]}</h1>
+              <div className="flex items-center gap-2 min-w-0">
+                <h1 className="text-xl font-extrabold truncate">{t[route]}</h1>
+                {state.settings.countryCode && (
+                  <span className="hidden sm:inline-block px-2 py-0.5 rounded-md bg-slate-200/70 dark:bg-[#1A2C24] text-[10px] font-mono font-bold text-slate-600 dark:text-slate-300">
+                    {state.settings.countryCode}
+                  </span>
+                )}
+              </div>
               <span className="text-xs text-slate-500 font-mono shrink-0">
                 {roleText} · {state.settings.currency} ·{' '}
                 {user

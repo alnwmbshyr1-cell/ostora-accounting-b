@@ -14,6 +14,7 @@ import {
 import { useFirebase } from '../contexts/FirebaseContext';
 import { getLocaleStrings } from '../data/translations';
 import { LanguageCode } from '../types/erp';
+import { PrivacyPolicyModal } from './PrivacyPolicyModal';
 import appIconImg from '../assets/images/ostora_app_icon_1794578215972.jpg';
 
 interface AuthOnboardingFlowProps {
@@ -61,6 +62,7 @@ export const AuthOnboardingFlow: React.FC<AuthOnboardingFlowProps> = ({
   const [password, setPassword] = useState('');
   const [infoMsg, setInfoMsg] = useState('');
   const [restoreMsg, setRestoreMsg] = useState('');
+  const [privacyOpen, setPrivacyOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -466,7 +468,24 @@ export const AuthOnboardingFlow: React.FC<AuthOnboardingFlowProps> = ({
             ? 'ليس لديك حساب؟ إنشاء حساب جديد'
             : 'New user? Create an account'}
         </button>
+
+        <div className="pt-2 border-t border-slate-100 dark:border-[#1F332B] flex items-center justify-center">
+          <button
+            type="button"
+            onClick={() => setPrivacyOpen(true)}
+            className="inline-flex items-center gap-1.5 text-[11px] font-bold text-[#0A3D2C] dark:text-[#C9A227] hover:underline cursor-pointer"
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+            <span>{isAr ? 'سياسة الخصوصية وحماية البيانات' : 'Privacy Policy & Data Protection'}</span>
+          </button>
+        </div>
       </div>
+
+      <PrivacyPolicyModal
+        open={privacyOpen}
+        onClose={() => setPrivacyOpen(false)}
+        isAr={isAr}
+      />
     </div>
   );
 };

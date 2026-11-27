@@ -16,6 +16,7 @@ import {
   Printer,
   QrCode,
   RefreshCw,
+  RotateCcw,
   Search,
   ShieldCheck,
   Square,
@@ -37,6 +38,7 @@ import {
   InvoiceStatus,
   LineItem,
   PaymentMethodType,
+  TaxTreatment,
   UnitOfMeasure,
 } from '../types/erp';
 import {
@@ -45,8 +47,11 @@ import {
   formatCurrencyNumber,
   getCurrencyMeta,
 } from '../utils/currencies';
+import { downloadTextFile } from '../utils/export';
 import { buildWhatsAppLink } from '../utils/messaging';
-import { buildZatcaTlvBase64, validateZatcaPhase1 } from '../utils/zatca';
+import { numberToWordsTafqeet } from '../utils/tafqeet';
+import { resolveEffectiveTaxRate } from '../utils/taxRegimes';
+import { buildZatcaTlvBase64, buildZatcaUblXml, generateZatcaUuid, validateZatcaPhase1 } from '../utils/zatca';
 import { ScreenProps } from './types';
 
 export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, onOpenBatchPrint }) => {
@@ -77,6 +82,7 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
   const [payAmountInput, setPayAmountInput] = useState('');
   const [payBankId, setPayBankId] = useState(state.banks[0]?.id ?? 'cash');
   const [invModal, setInvModal] = useState<{ open: boolean; edit?: Invoice }>({ open: false });
+  const [invModalSection, setInvModalSection] = useState<'all' | 'basic' | 'items' | 'tax_branch' | 'payment'>('all');
 
   // Quick-add customer inline modal
   const [quickCustOpen, setQuickCustOpen] = useState(false);
@@ -112,6 +118,8 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
     paidAmount: '0',
     notes: '',
     terms: '',
+    taxTreatment: 'standard' as TaxTreatment,
+    costCenter: '',
     items: [] as LineItem[],
   });
 
@@ -123,6 +131,8 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
   const [formError, setFormError] = useState('');
   const [refreshingFx, setRefreshingFx] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<{ type: 'one' | 'all'; id?: string } | null>(null);
+  const [voidModalInv, setVoidModalInv] = useState<Invoice | null>(null);
+  const [voidReason, setVoidReason] = useState('');
   const [qrInvoice, setQrInvoice] = useState<Invoice | null>(null);
   const [copiedQrTlv, setCopiedQrTlv] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -163,7 +173,8 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
 
   const subNum = parseFloat(invForm.subtotal) || 0;
   const parsedRate = parseFloat(invForm.taxRate);
-  const activeTaxRate = Number.isFinite(parsedRate) ? Math.max(0, Math.min(100, parsedRate)) : defaultSalesTaxRate;
+  const baseTaxRate = Number.isFinite(parsedRate) ? Math.max(0, Math.min(100, parsedRate)) : defaultSalesTaxRate;
+  const activeTaxRate = resolveEffectiveTaxRate(baseTaxRate, invForm.taxTreatment);
   const parsedFx = parseFloat(invForm.exchangeRate);
   const activeFxRate =
     invForm.currency === cur ? 1 : Number.isFinite(parsedFx) && parsedFx > 0 ? parsedFx : ratesMap[invForm.currency] ?? 1;
@@ -250,6 +261,72 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
     setInvProdDiscPct('0');
   };
 
+  const updateModalLine = (idx: number, patch: Partial<LineItem>) => {
+    setInvForm((f) => {
+      const nextItems = f.items.map((it, i) => {
+        if (i !== idx) return it;
+        const merged = { ...it, ...patch };
+        const qty = Math.max(0.01, Number(merged.qty) || 1);
+        const unitPrice = Math.max(0, Number(merged.unitPrice) || 0);
+        const discPct = Math.max(0, Math.min(100, Number(merged.discountPercent) || 0));
+        const grossH = Math.round(toHalalas(unitPrice) * qty);
+        const discH = Math.round((grossH * discPct) / 100);
+        const lineNet = fromHalalas(Math.max(0, grossH - discH));
+        const lineTaxRate = merged.taxRate ?? activeTaxRate;
+        const lineTaxAmt = fromHalalas(Math.round((toHalalas(lineNet) * lineTaxRate) / 100));
+        return {
+          ...merged,
+          qty,
+          unitPrice,
+          discountPercent: discPct || undefined,
+          discountAmount: discH > 0 ? fromHalalas(discH) : undefined,
+          taxAmount: lineTaxAmt,
+          total: lineNet,
+        };
+      });
+      const nextSub = fromHalalas(nextItems.reduce((s, it) => s + toHalalas(it.total), 0));
+      return {
+        ...f,
+        items: nextItems,
+        subtotal: nextSub.toFixed(2),
+        description: nextItems.map((it) => `${it.productName} ×${it.qty}`).join(' · '),
+      };
+    });
+  };
+
+  const totalLineCostBase = fromHalalas(
+    invForm.items.reduce((s, it) => s + Math.round(toHalalas(it.costPrice ?? 0) * it.qty), 0),
+  );
+  const estNetMarginPct =
+    calc.baseSubtotal > 0
+      ? Number((((calc.baseSubtotal - totalLineCostBase) / calc.baseSubtotal) * 100).toFixed(1))
+      : 0;
+
+  const invKpis = (() => {
+    let totalH = 0;
+    let paidH = 0;
+    let remH = 0;
+    let vatH = 0;
+    for (const inv of filtered) {
+      if (inv.status === 'cancelled' || inv.status === 'draft' || inv.invoiceType === 'quotation') continue;
+      const fx = inv.exchangeRate ?? 1;
+      const sign = inv.invoiceType === 'return' ? -1 : 1;
+      const baseTotH = inv.baseTotal !== undefined ? toHalalas(inv.baseTotal) : Math.round(toHalalas(inv.total) * fx);
+      const basePaidH = inv.status === 'paid' ? baseTotH : Math.min(baseTotH, Math.round(toHalalas(inv.paidAmount ?? 0) * fx));
+      const baseRemH = inv.status === 'paid' ? 0 : Math.max(0, baseTotH - basePaidH);
+      totalH += baseTotH * sign;
+      paidH += basePaidH * sign;
+      remH += baseRemH * sign;
+      vatH += Math.round(toHalalas(inv.vat) * fx) * sign;
+    }
+    return {
+      total: fromHalalas(totalH),
+      paid: fromHalalas(paidH),
+      remaining: fromHalalas(remH),
+      vat: fromHalalas(vatH),
+    };
+  })();
+
   const handleSaveInvoice = (mode: 'draft' | 'save' | 'saveAndPrint') => {
     setFormError('');
     if (!invForm.customerName.trim()) {
@@ -311,6 +388,8 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
       referenceNumber: invForm.referenceNumber.trim() || undefined,
       notes: invForm.notes || undefined,
       terms: invForm.terms || undefined,
+      taxTreatment: invForm.taxTreatment,
+      costCenter: invForm.costCenter.trim() || undefined,
       date: isoDate,
     };
 
@@ -349,6 +428,33 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
 
   return (
     <div className="space-y-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <p className="text-[11px] font-bold text-slate-500">{isAr ? 'إجمالي الفواتير المفلترة' : 'Filtered Sales Total'}</p>
+          <p className="text-lg font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227] mt-1">
+            {formatCurrency(invKpis.total, cur, { isAr })}
+          </p>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <p className="text-[11px] font-bold text-slate-500">{isAr ? 'المحصل الفعلي' : 'Collected'}</p>
+          <p className="text-lg font-extrabold font-mono tabular-nums text-emerald-600 mt-1">
+            {formatCurrency(invKpis.paid, cur, { isAr })}
+          </p>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <p className="text-[11px] font-bold text-slate-500">{isAr ? 'المتبقي للتحصيل' : 'Outstanding'}</p>
+          <p className="text-lg font-extrabold font-mono tabular-nums text-amber-600 mt-1">
+            {formatCurrency(invKpis.remaining, cur, { isAr })}
+          </p>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <p className="text-[11px] font-bold text-slate-500">{isAr ? 'ضريبة المخرجات' : 'Output VAT'}</p>
+          <p className="text-lg font-extrabold font-mono tabular-nums mt-1">
+            {formatCurrency(invKpis.vat, cur, { isAr })}
+          </p>
+        </div>
+      </div>
+
       <div className="flex flex-wrap items-center gap-3">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="w-4 h-4 text-slate-400 absolute top-1/2 -translate-y-1/2 start-3.5" />
@@ -414,14 +520,35 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
               paidAmount: '0',
               notes: '',
               terms: '',
+              taxTreatment: 'standard',
+              costCenter: '',
               items: [],
             });
+            setInvModalSection('all');
             setInvModal({ open: true });
           }}
           className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0A3D2C] text-white font-bold text-sm hover:opacity-95 cursor-pointer"
         >
           <Plus className="w-4 h-4" />
           <span>{t.addInvoice}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            const csv = ['ID,Date,Kind,Customer,Currency,Subtotal,VAT,Total,Paid,Remaining,Status']
+              .concat(
+                filtered.map(
+                  (inv) =>
+                    `${inv.id},${inv.date.slice(0, 10)},${inv.invoiceDocKind ?? 'tax'},"${inv.customerName}",${inv.currency ?? cur},${inv.subtotal},${inv.vat},${inv.total},${inv.paidAmount ?? 0},${inv.remainingAmount ?? 0},${inv.status}`,
+                ),
+              )
+              .join('\n');
+            downloadTextFile(`ostora_invoices_${new Date().toISOString().slice(0, 10)}.csv`, csv);
+          }}
+          className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-[#1F332B] bg-white dark:bg-[#121E19] text-xs font-bold cursor-pointer"
+        >
+          <Download className="w-4 h-4" />
+          <span>{t.exportCsv}</span>
         </button>
         {filtered.length > 0 && (
           <button
@@ -548,6 +675,12 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
                 <div>
                   <h4 className="font-extrabold text-base">{inv.customerName}</h4>
                   <p className="text-xs text-slate-500 mt-0.5">{inv.description || '—'}</p>
+                  {inv.status === 'cancelled' && (inv.voidReason || inv.reversalJournalId) && (
+                    <p className="mt-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-red-500/10 text-red-700 dark:text-red-400 text-[11px] font-bold">
+                      <span>{isAr ? 'ملغاة:' : 'Voided:'} {inv.voidReason || '—'}</span>
+                      {inv.reversalJournalId && <span className="font-mono">({inv.reversalJournalId})</span>}
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-baseline justify-between text-xs pt-1">
                   {(() => {
@@ -619,6 +752,50 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
                     <QrCode className="w-3.5 h-3.5 text-[#0A3D2C] dark:text-[#C9A227]" />
                     <span>{t.quickScanQr}</span>
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const xml =
+                        inv.zatcaXml ||
+                        buildZatcaUblXml({
+                          invoiceId: inv.id,
+                          uuid: inv.zatcaUuid || generateZatcaUuid(),
+                          icv: inv.icv ?? 1,
+                          pih: inv.pih || '0',
+                          issueDateIso: inv.date,
+                          currency: inv.currency ?? cur,
+                          sellerName: state.settings.companyName,
+                          sellerVat: state.settings.taxNumber,
+                          sellerAddress: state.settings.address,
+                          customerName: inv.customerName,
+                          subtotal: inv.subtotal,
+                          vat: inv.vat,
+                          total: inv.total,
+                          taxRate: inv.taxRate ?? defaultSalesTaxRate,
+                          invoiceType: inv.invoiceType,
+                          items: inv.items,
+                        });
+                      downloadTextFile(`zatca_${inv.id}.xml`, xml, 'application/xml;charset=utf-8');
+                      actions.notify(isAr ? `تم تنزيل ملف ZATCA XML (${inv.id})` : `Downloaded ZATCA XML (${inv.id})`);
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-[#1F332B] text-xs font-bold cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5 text-[#0A3D2C] dark:text-[#C9A227]" />
+                    <span>{isAr ? 'تنزيل XML' : 'XML'}</span>
+                  </button>
+                  {inv.status !== 'draft' && inv.status !== 'cancelled' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setVoidReason('');
+                        setVoidModalInv(inv);
+                      }}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-400 text-xs font-bold cursor-pointer"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>{isAr ? 'إلغاء (قيد عكسي)' : 'Void & Reverse'}</span>
+                    </button>
+                  )}
                   <a
                     href={buildWhatsAppLink(
                       inv.customerPhone,
@@ -686,8 +863,11 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
                             paidAmount: String(inv.paidAmount ?? 0),
                             notes: inv.notes ?? '',
                             terms: inv.terms ?? '',
+                            taxTreatment: inv.taxTreatment ?? 'standard',
+                            costCenter: inv.costCenter ?? '',
                             items: inv.items ?? [],
                           });
+                          setInvModalSection('all');
                           setInvModal({ open: true, edit: inv });
                         }}
                         className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-[#1A2C24] cursor-pointer"
@@ -717,12 +897,36 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
       {invModal.open && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] max-w-3xl w-full p-6 space-y-3 my-auto max-h-[94vh] overflow-y-auto">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="text-lg font-extrabold">{invModal.edit ? t.editInvoice : t.addInvoice}</h3>
                 <p className="text-xs font-mono text-slate-500">
                   {invModal.edit ? invModal.edit.id : nextPredictedId}
                 </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-1 bg-slate-100 dark:bg-[#0A120F] p-1 rounded-xl">
+                {(
+                  [
+                    ['all', t.all],
+                    ['basic', isAr ? 'العميل والتاريخ' : 'Client & Date'],
+                    ['items', isAr ? 'الأصناف' : 'Items'],
+                    ['tax_branch', isAr ? 'الفرع والضريبة' : 'Branch & Tax'],
+                    ['payment', isAr ? 'العملة والدفع' : 'Currency & Pay'],
+                  ] as const
+                ).map(([sec, lbl]) => (
+                  <button
+                    key={sec}
+                    type="button"
+                    onClick={() => setInvModalSection(sec)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer whitespace-nowrap shrink-0 ${
+                      invModalSection === sec
+                        ? 'bg-[#0A3D2C] text-white'
+                        : 'text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    {lbl}
+                  </button>
+                ))}
               </div>
               <button onClick={() => setInvModal({ open: false })} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-[#1A2C24] cursor-pointer">
                 <X className="w-4 h-4" />
@@ -735,6 +939,8 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
               </div>
             )}
 
+            {(invModalSection === 'all' || invModalSection === 'basic') && (
+              <>
             {/* Header Metadata: Date*, Due Date, Kind, Customer* + Quick Add */}
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
               <div>
@@ -840,8 +1046,11 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
                 />
               </div>
             </div>
+              </>
+            )}
 
-            {/* Items Builder with Barcode Scan, Description, Unit, Stock, Discount % */}
+            {(invModalSection === 'all' || invModalSection === 'items') && (
+            /* Items Builder with Barcode Scan, Description, Unit, Stock, Discount % */
             <div className="border border-slate-200 dark:border-[#1F332B] rounded-xl p-3 space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-xs font-bold text-slate-500">{t.product} *</p>
@@ -955,40 +1164,93 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
               </div>
 
               {invForm.items.length > 0 && (
-                <div className="pt-1.5 border-t border-slate-100 dark:border-[#1F332B] space-y-1 max-h-28 overflow-y-auto">
-                  {invForm.items.map((it, idx) => (
-                    <div key={idx} className="flex items-center justify-between gap-2 text-xs">
-                      <span className="truncate">
-                        {it.productName} ({it.unit ?? 'piece'}) ×{it.qty}
-                        {it.discountPercent ? ` [-${it.discountPercent}%]` : ''}
-                        {showCostMargin && it.costPrice !== undefined ? ` (${t.cost}: ${it.costPrice})` : ''}
-                      </span>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span className="font-mono font-bold tabular-nums">{formatCurrency(it.total, invForm.currency, { isAr })}</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const nextItems = invForm.items.filter((_, i) => i !== idx);
-                            const nextSub = fromHalalas(nextItems.reduce((s, x) => s + toHalalas(x.total), 0));
-                            setInvForm({
-                              ...invForm,
-                              items: nextItems,
-                              subtotal: nextItems.length ? nextSub.toFixed(2) : '',
-                              description: nextItems.map((x) => `${x.productName} ×${x.qty}`).join(' · '),
-                            });
-                          }}
-                          className="text-red-500 hover:text-red-700 cursor-pointer"
-                          aria-label={t.delete}
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                <div className="pt-2 border-t border-slate-100 dark:border-[#1F332B] overflow-x-auto max-h-40 overflow-y-auto">
+                  <table className="w-full text-xs">
+                    <thead className="text-[10px] font-bold text-slate-500 bg-slate-50 dark:bg-[#0A120F]">
+                      <tr>
+                        <th className="p-1.5 text-start">{t.product}</th>
+                        <th className="p-1.5 text-center w-16">{t.qty}</th>
+                        <th className="p-1.5 text-center w-24">{t.price}</th>
+                        <th className="p-1.5 text-center w-16">{t.discountPercent}</th>
+                        <th className="p-1.5 text-end">{t.total}</th>
+                        <th className="p-1.5 w-7"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-[#1F332B]">
+                      {invForm.items.map((it, idx) => (
+                        <tr key={idx}>
+                          <td className="p-1.5">
+                            <span className="font-bold block truncate max-w-[160px]">{it.productName}</span>
+                            {showCostMargin && it.costPrice !== undefined && (
+                              <span className="text-[10px] font-mono text-slate-400">
+                                {t.cost}: {it.costPrice}
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-1">
+                            <input
+                              type="number"
+                              min={0.1}
+                              step="1"
+                              value={it.qty}
+                              onChange={(e) => updateModalLine(idx, { qty: Math.max(0.1, parseFloat(e.target.value) || 1) })}
+                              className="w-full px-1.5 py-1 rounded bg-slate-50 dark:bg-[#0A120F] border text-center font-mono"
+                            />
+                          </td>
+                          <td className="p-1">
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={it.unitPrice}
+                              onChange={(e) => updateModalLine(idx, { unitPrice: Math.max(0, parseFloat(e.target.value) || 0) })}
+                              className="w-full px-1.5 py-1 rounded bg-slate-50 dark:bg-[#0A120F] border text-center font-mono"
+                            />
+                          </td>
+                          <td className="p-1">
+                            <input
+                              type="number"
+                              min={0}
+                              max={100}
+                              step="0.5"
+                              value={it.discountPercent ?? 0}
+                              onChange={(e) => updateModalLine(idx, { discountPercent: Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)) })}
+                              className="w-full px-1.5 py-1 rounded bg-slate-50 dark:bg-[#0A120F] border text-center font-mono"
+                            />
+                          </td>
+                          <td className="p-1.5 text-end font-mono font-bold tabular-nums">
+                            {formatCurrency(it.total, invForm.currency, { isAr })}
+                          </td>
+                          <td className="p-1 text-center">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const nextItems = invForm.items.filter((_, i) => i !== idx);
+                                const nextSub = fromHalalas(nextItems.reduce((s, x) => s + toHalalas(x.total), 0));
+                                setInvForm({
+                                  ...invForm,
+                                  items: nextItems,
+                                  subtotal: nextItems.length ? nextSub.toFixed(2) : '',
+                                  description: nextItems.map((x) => `${x.productName} ×${x.qty}`).join(' · '),
+                                });
+                              }}
+                              className="text-red-500 hover:text-red-700 cursor-pointer"
+                              aria-label={t.delete}
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>
+            )}
 
+            {(invModalSection === 'all' || invModalSection === 'tax_branch') && (
+              <>
             {/* Branch*, Warehouse*, Payment Method, Reference# */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div>
@@ -1042,7 +1304,11 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
                 />
               </div>
             </div>
+              </>
+            )}
 
+            {(invModalSection === 'all' || invModalSection === 'payment') && (
+              <>
             {/* Invoice Discount % & Amount, Shipping, Extra, Paid */}
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
               <div>
@@ -1120,22 +1386,54 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <input
-                type="text"
-                maxLength={500}
-                value={invForm.description}
-                onChange={(e) => setInvForm({ ...invForm, description: e.target.value })}
-                placeholder={t.reason}
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
-              />
-              <input
-                type="text"
-                maxLength={500}
-                value={invForm.terms}
-                onChange={(e) => setInvForm({ ...invForm, terms: e.target.value })}
-                placeholder={isAr ? 'الشروط والأحكام' : 'Terms & Conditions'}
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
-              />
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-1">{t.reason}</label>
+                <input
+                  type="text"
+                  maxLength={500}
+                  value={invForm.description}
+                  onChange={(e) => setInvForm({ ...invForm, description: e.target.value })}
+                  placeholder={t.reason}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-1">{isAr ? 'الشروط والأحكام' : 'Terms & Conditions'}</label>
+                <input
+                  type="text"
+                  maxLength={500}
+                  value={invForm.terms}
+                  onChange={(e) => setInvForm({ ...invForm, terms: e.target.value })}
+                  placeholder={isAr ? 'الشروط والأحكام' : 'Terms & Conditions'}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-1">{isAr ? 'المعاملة الضريبية' : 'Tax Treatment'}</label>
+                <select
+                  value={invForm.taxTreatment}
+                  onChange={(e) => setInvForm({ ...invForm, taxTreatment: e.target.value as TaxTreatment })}
+                  className="w-full px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+                >
+                  <option value="standard">{isAr ? 'خاضع للضريبة الأساسية' : 'Standard Rated'}</option>
+                  <option value="zero">{isAr ? 'نسبة صفرية (0%)' : 'Zero Rated (0%)'}</option>
+                  <option value="exempt">{isAr ? 'معفى من الضريبة' : 'Tax Exempt'}</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-1">{t.costCenter}</label>
+                <input
+                  type="text"
+                  maxLength={120}
+                  value={invForm.costCenter}
+                  onChange={(e) => setInvForm({ ...invForm, costCenter: e.target.value })}
+                  placeholder={isAr ? 'مثال: CC-SALES' : 'e.g. CC-SALES'}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
+                />
+              </div>
             </div>
 
             {/* Currency, Rate, Subtotal, VAT%, Status */}
@@ -1231,6 +1529,8 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
                 </select>
               </div>
             </div>
+              </>
+            )}
 
             {/* Summary Box */}
             <div className="p-3 rounded-xl bg-slate-100 dark:bg-[#0A120F] space-y-1 text-xs font-bold tabular-nums">
@@ -1239,6 +1539,15 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
                 <span>{isAr ? 'المتبقي:' : 'Remaining:'} {formatCurrency(calc.remainingAmount, invForm.currency, { isAr })}</span>
                 <span className="text-[#0A3D2C] dark:text-[#C9A227]">{t.total}: {formatCurrency(totalNum, invForm.currency, { isAr })}</span>
               </div>
+              {showCostMargin && invForm.items.length > 0 && (
+                <div className="flex justify-between text-[11px] text-emerald-700 dark:text-emerald-400 pt-1 border-t border-slate-200 dark:border-[#1F332B]">
+                  <span>{isAr ? 'تكلفة البضاعة التقديرية:' : 'Est. COGS:'} {formatCurrency(totalLineCostBase, cur, { isAr })}</span>
+                  <span>{isAr ? 'هامش الربح:' : 'Gross Margin:'} {estNetMarginPct}%</span>
+                </div>
+              )}
+              <p className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 pt-1 border-t border-slate-200 dark:border-[#1F332B]">
+                {numberToWordsTafqeet(totalNum, invForm.currency, isAr ? 'ar' : 'en')}
+              </p>
               {invForm.currency !== cur && (
                 <div className="flex justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-200 dark:border-[#1F332B]">
                   <span>{t.equivalentBase}</span>
@@ -1440,6 +1749,9 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
           qrInvoice.date,
           qrInvoice.total.toFixed(2),
           qrInvoice.vat.toFixed(2),
+          qrInvoice.invoiceHash || qrInvoice.ecdsaSignature
+            ? { invoiceHash: qrInvoice.invoiceHash, ecdsaSignature: qrInvoice.ecdsaSignature }
+            : undefined,
         );
         const zatcaCheck = validateZatcaPhase1(state.settings.companyName, state.settings.taxNumber);
 
@@ -1473,11 +1785,18 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
                     {t.vat}: {formatCurrency(qrInvoice.vat, qrInvoice.currency ?? cur, { isAr })}
                   </p>
                 </div>
+                {qrInvoice.zatcaUuid && (
+                  <p className="text-[10px] font-mono bg-slate-100 dark:bg-[#0A120F] px-2.5 py-1 rounded-lg text-slate-600 dark:text-slate-300">
+                    Phase-2 UUID: {qrInvoice.zatcaUuid.slice(0, 18)}… {qrInvoice.icv ? `· ICV #${qrInvoice.icv}` : ''}
+                  </p>
+                )}
                 <div className={`flex items-center gap-1.5 text-xs font-bold ${zatcaCheck.isCompliant ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}`}>
                   {zatcaCheck.isCompliant ? <ShieldCheck className="w-4 h-4 shrink-0" /> : <AlertTriangle className="w-4 h-4 shrink-0" />}
                   <span>
                     {zatcaCheck.isCompliant
-                      ? isAr ? 'متوافق مع المرحلة الأولى ZATCA' : 'ZATCA Phase-1 Compliant'
+                      ? qrInvoice.invoiceHash
+                        ? (isAr ? 'متوافق مع المرحلة الأولى والثانية ZATCA' : 'ZATCA Phase-1 & Phase-2 Compliant')
+                        : (isAr ? 'متوافق مع المرحلة الأولى ZATCA' : 'ZATCA Phase-1 Compliant')
                       : isAr ? zatcaCheck.warningsAr[0] : zatcaCheck.warningsEn[0]}
                   </span>
                 </div>
@@ -1534,6 +1853,52 @@ export const InvoicesScreen: React.FC<ScreenProps> = ({ store, onPrintInvoice, o
           </div>
         );
       })()}
+
+      {voidModalInv && (
+        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] max-w-sm w-full p-6 space-y-4">
+            <h3 className="text-base font-extrabold text-rose-600">
+              {isAr ? `إلغاء فاتورة بقيد عكسي · ${voidModalInv.id}` : `Void & Reverse Invoice · ${voidModalInv.id}`}
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              {isAr
+                ? 'سيتم عكس القيد المحاسبي وإرجاع المخزون وتسوية رصيد العميل مع الاحتفاظ بسجل التدقيق.'
+                : 'This posts a reversing journal entry, restores inventory, and settles customer balance with full audit trail.'}
+            </p>
+            <input
+              type="text"
+              value={voidReason}
+              onChange={(e) => setVoidReason(e.target.value)}
+              placeholder={isAr ? 'سبب الإلغاء *' : 'Void reason *'}
+              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setVoidModalInv(null)}
+                className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-[#1F332B] font-bold text-xs cursor-pointer"
+              >
+                {t.cancel}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const ok = actions.voidInvoice(voidModalInv.id, voidReason || (isAr ? 'إبطال فاتورة محاسبياً' : 'Accounting void'));
+                  if (ok) {
+                    actions.notify(isAr ? `تم إبطال الفاتورة ${voidModalInv.id} وتوليد القيد العكسي` : `Voided ${voidModalInv.id} with reversal journal`);
+                    setVoidModalInv(null);
+                  } else {
+                    actions.notify(t.fiscalLockBlocked);
+                  }
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 text-white font-bold text-xs cursor-pointer"
+              >
+                {isAr ? 'تأكيد الإبطال' : 'Confirm Void'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

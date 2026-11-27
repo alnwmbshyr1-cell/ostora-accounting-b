@@ -409,6 +409,7 @@ export function computeBankReconciliationDiff(
 export interface UnifiedProfitSummary {
   revenueExVat: number;
   cogs: number;
+  grossProfit: number;
   operatingExpenses: number;
   netProfit: number;
 }
@@ -459,6 +460,7 @@ export function computeUnifiedNetProfit(
   return {
     revenueExVat: fromHalalas(revExVatH),
     cogs: fromHalalas(cogsH),
+    grossProfit: fromHalalas(revExVatH - cogsH),
     operatingExpenses: fromHalalas(expH),
     netProfit: fromHalalas(revExVatH - cogsH - expH),
   };

@@ -1,11 +1,13 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowDownRight,
   ArrowUpRight,
   Award,
+  Brain,
   Building2,
   Lightbulb,
+  Loader2,
   Package,
   Sparkles,
   Timer,
@@ -19,11 +21,24 @@ import { computeAdvancedInsights, computeDetailedAiInsights } from '../domain/an
 import { formatCurrency, formatCurrencyNumber } from '../utils/currencies';
 import { ScreenProps } from './types';
 
+interface GeminiAnalyticsPayload {
+  enabled: boolean;
+  message?: string;
+  summaryAr?: string;
+  summaryEn?: string;
+  forecast6m?: Array<{ month: string; expectedSales: number }>;
+  actionItems?: string[];
+}
+
 export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) => {
   const { state, metrics, actions } = store;
   const isAr = state.settings.isArabic;
   const cur = state.settings.currency;
   const t = strings[isAr ? 'ar' : 'en'];
+
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiResult, setAiResult] = useState<GeminiAnalyticsPayload | null>(null);
+  const [aiError, setAiError] = useState('');
 
   const adv = useMemo(() => computeAdvancedInsights(state), [state]);
   const detailed = useMemo(() => computeDetailedAiInsights(state), [state]);
@@ -49,14 +64,62 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
       ? Math.max(0, Math.round(((metrics.totalSales - metrics.customerDebt) / metrics.totalSales) * 100))
       : 100;
   const forecastBase = adv.nextMonthForecast > 0 ? adv.nextMonthForecast : baseSales > 0 ? baseSales : 10000;
-  const points = Array.from({ length: 6 }, (_, i) => ({
-    label: `M${i + 1}`,
-    value: Math.round(forecastBase * (1 + i * 0.065)),
-  }));
+  const historicalGrowthRate = useMemo(() => {
+    const revSeries = adv.last3MonthsRevenue.map((m) => m.total).filter((v) => v > 0);
+    if (revSeries.length >= 2) {
+      const first = revSeries[0];
+      const last = revSeries[revSeries.length - 1];
+      const rawRate = (last - first) / Math.max(1, first) / Math.max(1, revSeries.length - 1);
+      return Math.max(-0.12, Math.min(0.18, rawRate));
+    }
+    return 0.02;
+  }, [adv.last3MonthsRevenue]);
+
+  const points =
+    aiResult?.enabled && aiResult.forecast6m && aiResult.forecast6m.length > 0
+      ? aiResult.forecast6m.slice(0, 6).map((f, idx) => ({
+          label: f.month || `M${idx + 1}`,
+          value: Math.max(0, Math.round(Number(f.expectedSales) || 0)),
+        }))
+      : Array.from({ length: 6 }, (_, i) => ({
+          label: `M${i + 1}`,
+          value: Math.max(0, Math.round(forecastBase * Math.pow(1 + historicalGrowthRate, i))),
+        }));
   const maxVal = Math.max(...points.map((p) => p.value), 1);
 
   const curMoProfit = detailed.monthComparison.currentRev - detailed.monthComparison.currentExp;
   const prevMoProfit = detailed.monthComparison.prevRev - detailed.monthComparison.prevExp;
+
+  const runGeminiAnalytics = async () => {
+    setAiLoading(true);
+    setAiError('');
+    try {
+      const resp = await fetch('/api/ai/analytics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          currency: cur,
+          isArabic: isAr,
+          last3MonthsRevenue: adv.last3MonthsRevenue,
+          monthlyRevenue: detailed.monthComparison.currentRev,
+          monthlyExpenses: detailed.monthComparison.currentExp,
+          netProfit: curMoProfit,
+          overdueCustomersCount: adv.overdueRiskCustomers.length,
+          lowStockCount: adv.stockAndExpiryAlerts.length,
+        }),
+      });
+      const json = (await resp.json()) as GeminiAnalyticsPayload;
+      if (!resp.ok) {
+        setAiError(json.message || (isAr ? 'تعذر الاتصال بخدمة التحليل الذكي' : 'AI analytics request failed'));
+      } else {
+        setAiResult(json);
+      }
+    } catch {
+      setAiError(isAr ? 'تعذر الوصول إلى خادم التحليل الذكي' : 'Failed to reach AI server endpoint');
+    } finally {
+      setAiLoading(false);
+    }
+  };
 
   return (
     <div className="space-y-5">
@@ -91,6 +154,63 @@ export const AiAnalyticsScreen: React.FC<ScreenProps> = ({ store, onNavigate }) 
             {formatCurrencyNumber(thisMonthSales, cur)} / {formatCurrency(goal, cur, { isAr })}
           </p>
         </div>
+      </div>
+
+      {/* Real Server Gemini AI Analytics Panel */}
+      <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/40 rounded-[20px] p-5 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-[#0A3D2C] text-[#C9A227] flex items-center justify-center shrink-0">
+              <Brain className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-extrabold">
+                {isAr ? 'تحليل AI حقيقي بالبيانات المالية (Gemini)' : 'Live AI Financial Analysis (Gemini)'}
+              </h3>
+              <p className="text-[11px] text-slate-500">
+                {isAr
+                  ? 'يقرأ اتجاه المبيعات الفعلي لآخر 3 أشهر والمخزون والذمم عبر الخادم الآمن'
+                  : 'Analyzes real 3-month revenue, expenses, stock alerts & receivables via server'}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={aiLoading}
+            onClick={() => void runGeminiAnalytics()}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#0A3D2C] hover:bg-[#0d4d37] text-white text-xs font-extrabold cursor-pointer disabled:opacity-60"
+          >
+            {aiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4 text-[#C9A227]" />}
+            <span>{isAr ? 'تحليل AI حقيقي' : 'Run Real AI Analysis'}</span>
+          </button>
+        </div>
+
+        {aiError && (
+          <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 text-xs font-bold text-rose-700 dark:text-rose-300">
+            {aiError}
+          </div>
+        )}
+
+        {aiResult && !aiResult.enabled && (
+          <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-xs font-bold text-amber-800 dark:text-amber-300">
+            {aiResult.message || (isAr ? 'AI غير مفعل حالياً على الخادم (GEMINI_API_KEY غير مضبوط).' : 'AI is currently not enabled on the server.')}
+          </div>
+        )}
+
+        {aiResult?.enabled && (
+          <div className="p-4 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/50 space-y-2.5 text-xs">
+            <p className="font-bold text-slate-800 dark:text-slate-100 leading-relaxed">
+              {isAr ? aiResult.summaryAr : aiResult.summaryEn}
+            </p>
+            {aiResult.actionItems && aiResult.actionItems.length > 0 && (
+              <ul className="list-disc list-inside space-y-1 text-slate-600 dark:text-slate-300">
+                {aiResult.actionItems.map((item, idx) => (
+                  <li key={idx}>{item}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Month-over-Month Performance Comparison */}

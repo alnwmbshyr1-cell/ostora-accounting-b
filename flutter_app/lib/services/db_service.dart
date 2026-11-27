@@ -88,6 +88,62 @@ class DbService {
   static String getActivePlan() => _prefs.getString('active_plan') ?? 'trial';
   static Future<void> setActivePlan(String plan) => _prefs.setString('active_plan', plan);
 
+  static String? getSignedInEmail() => _prefs.getString('signed_in_email');
+  static Future<void> setSignedInEmail(String? email) async {
+    if (email == null || email.isEmpty) {
+      await _prefs.remove('signed_in_email');
+    } else {
+      await _prefs.setString('signed_in_email', email.toLowerCase());
+    }
+  }
+
+  static String _hashSecret(String salt, String password) {
+    final bytes = utf8.encode('$salt::$password::ostora-v1');
+    var h1 = 0x811c9dc5;
+    var h2 = 0x9e3779b9;
+    var h3 = 0x85ebca6b;
+    var h4 = 0xc2b2ae35;
+    for (var round = 0; round < 64; round++) {
+      for (final b in bytes) {
+        h1 = ((h1 ^ (b + round)) * 0x01000193) & 0xffffffff;
+        h2 = ((h2 + (b ^ round)) * 0x45d9f3b) & 0xffffffff;
+        h3 = (((h3 << 5) | (h3 >>> 27)) ^ h1 ^ b) & 0xffffffff;
+        h4 = (((h4 << 7) | (h4 >>> 25)) + h2 + round) & 0xffffffff;
+      }
+    }
+    return [h1, h2, h3, h4].map((v) => v.toRadixString(16).padLeft(8, '0')).join();
+  }
+
+  static Future<void> saveLocalAccount(String email, String name, String password) async {
+    final normalized = email.trim().toLowerCase();
+    final salt = '${DateTime.now().microsecondsSinceEpoch}-$normalized';
+    final hash = _hashSecret(salt, password);
+    final raw = _prefs.getString('local_auth_accounts');
+    final Map<String, dynamic> map =
+        raw != null ? Map<String, dynamic>.from(jsonDecode(raw) as Map) : {};
+    map[normalized] = {'name': name.trim(), 'salt': salt, 'hash': hash};
+    await _prefs.setString('local_auth_accounts', jsonEncode(map));
+  }
+
+  static Map<String, dynamic>? getLocalAccount(String email) {
+    final normalized = email.trim().toLowerCase();
+    final raw = _prefs.getString('local_auth_accounts');
+    if (raw == null) return null;
+    final map = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+    final entry = map[normalized];
+    if (entry is Map) return Map<String, dynamic>.from(entry);
+    return null;
+  }
+
+  static bool verifyLocalAccount(String email, String password) {
+    final acc = getLocalAccount(email);
+    if (acc == null) return false;
+    final salt = acc['salt'] as String? ?? '';
+    final expected = acc['hash'] as String? ?? '';
+    if (salt.isEmpty || expected.isEmpty) return false;
+    return _hashSecret(salt, password) == expected;
+  }
+
   /// Uploads full ERP JSON backup to Google Drive appDataFolder / My Drive
   static Future<String> backupToGoogleDrive(String jsonPayload) async {
     final googleSignIn = GoogleSignIn(

@@ -13,6 +13,7 @@ class Invoice {
   final double subtotal;
   final double vat;
   final double total;
+  final double cogs;
   final InvoiceStatus status;
   final DateTime date;
 
@@ -25,6 +26,7 @@ class Invoice {
     required this.subtotal,
     required this.vat,
     required this.total,
+    this.cogs = 0.0,
     required this.status,
     required this.date,
   });
@@ -36,6 +38,7 @@ class Invoice {
     required String customerPhone,
     required String description,
     required double subtotal,
+    double cogs = 0.0,
     required InvoiceStatus status,
     DateTime? date,
   }) {
@@ -50,6 +53,7 @@ class Invoice {
       subtotal: subtotal,
       vat: vat,
       total: total,
+      cogs: cogs,
       status: status,
       date: date ?? DateTime.now(),
     );
@@ -64,6 +68,7 @@ class Invoice {
         'subtotal': subtotal,
         'vat': vat,
         'total': total,
+        'cogs': cogs,
         'status': status.name,
         'date': date.toIso8601String(),
       };
@@ -77,6 +82,7 @@ class Invoice {
         subtotal: (map['subtotal'] as num).toDouble(),
         vat: (map['vat'] as num).toDouble(),
         total: (map['total'] as num).toDouble(),
+        cogs: (map['cogs'] as num?)?.toDouble() ?? 0.0,
         status: InvoiceStatus.values.firstWhere(
           (e) => e.name == map['status'],
           orElse: () => InvoiceStatus.pending,
@@ -461,6 +467,42 @@ class BankAccount {
       );
 }
 
+const List<String> kAllSupportedCurrencies = [
+  'SAR',
+  'AED',
+  'USD',
+  'EUR',
+  'GBP',
+  'EGP',
+  'YER',
+  'KWD',
+  'QAR',
+  'BHD',
+  'OMR',
+  'JOD',
+  'IQD',
+  'TRY',
+  'JPY',
+];
+
+const Map<String, double> kDefaultExchangeRates = {
+  'SAR': 1.0,
+  'AED': 1.021,
+  'USD': 3.75,
+  'EUR': 4.05,
+  'GBP': 4.76,
+  'EGP': 0.077,
+  'YER': 0.015,
+  'KWD': 12.22,
+  'QAR': 1.03,
+  'BHD': 9.95,
+  'OMR': 9.74,
+  'JOD': 5.29,
+  'IQD': 0.00286,
+  'TRY': 0.11,
+  'JPY': 0.025,
+};
+
 class CompanySettings {
   final String companyName;
   final String taxNumber;
@@ -469,6 +511,15 @@ class CompanySettings {
   final String email;
   final String address;
   final String currency;
+  final String displayCurrency;
+  final List<String> enabledCurrencies;
+  final bool fxAutoUpdate;
+  final int fxAutoIntervalHours;
+  final String lastRatesSource;
+  final String currencyDisplayStyle; // 'symbol' | 'code'
+  final String currencyNumberLocale; // 'en' | 'ar'
+  final String currencyDecimalMode; // 'auto' | '2' | '0'
+  final Map<String, double> exchangeRates;
   final bool isArabic;
   final bool isDarkMode;
   final double monthlySalesGoal;
@@ -481,10 +532,20 @@ class CompanySettings {
     required this.email,
     required this.address,
     required this.currency,
+    this.displayCurrency = 'SAR',
+    List<String>? enabledCurrencies,
+    this.fxAutoUpdate = true,
+    this.fxAutoIntervalHours = 6,
+    this.lastRatesSource = 'Default FX Table',
+    this.currencyDisplayStyle = 'symbol',
+    this.currencyNumberLocale = 'en',
+    this.currencyDecimalMode = 'auto',
+    Map<String, double>? exchangeRates,
     required this.isArabic,
     required this.isDarkMode,
     this.monthlySalesGoal = 120000,
-  });
+  })  : enabledCurrencies = enabledCurrencies ?? List<String>.from(kAllSupportedCurrencies),
+        exchangeRates = exchangeRates ?? Map<String, double>.from(kDefaultExchangeRates);
 
   factory CompanySettings.defaults() => CompanySettings(
         companyName: 'مؤسسة الأسطورة للتجارة والمقاولات',
@@ -494,6 +555,15 @@ class CompanySettings {
         email: 'finance@ostora.systems',
         address: 'الرياض، حي العليا، المملكة العربية السعودية',
         currency: 'SAR',
+        displayCurrency: 'SAR',
+        enabledCurrencies: List<String>.from(kAllSupportedCurrencies),
+        fxAutoUpdate: true,
+        fxAutoIntervalHours: 6,
+        lastRatesSource: 'Default FX Table',
+        currencyDisplayStyle: 'symbol',
+        currencyNumberLocale: 'en',
+        currencyDecimalMode: 'auto',
+        exchangeRates: Map<String, double>.from(kDefaultExchangeRates),
         isArabic: true,
         isDarkMode: false,
         monthlySalesGoal: 120000,
@@ -507,6 +577,15 @@ class CompanySettings {
     String? email,
     String? address,
     String? currency,
+    String? displayCurrency,
+    List<String>? enabledCurrencies,
+    bool? fxAutoUpdate,
+    int? fxAutoIntervalHours,
+    String? lastRatesSource,
+    String? currencyDisplayStyle,
+    String? currencyNumberLocale,
+    String? currencyDecimalMode,
+    Map<String, double>? exchangeRates,
     bool? isArabic,
     bool? isDarkMode,
     double? monthlySalesGoal,
@@ -519,6 +598,15 @@ class CompanySettings {
         email: email ?? this.email,
         address: address ?? this.address,
         currency: currency ?? this.currency,
+        displayCurrency: displayCurrency ?? this.displayCurrency,
+        enabledCurrencies: enabledCurrencies ?? this.enabledCurrencies,
+        fxAutoUpdate: fxAutoUpdate ?? this.fxAutoUpdate,
+        fxAutoIntervalHours: fxAutoIntervalHours ?? this.fxAutoIntervalHours,
+        lastRatesSource: lastRatesSource ?? this.lastRatesSource,
+        currencyDisplayStyle: currencyDisplayStyle ?? this.currencyDisplayStyle,
+        currencyNumberLocale: currencyNumberLocale ?? this.currencyNumberLocale,
+        currencyDecimalMode: currencyDecimalMode ?? this.currencyDecimalMode,
+        exchangeRates: exchangeRates ?? this.exchangeRates,
         isArabic: isArabic ?? this.isArabic,
         isDarkMode: isDarkMode ?? this.isDarkMode,
         monthlySalesGoal: monthlySalesGoal ?? this.monthlySalesGoal,
@@ -532,23 +620,57 @@ class CompanySettings {
         'email': email,
         'address': address,
         'currency': currency,
+        'displayCurrency': displayCurrency,
+        'enabledCurrencies': enabledCurrencies,
+        'fxAutoUpdate': fxAutoUpdate,
+        'fxAutoIntervalHours': fxAutoIntervalHours,
+        'lastRatesSource': lastRatesSource,
+        'currencyDisplayStyle': currencyDisplayStyle,
+        'currencyNumberLocale': currencyNumberLocale,
+        'currencyDecimalMode': currencyDecimalMode,
+        'exchangeRates': exchangeRates,
         'isArabic': isArabic,
         'isDarkMode': isDarkMode,
         'monthlySalesGoal': monthlySalesGoal,
       };
 
-  factory CompanySettings.fromMap(Map<String, dynamic> map) => CompanySettings(
-        companyName: map['companyName'] as String? ?? 'أسطورة المحاسبة',
-        taxNumber: map['taxNumber'] as String? ?? '',
-        crNumber: map['crNumber'] as String? ?? '',
-        phone: map['phone'] as String? ?? '',
-        email: map['email'] as String? ?? '',
-        address: map['address'] as String? ?? '',
-        currency: map['currency'] as String? ?? 'SAR',
-        isArabic: map['isArabic'] as bool? ?? true,
-        isDarkMode: map['isDarkMode'] as bool? ?? false,
-        monthlySalesGoal: (map['monthlySalesGoal'] as num?)?.toDouble() ?? 120000,
-      );
+  factory CompanySettings.fromMap(Map<String, dynamic> map) {
+    final rawRates = map['exchangeRates'] as Map<String, dynamic>?;
+    final parsedRates = Map<String, double>.from(kDefaultExchangeRates);
+    if (rawRates != null) {
+      rawRates.forEach((k, v) {
+        if (v is num && v > 0) parsedRates[k] = v.toDouble();
+      });
+    }
+    final rawEnabled = (map['enabledCurrencies'] as List<dynamic>?)
+        ?.map((e) => e.toString())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    final cur = map['currency'] as String? ?? 'SAR';
+    return CompanySettings(
+      companyName: map['companyName'] as String? ?? 'أسطورة المحاسبة',
+      taxNumber: map['taxNumber'] as String? ?? '',
+      crNumber: map['crNumber'] as String? ?? '',
+      phone: map['phone'] as String? ?? '',
+      email: map['email'] as String? ?? '',
+      address: map['address'] as String? ?? '',
+      currency: cur,
+      displayCurrency: map['displayCurrency'] as String? ?? cur,
+      enabledCurrencies: (rawEnabled != null && rawEnabled.isNotEmpty)
+          ? rawEnabled
+          : List<String>.from(kAllSupportedCurrencies),
+      fxAutoUpdate: map['fxAutoUpdate'] as bool? ?? true,
+      fxAutoIntervalHours: (map['fxAutoIntervalHours'] as num?)?.toInt() ?? 6,
+      lastRatesSource: map['lastRatesSource'] as String? ?? 'Default FX Table',
+      currencyDisplayStyle: map['currencyDisplayStyle'] as String? ?? 'symbol',
+      currencyNumberLocale: map['currencyNumberLocale'] as String? ?? 'en',
+      currencyDecimalMode: map['currencyDecimalMode'] as String? ?? 'auto',
+      exchangeRates: parsedRates,
+      isArabic: map['isArabic'] as bool? ?? true,
+      isDarkMode: map['isDarkMode'] as bool? ?? false,
+      monthlySalesGoal: (map['monthlySalesGoal'] as num?)?.toDouble() ?? 120000,
+    );
+  }
 }
 
 class SmartAlert {

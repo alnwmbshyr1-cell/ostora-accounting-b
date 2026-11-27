@@ -2,9 +2,10 @@ import React, { useMemo, useState } from 'react';
 import {
   Camera,
   CreditCard,
+  Download,
   Edit2,
   FileText,
-  Lock,
+  Mail,
   MessageCircle,
   Plus,
   Search,
@@ -18,6 +19,7 @@ import { strings } from '../data/translations';
 import { fromHalalas, toHalalas } from '../domain/halala';
 import { Employee, RoleId, RouteId } from '../types/erp';
 import { formatCurrency } from '../utils/currencies';
+import { downloadTextFile } from '../utils/export';
 import { compressImageToBase64 } from '../utils/image';
 import { buildWhatsAppLink } from '../utils/messaging';
 import { ScreenProps } from './types';
@@ -34,6 +36,7 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'on_leave' | 'terminated'>('all');
 
   const [empModal, setEmpModal] = useState<{ open: boolean; editId?: string }>({ open: false });
+  const [empSection, setEmpSection] = useState<'all' | 'personal' | 'job' | 'salary' | 'access'>('all');
   const [formError, setFormError] = useState('');
   const [empForm, setEmpForm] = useState<{
     code: string;
@@ -55,7 +58,6 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
     bankAccount: string;
     workShift: string;
     username: string;
-    password: string;
     photoBase64: string;
     attachmentBase64: string;
     idAttachmentBase64: string;
@@ -81,7 +83,6 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
     bankAccount: '',
     workShift: isAr ? 'صباحي 8 ص - 4 م' : 'Morning 8AM - 4PM',
     username: '',
-    password: '',
     photoBase64: '',
     attachmentBase64: '',
     idAttachmentBase64: '',
@@ -160,8 +161,32 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
     [filteredEmployees],
   );
 
+  const empKpis = useMemo(() => {
+    let activeCount = 0;
+    let grossH = 0;
+    let netH = 0;
+    for (const e of state.employees) {
+      const st = e.status ?? 'active';
+      if (st === 'active') activeCount += 1;
+      if (st !== 'terminated') {
+        const sH = toHalalas(e.salary);
+        const aH = toHalalas(e.allowances ?? 0);
+        const dH = toHalalas(e.deductions ?? 0);
+        grossH += sH + aH;
+        netH += Math.max(0, sH + aH - dH);
+      }
+    }
+    return {
+      total: state.employees.length,
+      active: activeCount,
+      gross: fromHalalas(grossH),
+      net: fromHalalas(netH),
+    };
+  }, [state.employees]);
+
   const openNewEmployeeModal = () => {
     setFormError('');
+    setEmpSection('all');
     setEmpForm({
       code: nextEmpCodePreview,
       name: '',
@@ -182,7 +207,6 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
       bankAccount: '',
       workShift: isAr ? 'صباحي 8 ص - 4 م' : 'Morning 8AM - 4PM',
       username: '',
-      password: '',
       photoBase64: '',
       attachmentBase64: '',
       idAttachmentBase64: '',
@@ -194,6 +218,7 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
 
   const openEditEmployeeModal = (e: Employee) => {
     setFormError('');
+    setEmpSection('all');
     setEmpForm({
       code: e.code ?? e.id,
       name: e.name,
@@ -214,7 +239,6 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
       bankAccount: e.bankAccount ?? '',
       workShift: e.workShift ?? '',
       username: e.username ?? '',
-      password: e.password ?? '',
       photoBase64: e.photoBase64 ?? '',
       attachmentBase64: e.attachmentBase64 ?? '',
       idAttachmentBase64: e.idAttachmentBase64 ?? '',
@@ -263,12 +287,50 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
           </span>
         </div>
         <button
+          type="button"
+          onClick={() => {
+            const csv = ['Code,Name,JobTitle,Department,Role,Phone,Email,NationalId,HireDate,Status,Salary,Allowances,Deductions,NetSalary,IBAN']
+              .concat(
+                filteredEmployees.map((e) => {
+                  const net = computeNetSalary(e.salary, e.allowances ?? 0, e.deductions ?? 0);
+                  return `${e.code ?? e.id},"${e.name.replace(/"/g, '""')}","${e.roleTitle.replace(/"/g, '""')}","${(e.department ?? '').replace(/"/g, '""')}",${e.role},${e.phone},${e.email ?? ''},${e.nationalId ?? ''},${e.hireDate ?? ''},${e.status ?? 'active'},${e.salary},${e.allowances ?? 0},${e.deductions ?? 0},${net},${e.bankAccount ?? ''}`;
+                }),
+              )
+              .join('\n');
+            downloadTextFile('ostora_employees.csv', csv);
+          }}
+          className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-[#1F332B] bg-white dark:bg-[#121E19] text-xs font-bold cursor-pointer"
+        >
+          <Download className="w-4 h-4" />
+          <span>{t.exportCsv}</span>
+        </button>
+        <button
           onClick={openNewEmployeeModal}
           className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0A3D2C] text-white font-bold text-sm cursor-pointer"
         >
           <Plus className="w-4 h-4 text-[#C9A227]" />
           <span>{t.addEmployee}</span>
         </button>
+      </div>
+
+      {/* KPI Summary Strip */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'إجمالي الموظفين' : 'Total Employees'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums mt-1 block">{empKpis.total}</span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'على رأس العمل' : 'Active Staff'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-emerald-700 dark:text-emerald-400 mt-1 block">{empKpis.active}</span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'إجمالي الأساسي والبدلات' : 'Gross Payroll'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums mt-1 block">{formatCurrency(empKpis.gross, cur, { isAr })}</span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/35 rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'صافي مسير الرواتب الشهري' : 'Monthly Net Payroll'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227] mt-1 block">{formatCurrency(empKpis.net, cur, { isAr })}</span>
+        </div>
       </div>
 
       {/* Filters Bar */}
@@ -450,7 +512,38 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
               </div>
             )}
 
+            {/* Section Tabs + Live Net Salary Banner */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-1">
+              <div className="flex flex-wrap gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0A120F]">
+                {([
+                  ['all', isAr ? 'الكل' : 'All'],
+                  ['personal', isAr ? 'الهوية والتواصل' : 'Identity'],
+                  ['job', isAr ? 'الوظيفة والفرع' : 'Job & Branch'],
+                  ['salary', isAr ? 'الراتب والبنك' : 'Payroll & Bank'],
+                  ['access', isAr ? 'الصلاحيات والمرفقات' : 'Access & Docs'],
+                ] as const).map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setEmpSection(key)}
+                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold cursor-pointer ${
+                      empSection === key
+                        ? 'bg-[#0A3D2C] text-white'
+                        : 'text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <span className="text-xs font-mono font-extrabold text-[#0A3D2C] dark:text-[#C9A227] tabular-nums">
+                {isAr ? 'الصافي:' : 'Net:'} {formatCurrency(modalNetSalary, cur, { isAr })}
+              </span>
+            </div>
+
             {/* Photo & Core Identity */}
+            {(empSection === 'all' || empSection === 'personal') && (
+              <>
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5 items-end">
               <div className="flex items-center gap-2.5">
                 {empForm.photoBase64 ? (
@@ -498,7 +591,10 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
                 />
               </div>
             </div>
+              </>
+            )}
 
+            {(empSection === 'all' || empSection === 'job') && (
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
               <div>
                 <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
@@ -551,7 +647,9 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
                 </select>
               </div>
             </div>
+            )}
 
+            {(empSection === 'all' || empSection === 'personal') && (
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
               <div>
                 <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
@@ -608,7 +706,9 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
                 />
               </div>
             </div>
+            )}
 
+            {(empSection === 'all' || empSection === 'job') && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
               <div>
                 <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
@@ -659,8 +759,10 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
                 />
               </div>
             </div>
+            )}
 
             {/* Salary, Allowances, Deductions & Auto Net Salary */}
+            {(empSection === 'all' || empSection === 'salary') && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B]">
               <div>
                 <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
@@ -714,9 +816,12 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
                 </span>
               </div>
             </div>
+            )}
 
-            {/* Username, Password & Attachments */}
-            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+            {/* Username, Firebase Auth Invite & Attachments */}
+            {(empSection === 'all' || empSection === 'access') && (
+              <>
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5 items-end">
               <div>
                 <label className="text-[10px] font-bold text-slate-500 block mb-0.5">
                   {isAr ? 'اسم المستخدم' : 'Username'}
@@ -729,19 +834,21 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
                 />
               </div>
-              <div>
-                <label className="text-[10px] font-bold text-slate-500 block mb-0.5 flex items-center gap-1">
-                  <Lock className="w-3 h-3" /> {isAr ? 'كلمة المرور' : 'Password'}
-                </label>
-                <input
-                  type="password"
-                  maxLength={128}
-                  value={empForm.password}
-                  onChange={(e) => setEmpForm({ ...empForm, password: e.target.value })}
-                  placeholder="••••••"
-                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs font-mono"
-                />
-              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const cleanEmail = empForm.email.trim();
+                  if (!cleanEmail || !cleanEmail.includes('@')) {
+                    setFormError(isAr ? 'أدخل بريداً إلكترونياً صحيحاً للموظف لإرسال دعوة Firebase Auth' : 'Enter a valid email to invite via Firebase Auth');
+                    return;
+                  }
+                  void actions.inviteWorkspaceMember(cleanEmail, empForm.role, empForm.permissions);
+                }}
+                className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-[#0A3D2C]/10 dark:bg-[#C9A227]/15 border border-[#0A3D2C]/25 text-[#0A3D2C] dark:text-[#C9A227] text-xs font-bold cursor-pointer"
+              >
+                <Mail className="w-3.5 h-3.5" />
+                <span>{isAr ? 'دعوة دخول Firebase' : 'Send Auth Invite'}</span>
+              </button>
               <label className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-slate-300 dark:border-[#1F332B] text-xs font-bold cursor-pointer hover:bg-slate-50 dark:hover:bg-[#0A120F]">
                 <Upload className="w-3.5 h-3.5 text-[#0A3D2C] dark:text-[#C9A227]" />
                 <span>{empForm.attachmentBase64 ? (isAr ? 'تم إرفاق العقد ✓' : 'Contract ✓') : (isAr ? 'مرفق العقد' : 'Contract File')}</span>
@@ -802,14 +909,19 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
               </div>
             </div>
 
-            <textarea
-              rows={2}
-              maxLength={400}
-              value={empForm.notes}
-              onChange={(e) => setEmpForm({ ...empForm, notes: e.target.value })}
-              placeholder={t.notes}
-              className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
-            />
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 block mb-0.5">{t.notes}</label>
+              <textarea
+                rows={2}
+                maxLength={400}
+                value={empForm.notes}
+                onChange={(e) => setEmpForm({ ...empForm, notes: e.target.value })}
+                placeholder={t.notes}
+                className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+              />
+            </div>
+              </>
+            )}
 
             <div className="flex gap-2 pt-2">
               <button onClick={() => setEmpModal({ open: false })} className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-[#1F332B] text-sm font-bold cursor-pointer">{t.cancel}</button>
@@ -851,7 +963,6 @@ export const EmployeesScreen: React.FC<ScreenProps> = ({ store }) => {
                       bankAccount: empForm.bankAccount.trim() || undefined,
                       workShift: empForm.workShift.trim() || undefined,
                       username: empForm.username.trim() || undefined,
-                      password: empForm.password.trim() || undefined,
                       photoBase64: empForm.photoBase64 || undefined,
                       attachmentBase64: empForm.attachmentBase64 || undefined,
                       idAttachmentBase64: empForm.idAttachmentBase64 || undefined,

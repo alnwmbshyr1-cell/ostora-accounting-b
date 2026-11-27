@@ -28,13 +28,23 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final totalAssets = cash + receivables + inventory;
     final payables = prov.totalSupplierDebt;
     final vatPayable = prov.invoices.fold(0.0, (s, i) => s + i.vat);
-    final revenue = prov.invoices.fold(0.0, (s, i) => s + i.subtotal);
+    final revenue = prov.totalRevenueExVat;
+    final cogs = prov.totalCogs;
     final expenses = prov.totalExpenses;
-    final netProfit = revenue - expenses;
+    final netProfit = prov.netProfit;
     final totalLiabilities = payables + vatPayable;
     final equity = totalAssets - totalLiabilities;
-    final openingCapital = equity - netProfit;
     final profitMarginPct = revenue > 0 ? ((netProfit / revenue) * 100).toStringAsFixed(1) : '0.0';
+
+    // Aggregate Trial Balance directly from posted double-entry journals (zero synthetic accounts)
+    final Map<String, List<double>> tbMap = {};
+    for (final j in prov.journals) {
+      for (final l in j.lines) {
+        final entry = tbMap.putIfAbsent(l.account, () => [0.0, 0.0]);
+        entry[0] += l.debit;
+        entry[1] += l.credit;
+      }
+    }
 
     final titles = [
       AppStrings.t('trial_balance', ar),
@@ -44,32 +54,33 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
     List<List<String>> buildRows() {
       if (_tab == 0) {
-        final totalDebit = cash + receivables + inventory + expenses + (openingCapital < 0 ? openingCapital.abs() : 0.0);
-        final totalCredit = payables + vatPayable + revenue + (openingCapital >= 0 ? openingCapital : 0.0);
-        return [
+        final sortedAccounts = tbMap.keys.toList()..sort();
+        double totalDebit = 0.0;
+        double totalCredit = 0.0;
+        final List<List<String>> lines = [
           [AppStrings.t('account', ar), AppStrings.t('debit', ar), AppStrings.t('credit', ar)],
-          [ar ? 'البنوك والصندوق' : 'Cash & Banks', cash.toStringAsFixed(2), '0.00'],
-          [ar ? 'العملاء' : 'Accounts Receivable', receivables.toStringAsFixed(2), '0.00'],
-          [ar ? 'المخزون' : 'Inventory', inventory.toStringAsFixed(2), '0.00'],
-          [ar ? 'المصروفات' : 'Expenses', expenses.toStringAsFixed(2), '0.00'],
-          [ar ? 'الموردون' : 'Accounts Payable', '0.00', payables.toStringAsFixed(2)],
-          [ar ? 'ضريبة القيمة المضافة' : 'VAT Output', '0.00', vatPayable.toStringAsFixed(2)],
-          [ar ? 'المبيعات' : 'Sales Revenue', '0.00', revenue.toStringAsFixed(2)],
-          [
-            ar ? 'رأس المال والأرباح المبقاة' : 'Capital & Retained Equity',
-            openingCapital < 0 ? openingCapital.abs().toStringAsFixed(2) : '0.00',
-            openingCapital >= 0 ? openingCapital.toStringAsFixed(2) : '0.00',
-          ],
-          [
-            AppStrings.t('total_balanced', ar),
-            totalDebit.toStringAsFixed(2),
-            totalCredit.toStringAsFixed(2),
-          ],
         ];
+        for (final acc in sortedAccounts) {
+          final d = tbMap[acc]![0];
+          final c = tbMap[acc]![1];
+          totalDebit += d;
+          totalCredit += c;
+          lines.add([acc, d.toStringAsFixed(2), c.toStringAsFixed(2)]);
+        }
+        lines.add([
+          (totalDebit - totalCredit).abs() < 0.01
+              ? AppStrings.t('total_balanced', ar)
+              : (ar ? 'الإجمالي (غير متوازن)' : 'Total (Unbalanced)'),
+          totalDebit.toStringAsFixed(2),
+          totalCredit.toStringAsFixed(2),
+        ]);
+        return lines;
       } else if (_tab == 1) {
         return [
           [AppStrings.t('account', ar), '${AppStrings.t('amount', ar)} ($cur)'],
-          [ar ? 'صافي المبيعات' : 'Net Sales Revenue', revenue.toStringAsFixed(2)],
+          [ar ? 'صافي المبيعات (بدون ضريبة)' : 'Net Sales Revenue (Excl. VAT)', revenue.toStringAsFixed(2)],
+          [AppStrings.t('cogs', ar), '-${cogs.toStringAsFixed(2)}'],
+          [AppStrings.t('gross_profit', ar), (revenue - cogs).toStringAsFixed(2)],
           [ar ? 'إجمالي المصروفات التشغيلية' : 'Operating Expenses', '-${expenses.toStringAsFixed(2)}'],
           [AppStrings.t('net_profit', ar), netProfit.toStringAsFixed(2)],
           [AppStrings.t('margin', ar), '$profitMarginPct%'],
@@ -84,7 +95,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
           [ar ? 'ذمم الموردين' : 'Accounts Payable', payables.toStringAsFixed(2)],
           [ar ? 'الضريبة المستحقة' : 'VAT Liability', vatPayable.toStringAsFixed(2)],
           [ar ? 'إجمالي الالتزامات' : 'Total Liabilities', totalLiabilities.toStringAsFixed(2)],
-          [ar ? 'حقوق الملكية' : 'Owner Equity', equity.toStringAsFixed(2)],
+          [ar ? 'صافي حقوق الملكية (من الدفاتر)' : 'Net Owner Equity', equity.toStringAsFixed(2)],
           [AppStrings.t('liabilities_equity', ar), (totalLiabilities + equity).toStringAsFixed(2)],
         ];
       }

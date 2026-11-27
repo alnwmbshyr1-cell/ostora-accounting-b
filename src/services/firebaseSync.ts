@@ -668,7 +668,7 @@ function sanitizeEntityForWrite(
         date: clampNonEmpty(j.date, 64, new Date().toISOString()),
         lines,
       };
-      if (j.entryType && ['manual', 'auto'].includes(j.entryType)) out.entryType = j.entryType;
+      if (j.entryType && ['manual', 'auto', 'closing'].includes(j.entryType)) out.entryType = j.entryType;
       if (j.branchId) out.branchId = clampString(j.branchId, 128);
       if (j.costCenter) out.costCenter = clampString(j.costCenter, 120);
       if (j.status && ['draft', 'approved'].includes(j.status)) out.status = j.status;

@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import 'db_service.dart';
@@ -7,6 +9,9 @@ class AppProvider extends ChangeNotifier {
   CompanySettings settings = CompanySettings.defaults();
   bool isLoggedIn = false;
   bool onboardingSeen = false;
+  bool authLoading = false;
+  String? authError;
+  String? currentUserEmail;
   String activePlan = 'trial';
   int trialDaysRemaining = 30;
 
@@ -26,7 +31,14 @@ class AppProvider extends ChangeNotifier {
 
   Future<void> initialize() async {
     onboardingSeen = DbService.getOnboardingSeen();
-    isLoggedIn = DbService.getIsLoggedIn();
+    if (Firebase.apps.isNotEmpty) {
+      final fbUser = FirebaseAuth.instance.currentUser;
+      isLoggedIn = fbUser != null && (fbUser.emailVerified || fbUser.providerData.any((p) => p.providerId == 'google.com'));
+      currentUserEmail = fbUser?.email;
+    } else {
+      isLoggedIn = DbService.getIsLoggedIn();
+      currentUserEmail = DbService.getSignedInEmail();
+    }
     activePlan = DbService.getActivePlan();
 
     final trialStart = DateTime.tryParse(DbService.getTrialStartIso()) ?? DateTime.now();
@@ -62,22 +74,168 @@ class AppProvider extends ChangeNotifier {
     await DbService.saveCollection(name, list.map((e) => (e as dynamic).toMap() as Map<String, dynamic>).toList());
   }
 
-  // Auth & Onboarding
+  // Auth & Onboarding (Real Firebase Auth + Hashed Offline Credential Verification)
   Future<void> completeOnboarding() async {
     onboardingSeen = true;
     await DbService.setOnboardingSeen();
     notifyListeners();
   }
 
-  Future<void> loginDemo() async {
-    isLoggedIn = true;
-    await DbService.setIsLoggedIn(true);
+  void clearAuthError() {
+    authError = null;
     notifyListeners();
   }
 
+  Future<bool> signInWithEmail(String email, String password) async {
+    final trimmedEmail = email.trim().toLowerCase();
+    if (trimmedEmail.isEmpty || !trimmedEmail.contains('@') || password.length < 6) {
+      authError = isAr
+          ? 'يرجى إدخال بريد إلكتروني صحيح وكلمة مرور لا تقل عن 6 أحرف'
+          : 'Please enter a valid email and at least 6-character password';
+      notifyListeners();
+      return false;
+    }
+    authLoading = true;
+    authError = null;
+    notifyListeners();
+    try {
+      if (Firebase.apps.isNotEmpty) {
+        final cred = await FirebaseAuth.instance.signInWithEmailAndPassword(
+          email: trimmedEmail,
+          password: password,
+        );
+        final u = cred.user;
+        if (u != null && !u.emailVerified) {
+          await u.sendEmailVerification();
+          authError = isAr
+              ? 'يرجى تأكيد بريدك الإلكتروني أولاً — تم إرسال رابط التحقق إلى بريدك.'
+              : 'Please verify your email first — a verification link was sent.';
+          authLoading = false;
+          notifyListeners();
+          return false;
+        }
+        currentUserEmail = u?.email ?? trimmedEmail;
+      } else {
+        if (!DbService.verifyLocalAccount(trimmedEmail, password)) {
+          authError = isAr
+              ? 'بيانات الدخول غير صحيحة أو الحساب غير مسجل على هذا الجهاز.'
+              : 'Invalid credentials or account not registered on this device.';
+          authLoading = false;
+          notifyListeners();
+          return false;
+        }
+        currentUserEmail = trimmedEmail;
+        await DbService.setSignedInEmail(trimmedEmail);
+      }
+      isLoggedIn = true;
+      await DbService.setIsLoggedIn(true);
+      authLoading = false;
+      notifyListeners();
+      return true;
+    } on FirebaseAuthException catch (e) {
+      authError = e.message ?? (isAr ? 'فشل تسجيل الدخول' : 'Authentication failed');
+      authLoading = false;
+      notifyListeners();
+      return false;
+    } catch (_) {
+      authError = isAr ? 'تعذر إتمام تسجيل الدخول' : 'Unable to sign in';
+      authLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> registerWithEmail(String name, String email, String password) async {
+    final trimmedEmail = email.trim().toLowerCase();
+    if (name.trim().isEmpty || !trimmedEmail.contains('@') || password.length < 6) {
+      authError = isAr
+          ? 'أدخل الاسم الكامل وبريداً صحيحاً وكلمة مرور من 6 أحرف فأكثر'
+          : 'Enter full name, valid email, and password (6+ chars)';
+      notifyListeners();
+      return false;
+    }
+    authLoading = true;
+    authError = null;
+    notifyListeners();
+    try {
+      if (Firebase.apps.isNotEmpty) {
+        final cred = await FirebaseAuth.instance.createUserWithEmailAndPassword(
+          email: trimmedEmail,
+          password: password,
+        );
+        if (cred.user != null) {
+          await cred.user!.updateDisplayName(name.trim());
+          await cred.user!.sendEmailVerification();
+        }
+        authError = isAr
+            ? 'تم إنشاء الحساب وإرسال رابط التحقق لبريدك. فعّل الحساب ثم سجّل الدخول.'
+            : 'Account created! Please verify your email link before signing in.';
+        authLoading = false;
+        notifyListeners();
+        return false;
+      } else {
+        if (DbService.getLocalAccount(trimmedEmail) != null) {
+          authError = isAr ? 'هذا البريد مسجل بالفعل على هذا الجهاز.' : 'Email is already registered on this device.';
+          authLoading = false;
+          notifyListeners();
+          return false;
+        }
+        await DbService.saveLocalAccount(trimmedEmail, name.trim(), password);
+        currentUserEmail = trimmedEmail;
+        await DbService.setSignedInEmail(trimmedEmail);
+        isLoggedIn = true;
+        await DbService.setIsLoggedIn(true);
+        authLoading = false;
+        notifyListeners();
+        return true;
+      }
+    } on FirebaseAuthException catch (e) {
+      authError = e.message ?? (isAr ? 'فشل إنشاء الحساب' : 'Registration failed');
+      authLoading = false;
+      notifyListeners();
+      return false;
+    } catch (_) {
+      authError = isAr ? 'تعذر إنشاء الحساب' : 'Unable to register';
+      authLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> sendPasswordReset(String email) async {
+    final trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedEmail.contains('@')) {
+      authError = isAr ? 'أدخل البريد الإلكتروني لاستعادة كلمة المرور' : 'Enter your email address first';
+      notifyListeners();
+      return false;
+    }
+    if (Firebase.apps.isNotEmpty) {
+      try {
+        await FirebaseAuth.instance.sendPasswordResetEmail(email: trimmedEmail);
+        authError = null;
+        notifyListeners();
+        return true;
+      } on FirebaseAuthException catch (e) {
+        authError = e.message ?? (isAr ? 'تعذر إرسال رابط الاستعادة' : 'Password reset failed');
+        notifyListeners();
+        return false;
+      }
+    }
+    authError = isAr
+        ? 'استعادة كلمة المرور بالبريد متاحة عند تفعيل اتصال Firebase السحابي.'
+        : 'Email password reset requires Firebase Cloud connection.';
+    notifyListeners();
+    return false;
+  }
+
   Future<void> logout() async {
+    if (Firebase.apps.isNotEmpty) {
+      await FirebaseAuth.instance.signOut();
+    }
     isLoggedIn = false;
+    currentUserEmail = null;
     await DbService.setIsLoggedIn(false);
+    await DbService.setSignedInEmail(null);
     notifyListeners();
   }
 
@@ -100,14 +258,27 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // Calculated KPIs
+  // Display Currency Helpers
+  double convertDisplayAmount(double baseAmount) {
+    final base = settings.currency;
+    final disp = settings.displayCurrency;
+    if (base == disp) return baseAmount;
+    final baseRate = settings.exchangeRates[base] ?? 1.0;
+    final dispRate = settings.exchangeRates[disp] ?? 1.0;
+    if (dispRate <= 0) return baseAmount;
+    return (baseAmount * baseRate) / dispRate;
+  }
+
+  // Calculated KPIs — Single authoritative Net Profit = Revenue (Excl. VAT) - COGS - Operating Expenses
   double get totalSales => invoices.fold(0.0, (s, i) => s + i.total);
+  double get totalRevenueExVat => invoices.fold(0.0, (s, i) => s + i.subtotal);
+  double get totalCogs => invoices.fold(0.0, (s, i) => s + i.cogs);
   double get totalCustomerDebt => customers.fold(0.0, (s, c) => s + c.debt);
   double get totalSupplierDebt => suppliers.fold(0.0, (s, sp) => s + sp.payable);
   double get totalStockValue => products.fold(0.0, (s, p) => s + (p.qty * p.cost));
   double get totalExpenses => expenses.fold(0.0, (s, e) => s + e.amount);
   double get totalCashAndBanks => banks.fold(0.0, (s, b) => s + b.balance);
-  double get netProfit => invoices.fold(0.0, (s, i) => s + i.subtotal) - totalExpenses;
+  double get netProfit => totalRevenueExVat - totalCogs - totalExpenses;
 
   int get healthScore {
     if (invoices.isEmpty && banks.isEmpty) return 50;

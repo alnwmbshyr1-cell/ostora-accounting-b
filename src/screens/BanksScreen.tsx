@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   ArrowLeftRight,
   CheckCircle2,
+  Download,
   Edit2,
   FileSpreadsheet,
   Landmark,
@@ -18,6 +19,7 @@ import { computeBankReconciliationDiff } from '../domain/accounting';
 import { fromHalalas, toHalalas } from '../domain/halala';
 import { BankAccount, CurrencyCode } from '../types/erp';
 import { DEFAULT_ENABLED_CURRENCIES, formatCurrency, formatCurrencyNumber } from '../utils/currencies';
+import { downloadTextFile } from '../utils/export';
 import { ScreenProps } from './types';
 
 const BANK_PRESETS = [
@@ -118,6 +120,24 @@ export const BanksScreen: React.FC<ScreenProps> = ({ store }) => {
   }, [state.banks, search, typeFilter, statusFilter]);
 
   const totalTreasury = fromHalalas(state.banks.reduce((sumH, b) => sumH + toHalalas(b.balance), 0));
+
+  const bankKpis = useMemo(() => {
+    let banksH = 0;
+    let cashH = 0;
+    let unreconciledCount = 0;
+    for (const b of state.banks) {
+      const accType = b.accountType ?? (b.id === 'cash' ? 'cash' : 'bank');
+      if (accType === 'cash') cashH += toHalalas(b.balance);
+      else banksH += toHalalas(b.balance);
+      if (!b.lastReconciledDate) unreconciledCount += 1;
+    }
+    return {
+      total: totalTreasury,
+      banksTotal: fromHalalas(banksH),
+      cashTotal: fromHalalas(cashH),
+      unreconciledCount,
+    };
+  }, [state.banks, totalTreasury]);
 
   const reconcileTarget = state.banks.find((b) => b.id === reconcileModal.bankId);
   const reconcilePreview = reconcileTarget
@@ -259,6 +279,32 @@ export const BanksScreen: React.FC<ScreenProps> = ({ store }) => {
             <Plus className="w-4 h-4 text-[#C9A227]" />
             <span>{t.addBankAccount}</span>
           </button>
+        </div>
+      </div>
+
+      {/* KPI Summary Strip */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/35 rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'إجمالي السيولة' : 'Total Liquidity'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227] mt-1 block">
+            {formatCurrency(bankKpis.total, cur, { isAr })}
+          </span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'أرصدة البنوك' : 'Bank Accounts Total'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums mt-1 block">
+            {formatCurrency(bankKpis.banksTotal, cur, { isAr })}
+          </span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'أرصدة الصناديق النقدية' : 'Cash Boxes Total'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-emerald-700 dark:text-emerald-400 mt-1 block">
+            {formatCurrency(bankKpis.cashTotal, cur, { isAr })}
+          </span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'حسابات بانتظار التسوية' : 'Pending Reconciliation'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-amber-600 mt-1 block">{bankKpis.unreconciledCount}</span>
         </div>
       </div>
 
@@ -448,6 +494,24 @@ export const BanksScreen: React.FC<ScreenProps> = ({ store }) => {
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const csv = ['Date,Reference,Description,In,Out,RunningBalance']
+                      .concat(
+                        statementRows.map(
+                          (row) =>
+                            `${row.date.slice(0, 10)},${row.ref},"${row.description.replace(/"/g, '""')}",${row.inAmount},${row.outAmount},${row.runningBalance}`,
+                        ),
+                      )
+                      .join('\n');
+                    downloadTextFile(`statement_${statementBank.id}.csv`, csv);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-[#1F332B] text-xs font-bold cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>{t.exportCsv}</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => {

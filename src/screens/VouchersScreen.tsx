@@ -1,11 +1,13 @@
 import React, { useMemo, useState } from 'react';
-import { CheckCircle2, Edit2, Layers, MessageCircle, Paperclip, Plus, Printer, Search, Trash2 } from 'lucide-react';
+import { CheckCircle2, Download, Edit2, Layers, MessageCircle, Paperclip, Plus, Printer, RotateCcw, Search, Trash2 } from 'lucide-react';
 import { strings } from '../data/translations';
 import { fromHalalas, toHalalas } from '../domain/halala';
-import { VoucherType } from '../types/erp';
+import { Voucher, VoucherType } from '../types/erp';
 import { formatCurrency } from '../utils/currencies';
+import { downloadTextFile } from '../utils/export';
 import { compressImageToBase64 } from '../utils/image';
 import { buildWhatsAppLink } from '../utils/messaging';
+import { numberToWordsTafqeet } from '../utils/tafqeet';
 import { ScreenProps } from './types';
 
 export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, onOpenBatchPrint }) => {
@@ -16,10 +18,12 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, o
   const canDelete = state.currentRole !== 'accountant';
 
   const [vchTab, setVchTab] = useState<VoucherType>('receipt');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'draft' | 'approved'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'draft' | 'approved' | 'cancelled'>('all');
   const [vchSearch, setVchSearch] = useState('');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [vchModal, setVchModal] = useState<{ open: boolean; editId?: string }>({ open: false });
+  const [voidModalVoucher, setVoidModalVoucher] = useState<Voucher | null>(null);
+  const [voidReason, setVoidReason] = useState('');
   const [formError, setFormError] = useState('');
   const [vchForm, setVchForm] = useState({
     type: 'receipt' as VoucherType,
@@ -31,13 +35,14 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, o
     toAccount: '',
     branchId: state.branches[0]?.id ?? '',
     bankId: state.banks[0]?.id ?? 'cash',
+    costCenter: '',
     amount: '',
     reason: '',
     paymentMethod: state.banks[0]?.id ?? 'cash',
     chequeNumber: '',
     chequeDueDate: '',
     attachmentBase64: '',
-    status: 'approved' as 'draft' | 'approved',
+    status: 'approved' as 'draft' | 'approved' | 'cancelled',
   });
 
   const nextVchPreviewId = useMemo(() => {
@@ -60,6 +65,30 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, o
       (v.chequeNumber ?? '').toLowerCase().includes(q)
     );
   });
+
+  const vchKpis = useMemo(() => {
+    let receiptsH = 0;
+    let paymentsH = 0;
+    let journalsH = 0;
+    let draftsCount = 0;
+    for (const v of state.vouchers) {
+      if (v.status === 'cancelled') continue;
+      if (v.status === 'draft') {
+        draftsCount += 1;
+        continue;
+      }
+      const amtH = toHalalas(v.amount);
+      if (v.type === 'receipt') receiptsH += amtH;
+      else if (v.type === 'payment') paymentsH += amtH;
+      else journalsH += amtH;
+    }
+    return {
+      receipts: fromHalalas(receiptsH),
+      payments: fromHalalas(paymentsH),
+      journals: fromHalalas(journalsH),
+      draftsCount,
+    };
+  }, [state.vouchers]);
 
   const partySuggestions =
     vchForm.partyType === 'customer'
@@ -109,6 +138,7 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, o
       toAccount: type === 'receipt' ? '1010 - النقدية والبنوك' : '2010 - ذمم الموردين (الدائنون)',
       branchId: state.settings.defaultBranchId ?? state.branches[0]?.id ?? '',
       bankId: state.banks[0]?.id ?? 'cash',
+      costCenter: '',
       amount: '',
       reason: '',
       paymentMethod: 'cash',
@@ -163,12 +193,13 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, o
 
         <select
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value as 'all' | 'draft' | 'approved')}
+          onChange={(e) => setStatusFilter(e.target.value as 'all' | 'draft' | 'approved' | 'cancelled')}
           className="px-3 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
         >
           <option value="all">{t.all}</option>
           <option value="approved">{isAr ? 'معتمد' : 'Approved'}</option>
           <option value="draft">{t.draft}</option>
+          <option value="cancelled">{t.cancelled}</option>
         </select>
 
         {items.length > 0 && (
@@ -192,6 +223,27 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, o
           </button>
         )}
 
+        {items.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              const csv = ['ID,Date,Type,Party,Phone,PaymentMethod,Amount,Reason,Status']
+                .concat(
+                  items.map(
+                    (v) =>
+                      `${v.id},${v.date.slice(0, 10)},${v.type},"${v.partyName.replace(/"/g, '""')}",${v.partyPhone},${v.paymentMethod},${v.amount},"${v.reason.replace(/"/g, '""')}",${v.status ?? 'approved'}`,
+                  ),
+                )
+                .join('\n');
+              downloadTextFile(`ostora_vouchers_${vchTab}.csv`, csv);
+            }}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-[#1F332B] bg-white dark:bg-[#121E19] text-xs font-bold cursor-pointer"
+          >
+            <Download className="w-4 h-4" />
+            <span>{t.exportCsv}</span>
+          </button>
+        )}
+
         <button
           onClick={() => openModalForTab(vchTab)}
           className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0A3D2C] text-white font-bold text-sm cursor-pointer"
@@ -199,6 +251,32 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, o
           <Plus className="w-4 h-4" />
           <span>{t.addVoucher}</span>
         </button>
+      </div>
+
+      {/* KPI Summary Strip */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{t.receiptVoucher}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-emerald-700 dark:text-emerald-400 mt-1 block">
+            {formatCurrency(vchKpis.receipts, cur, { isAr })}
+          </span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{t.paymentVoucher}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-rose-600 mt-1 block">
+            {formatCurrency(vchKpis.payments, cur, { isAr })}
+          </span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{t.journalVoucher}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-[#0A3D2C] dark:text-[#C9A227] mt-1 block">
+            {formatCurrency(vchKpis.journals, cur, { isAr })}
+          </span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/35 rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'سندات مسودة' : 'Draft Vouchers'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums mt-1 block">{vchKpis.draftsCount}</span>
+        </div>
       </div>
 
       {items.length === 0 ? (
@@ -226,6 +304,8 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, o
                   </span>
                   {v.status === 'draft' ? (
                     <span className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-[10px] font-bold">{t.draft}</span>
+                  ) : v.status === 'cancelled' ? (
+                    <span className="px-1.5 py-0.5 rounded bg-red-500/15 text-red-700 dark:text-red-400 text-[10px] font-bold">{t.cancelled}</span>
                   ) : (
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
                   )}
@@ -236,12 +316,18 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, o
               </div>
               <h4 className="font-extrabold text-base">{v.partyName}</h4>
               <p className="text-xs text-slate-500">{v.reason || '—'}</p>
+              {v.status === 'cancelled' && (v.voidReason || v.reversalJournalId) && (
+                <p className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-red-500/10 text-red-700 dark:text-red-400 text-[11px] font-bold">
+                  <span>{isAr ? 'ملغى:' : 'Voided:'} {v.voidReason || '—'}</span>
+                  {v.reversalJournalId && <span className="font-mono">({v.reversalJournalId})</span>}
+                </p>
+              )}
               {v.chequeNumber && (
                 <p className="text-[11px] font-mono text-amber-600">
                   {t.payCheque}: #{v.chequeNumber} {v.chequeDueDate ? `(${v.chequeDueDate})` : ''}
                 </p>
               )}
-              <div className="flex items-center gap-2 pt-2 border-t border-slate-100 dark:border-[#1F332B]">
+              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100 dark:border-[#1F332B]">
                 <button
                   onClick={() => onPrintVoucher?.(v)}
                   className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#0A3D2C]/10 dark:bg-[#C9A227]/15 text-[#0A3D2C] dark:text-[#C9A227] text-xs font-bold cursor-pointer"
@@ -261,6 +347,19 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, o
                   <MessageCircle className="w-3.5 h-3.5" />
                   <span>{t.whatsapp}</span>
                 </a>
+                {v.status !== 'draft' && v.status !== 'cancelled' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setVoidReason('');
+                      setVoidModalVoucher(v);
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-400 text-xs font-bold cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'إلغاء (قيد عكسي)' : 'Void & Reverse'}</span>
+                  </button>
+                )}
                 <div className="ms-auto flex gap-1">
                   <button
                     onClick={() => {
@@ -275,6 +374,7 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, o
                         toAccount: v.toAccount ?? '',
                         branchId: v.branchId ?? state.branches[0]?.id ?? '',
                         bankId: v.bankId ?? state.banks[0]?.id ?? 'cash',
+                        costCenter: v.costCenter ?? '',
                         amount: String(v.amount),
                         reason: v.reason,
                         paymentMethod: v.paymentMethod,
@@ -447,41 +547,75 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, o
               </div>
             </div>
 
-            {vchForm.paymentMethod === 'cheque' && (
-              <div className="grid grid-cols-2 gap-2.5 p-2.5 rounded-xl bg-amber-500/5 border border-amber-500/20">
-                <input
-                  value={vchForm.chequeNumber}
-                  onChange={(e) => setVchForm({ ...vchForm, chequeNumber: e.target.value })}
-                  placeholder={isAr ? 'رقم الشيك *' : 'Cheque Number *'}
-                  className="px-3 py-2 rounded-xl bg-white dark:bg-[#0A120F] border text-xs font-mono"
-                />
-                <input
-                  type="date"
-                  value={vchForm.chequeDueDate}
-                  onChange={(e) => setVchForm({ ...vchForm, chequeDueDate: e.target.value })}
-                  className="px-3 py-2 rounded-xl bg-white dark:bg-[#0A120F] border text-xs font-mono"
-                />
+            {(parseFloat(vchForm.amount) || 0) > 0 && (
+              <div className="px-3 py-2 rounded-xl bg-[#0A3D2C]/5 dark:bg-[#C9A227]/10 border border-[#0A3D2C]/15 text-xs font-bold text-[#0A3D2C] dark:text-[#C9A227]">
+                {numberToWordsTafqeet(parseFloat(vchForm.amount) || 0, cur, isAr ? 'ar' : 'en')}
               </div>
             )}
 
-            <input
-              maxLength={400}
-              value={vchForm.reason}
-              onChange={(e) => setVchForm({ ...vchForm, reason: e.target.value })}
-              placeholder={`${t.reason} *`}
-              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs"
-            />
+            {vchForm.paymentMethod === 'cheque' && (
+              <div className="grid grid-cols-2 gap-2.5 p-2.5 rounded-xl bg-amber-500/5 border border-amber-500/20">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 block mb-0.5">{isAr ? 'رقم الشيك *' : 'Cheque Number *'}</label>
+                  <input
+                    value={vchForm.chequeNumber}
+                    onChange={(e) => setVchForm({ ...vchForm, chequeNumber: e.target.value })}
+                    placeholder={isAr ? 'رقم الشيك *' : 'Cheque Number *'}
+                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#0A120F] border text-xs font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 block mb-0.5">{isAr ? 'تاريخ استحقاق الشيك' : 'Cheque Due Date'}</label>
+                  <input
+                    type="date"
+                    value={vchForm.chequeDueDate}
+                    onChange={(e) => setVchForm({ ...vchForm, chequeDueDate: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#0A120F] border text-xs font-mono"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-0.5">{t.reason} *</label>
+                <input
+                  maxLength={400}
+                  value={vchForm.reason}
+                  onChange={(e) => setVchForm({ ...vchForm, reason: e.target.value })}
+                  placeholder={`${t.reason} *`}
+                  className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-0.5">{t.costCenter}</label>
+                <input
+                  maxLength={120}
+                  value={vchForm.costCenter}
+                  onChange={(e) => setVchForm({ ...vchForm, costCenter: e.target.value })}
+                  placeholder={t.costCenter}
+                  className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono"
+                />
+              </div>
+            </div>
 
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-50 dark:bg-[#0A120F] border text-xs font-bold cursor-pointer">
-                <Paperclip className="w-3.5 h-3.5 text-[#0A3D2C] dark:text-[#C9A227]" />
-                <span>{isAr ? 'إرفاق صورة الإيصال' : 'Attach Receipt'}</span>
-                <input type="file" accept="image/*,application/pdf" onChange={handleAttachment} className="hidden" />
-              </label>
-              {vchForm.attachmentBase64 && (
-                <span className="text-xs text-emerald-600 font-bold">✓ {isAr ? 'مرفق محفوظ' : 'Attached'}</span>
-              )}
-              <select value={vchForm.status} onChange={(e) => setVchForm({ ...vchForm, status: e.target.value as 'draft' | 'approved' })} className="px-3 py-1.5 rounded-lg bg-slate-50 dark:bg-[#0A120F] border text-xs font-bold">
+              <div className="flex items-center gap-2">
+                <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-50 dark:bg-[#0A120F] border text-xs font-bold cursor-pointer">
+                  <Paperclip className="w-3.5 h-3.5 text-[#0A3D2C] dark:text-[#C9A227]" />
+                  <span>{isAr ? 'إرفاق صورة الإيصال' : 'Attach Receipt'}</span>
+                  <input type="file" accept="image/*,application/pdf" onChange={handleAttachment} className="hidden" />
+                </label>
+                {vchForm.attachmentBase64 && (
+                  <>
+                    {vchForm.attachmentBase64.startsWith('data:image/') && (
+                      <img src={vchForm.attachmentBase64} alt="Receipt" className="h-8 w-8 rounded object-cover border" />
+                    )}
+                    <span className="text-xs text-emerald-600 font-bold">✓ {isAr ? 'مرفق محفوظ' : 'Attached'}</span>
+                  </>
+                )}
+              </div>
+              <select value={vchForm.status} onChange={(e) => setVchForm({ ...vchForm, status: e.target.value as 'draft' | 'approved' | 'cancelled' })} className="px-3 py-1.5 rounded-lg bg-slate-50 dark:bg-[#0A120F] border text-xs font-bold">
                 <option value="approved">{isAr ? 'معتمد (ترحيل فوري)' : 'Approved (Post Now)'}</option>
                 <option value="draft">{t.draft}</option>
               </select>
@@ -521,6 +655,7 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, o
                       toAccount: vchForm.toAccount || undefined,
                       branchId: vchForm.branchId || undefined,
                       bankId: vchForm.bankId || undefined,
+                      costCenter: vchForm.costCenter.trim() || undefined,
                       paymentMethod: vchForm.paymentMethod,
                       chequeNumber: vchForm.paymentMethod === 'cheque' ? vchForm.chequeNumber.trim() || undefined : undefined,
                       chequeDueDate: vchForm.paymentMethod === 'cheque' ? vchForm.chequeDueDate || undefined : undefined,
@@ -540,6 +675,52 @@ export const VouchersScreen: React.FC<ScreenProps> = ({ store, onPrintVoucher, o
                 className="flex-1 py-2.5 rounded-xl bg-[#0A3D2C] text-white text-sm font-bold cursor-pointer"
               >
                 {t.save}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {voidModalVoucher && (
+        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] max-w-sm w-full p-6 space-y-4">
+            <h3 className="text-base font-extrabold text-rose-600">
+              {isAr ? `إلغاء سند بقيد عكسي · ${voidModalVoucher.id}` : `Void & Reverse Voucher · ${voidModalVoucher.id}`}
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              {isAr
+                ? 'سيتم عكس حركة الصندوق أو البنك والذمم وتوليد قيد عكسي متوازن مع الاحتفاظ بسجل التدقيق.'
+                : 'This reverses cash/bank and party balances and posts a balanced reversal journal.'}
+            </p>
+            <input
+              type="text"
+              value={voidReason}
+              onChange={(e) => setVoidReason(e.target.value)}
+              placeholder={isAr ? 'سبب الإلغاء *' : 'Void reason *'}
+              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0A120F] border border-slate-200 dark:border-[#1F332B] text-xs"
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setVoidModalVoucher(null)}
+                className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-[#1F332B] font-bold text-xs cursor-pointer"
+              >
+                {t.cancel}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const ok = actions.voidVoucher(voidModalVoucher.id, voidReason || (isAr ? 'إبطال سند محاسبياً' : 'Accounting void'));
+                  if (ok) {
+                    actions.notify(isAr ? `تم إبطال السند ${voidModalVoucher.id} وتوليد القيد العكسي` : `Voided ${voidModalVoucher.id} with reversal journal`);
+                    setVoidModalVoucher(null);
+                  } else {
+                    actions.notify(t.fiscalLockBlocked);
+                  }
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 text-white font-bold text-xs cursor-pointer"
+              >
+                {isAr ? 'تأكيد الإبطال' : 'Confirm Void'}
               </button>
             </div>
           </div>

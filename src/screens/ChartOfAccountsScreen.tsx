@@ -1,8 +1,8 @@
 import React, { useMemo, useState } from 'react';
-import { BookOpen, ChevronDown, ChevronRight, Edit2, FolderTree, Plus, Search, Trash2, X } from 'lucide-react';
+import { BookOpen, ChevronDown, ChevronRight, Edit2, FolderTree, Landmark, Plus, Search, Trash2, TrendingDown, X } from 'lucide-react';
 import { strings } from '../data/translations';
 import { computeAccountLedger } from '../domain/accounting';
-import { AccountCategory, ChartAccount } from '../types/erp';
+import { AccountCategory, ChartAccount, FixedAsset, LoanRecord } from '../types/erp';
 import { formatCurrency, formatCurrencyNumber } from '../utils/currencies';
 import { ScreenProps } from './types';
 
@@ -15,6 +15,7 @@ export const ChartOfAccountsScreen: React.FC<ScreenProps> = ({ store }) => {
   const cur = state.settings.currency;
   const canDelete = state.currentRole !== 'accountant';
 
+  const [activeTab, setActiveTab] = useState<'coa' | 'assets' | 'loans'>('coa');
   const [query, setQuery] = useState('');
   const [catFilter, setCatFilter] = useState<'all' | AccountCategory>('all');
   const [viewMode, setViewMode] = useState<'table' | 'tree'>('table');
@@ -22,6 +23,42 @@ export const ChartOfAccountsScreen: React.FC<ScreenProps> = ({ store }) => {
   const [modalState, setModalState] = useState<{ open: boolean; editId?: string }>({ open: false });
   const [ledgerAccount, setLedgerAccount] = useState<ChartAccount | null>(null);
   const [formError, setFormError] = useState('');
+
+  // Fixed Assets State
+  const [assetModal, setAssetModal] = useState<{ open: boolean; editId?: string }>({ open: false });
+  const [assetForm, setAssetForm] = useState({
+    code: '',
+    name: '',
+    category: 'معدات وأجهزة',
+    acquisitionDate: new Date().toISOString().slice(0, 10),
+    cost: '',
+    salvageValue: '0',
+    usefulLifeMonths: '60',
+    branchId: state.branches[0]?.id ?? '',
+    costCenter: '',
+    notes: '',
+  });
+  const [assetError, setAssetError] = useState('');
+
+  // Loans & Deferred Cheques State
+  const [loanTypeFilter, setLoanTypeFilter] = useState<'all' | LoanRecord['loanType']>('all');
+  const [loanModal, setLoanModal] = useState<{ open: boolean; editId?: string }>({ open: false });
+  const [loanForm, setLoanForm] = useState({
+    loanType: 'payable' as LoanRecord['loanType'],
+    partyName: '',
+    principalAmount: '',
+    interestRate: '0',
+    startDate: new Date().toISOString().slice(0, 10),
+    dueDate: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10),
+    bankId: state.banks[0]?.id ?? '',
+    chequeNumber: '',
+    branchId: state.branches[0]?.id ?? '',
+    notes: '',
+  });
+  const [loanError, setLoanError] = useState('');
+  const [settleTarget, setSettleTarget] = useState<LoanRecord | null>(null);
+  const [settleAmount, setSettleAmount] = useState('');
+  const [settleBankId, setSettleBankId] = useState(state.banks[0]?.id ?? '');
 
   const [code, setCode] = useState('');
   const [nameAr, setNameAr] = useState('');
@@ -168,8 +205,53 @@ export const ChartOfAccountsScreen: React.FC<ScreenProps> = ({ store }) => {
     return map;
   }, [filtered]);
 
+  const assetsList = state.fixedAssets ?? [];
+  const loansList = state.loans ?? [];
+
   return (
     <div className="space-y-4">
+      {/* Top Sub-Tabs: Chart of Accounts | Fixed Assets | Loans & Cheques */}
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => setActiveTab('coa')}
+          className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-extrabold cursor-pointer ${
+            activeTab === 'coa'
+              ? 'bg-[#0A3D2C] text-white'
+              : 'bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B]'
+          }`}
+        >
+          <FolderTree className="w-4 h-4 text-[#C9A227]" />
+          <span>{isAr ? 'شجرة الحسابات' : 'Chart of Accounts'} ({state.chartOfAccounts.length})</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('assets')}
+          className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-extrabold cursor-pointer ${
+            activeTab === 'assets'
+              ? 'bg-[#0A3D2C] text-white'
+              : 'bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B]'
+          }`}
+        >
+          <TrendingDown className="w-4 h-4 text-[#C9A227]" />
+          <span>{isAr ? 'الأصول الثابتة والإهلاك' : 'Fixed Assets & Depreciation'} ({assetsList.length})</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('loans')}
+          className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-extrabold cursor-pointer ${
+            activeTab === 'loans'
+              ? 'bg-[#0A3D2C] text-white'
+              : 'bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B]'
+          }`}
+        >
+          <Landmark className="w-4 h-4 text-[#C9A227]" />
+          <span>{isAr ? 'القروض والشيكات المؤجلة' : 'Loans & Deferred Cheques'} ({loansList.length})</span>
+        </button>
+      </div>
+
+      {activeTab === 'coa' && (
+        <>
       <div className="rounded-[20px] bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] p-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
           <div className="w-10 h-10 rounded-xl bg-[#0A3D2C] text-[#C9A227] flex items-center justify-center">
@@ -572,6 +654,546 @@ export const ChartOfAccountsScreen: React.FC<ScreenProps> = ({ store }) => {
                   </tbody>
                 </table>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+        </>
+      )}
+
+      {/* FIXED ASSETS & MONTHLY DEPRECIATION TAB */}
+      {activeTab === 'assets' && (
+        <div className="space-y-4">
+          <div className="rounded-[20px] bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] p-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-4 text-xs">
+              <div>
+                <span className="text-slate-500 block">{isAr ? 'إجمالي تكلفة الأصول' : 'Total Cost'}</span>
+                <span className="font-mono font-extrabold text-sm tabular-nums">
+                  {formatCurrency(assetsList.reduce((s, a) => s + a.cost, 0), cur, { isAr })}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-500 block">{isAr ? 'مجمع الإهلاك' : 'Accumulated Dep.'}</span>
+                <span className="font-mono font-extrabold text-sm text-amber-600 tabular-nums">
+                  {formatCurrency(assetsList.reduce((s, a) => s + a.accumulatedDepreciation, 0), cur, { isAr })}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-500 block">{isAr ? 'صافي القيمة الدفترية' : 'Net Book Value'}</span>
+                <span className="font-mono font-extrabold text-sm text-emerald-600 tabular-nums">
+                  {formatCurrency(assetsList.reduce((s, a) => s + Math.max(0, a.cost - a.accumulatedDepreciation), 0), cur, { isAr })}
+                </span>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const count = actions.runMonthlyDepreciation();
+                  actions.notify(
+                    count > 0
+                      ? isAr
+                        ? `تم ترحيل قيد إهلاك الشهر لعدد ${count} أصل`
+                        : `Posted monthly depreciation for ${count} asset(s)`
+                      : isAr
+                      ? 'لا توجد أصول مستحقة للإهلاك هذا الشهر'
+                      : 'No assets due for depreciation this month',
+                  );
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500/15 text-amber-700 dark:text-amber-300 text-xs font-extrabold cursor-pointer"
+              >
+                <TrendingDown className="w-4 h-4" />
+                <span>{isAr ? 'ترحيل إهلاك الشهر' : 'Run Monthly Depreciation'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAssetError('');
+                  setAssetForm({
+                    code: '',
+                    name: '',
+                    category: 'معدات وأجهزة',
+                    acquisitionDate: new Date().toISOString().slice(0, 10),
+                    cost: '',
+                    salvageValue: '0',
+                    usefulLifeMonths: '60',
+                    branchId: state.branches[0]?.id ?? '',
+                    costCenter: '',
+                    notes: '',
+                  });
+                  setAssetModal({ open: true });
+                }}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer"
+              >
+                <Plus className="w-4 h-4 text-[#C9A227]" />
+                <span>{isAr ? 'إضافة أصل ثابت' : 'Add Fixed Asset'}</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-[20px] bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] overflow-hidden">
+            {assetsList.length === 0 ? (
+              <p className="py-10 text-center text-xs text-slate-400">{t.noData}</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 dark:bg-[#0A120F] text-slate-500 border-b border-slate-200 dark:border-[#1F332B]">
+                    <tr>
+                      <th className="p-3 text-start">{isAr ? 'الأصل' : 'Asset'}</th>
+                      <th className="p-3 text-start">{isAr ? 'تاريخ الشراء' : 'Acquired'}</th>
+                      <th className="p-3 text-end">{isAr ? 'التكلفة' : 'Cost'}</th>
+                      <th className="p-3 text-end">{isAr ? 'إهلاك شهري' : 'Monthly Dep.'}</th>
+                      <th className="p-3 text-end">{isAr ? 'مجمع الإهلاك' : 'Accumulated'}</th>
+                      <th className="p-3 text-end">{isAr ? 'القيمة الدفترية' : 'NBV'}</th>
+                      <th className="p-3 text-center">{t.status}</th>
+                      <th className="p-3 text-center">{t.actions}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-[#1F332B]">
+                    {assetsList.map((a) => {
+                      const monthly = a.usefulLifeMonths > 0 ? Math.max(0, a.cost - a.salvageValue) / a.usefulLifeMonths : 0;
+                      const nbv = Math.max(0, a.cost - a.accumulatedDepreciation);
+                      return (
+                        <tr key={a.id} className="hover:bg-slate-50/70 dark:hover:bg-[#1A2C24]/40">
+                          <td className="p-3">
+                            <p className="font-bold">{a.name}</p>
+                            <p className="text-[10px] font-mono text-slate-400">{a.code || a.id} · {a.category}</p>
+                          </td>
+                          <td className="p-3 font-mono">{a.acquisitionDate.slice(0, 10)}</td>
+                          <td className="p-3 text-end font-mono tabular-nums">{formatCurrency(a.cost, cur, { isAr })}</td>
+                          <td className="p-3 text-end font-mono tabular-nums">{formatCurrency(monthly, cur, { isAr })}</td>
+                          <td className="p-3 text-end font-mono tabular-nums text-amber-600">{formatCurrency(a.accumulatedDepreciation, cur, { isAr })}</td>
+                          <td className="p-3 text-end font-mono font-extrabold tabular-nums text-emerald-600">{formatCurrency(nbv, cur, { isAr })}</td>
+                          <td className="p-3 text-center">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${a.status === 'active' ? 'bg-emerald-500/15 text-emerald-600' : 'bg-slate-200 dark:bg-slate-800 text-slate-500'}`}>
+                              {a.status === 'active' ? (isAr ? 'نشط' : 'Active') : a.status === 'fully_depreciated' ? (isAr ? 'مهلك بالكامل' : 'Fully Dep.') : (isAr ? 'مستبعد' : 'Disposed')}
+                            </span>
+                          </td>
+                          <td className="p-3 text-center">
+                            <div className="flex items-center justify-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setAssetError('');
+                                  setAssetForm({
+                                    code: a.code ?? '',
+                                    name: a.name,
+                                    category: a.category,
+                                    acquisitionDate: a.acquisitionDate.slice(0, 10),
+                                    cost: String(a.cost),
+                                    salvageValue: String(a.salvageValue),
+                                    usefulLifeMonths: String(a.usefulLifeMonths),
+                                    branchId: a.branchId ?? state.branches[0]?.id ?? '',
+                                    costCenter: a.costCenter ?? '',
+                                    notes: a.notes ?? '',
+                                  });
+                                  setAssetModal({ open: true, editId: a.id });
+                                }}
+                                className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-[#1A2C24] text-slate-500 cursor-pointer"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                              {canDelete && (
+                                <button
+                                  type="button"
+                                  onClick={() => actions.deleteFixedAsset(a.id)}
+                                  className="p-1.5 rounded-lg text-red-500 hover:bg-red-500/10 cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* LOANS & DEFERRED CHEQUES TAB */}
+      {activeTab === 'loans' && (
+        <div className="space-y-4">
+          <div className="rounded-[20px] bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] p-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              {(['all', 'receivable', 'payable', 'cheque_deferred'] as const).map((lt) => (
+                <button
+                  key={lt}
+                  type="button"
+                  onClick={() => setLoanTypeFilter(lt)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer ${
+                    loanTypeFilter === lt ? 'bg-[#0A3D2C] text-white' : 'bg-slate-100 dark:bg-[#0A120F]'
+                  }`}
+                >
+                  {lt === 'all'
+                    ? t.all
+                    : lt === 'receivable'
+                    ? isAr ? 'قروض ممنوحة (لنا)' : 'Receivable'
+                    : lt === 'payable'
+                    ? isAr ? 'قروض مستحقة (علينا)' : 'Payable'
+                    : isAr ? 'شيكات مؤجلة' : 'Deferred Cheques'}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setLoanError('');
+                setLoanForm({
+                  loanType: 'payable',
+                  partyName: '',
+                  principalAmount: '',
+                  interestRate: '0',
+                  startDate: new Date().toISOString().slice(0, 10),
+                  dueDate: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10),
+                  bankId: state.banks[0]?.id ?? '',
+                  chequeNumber: '',
+                  branchId: state.branches[0]?.id ?? '',
+                  notes: '',
+                });
+                setLoanModal({ open: true });
+              }}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer"
+            >
+              <Plus className="w-4 h-4 text-[#C9A227]" />
+              <span>{isAr ? 'إضافة قرض / شيك مؤجل' : 'Add Loan / Cheque'}</span>
+            </button>
+          </div>
+
+          <div className="rounded-[20px] bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] overflow-hidden">
+            {loansList.filter((l) => loanTypeFilter === 'all' || l.loanType === loanTypeFilter).length === 0 ? (
+              <p className="py-10 text-center text-xs text-slate-400">{t.noData}</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 dark:bg-[#0A120F] text-slate-500 border-b border-slate-200 dark:border-[#1F332B]">
+                    <tr>
+                      <th className="p-3 text-start">{isAr ? 'الطرف / البيان' : 'Party'}</th>
+                      <th className="p-3 text-start">{isAr ? 'النوع' : 'Type'}</th>
+                      <th className="p-3 text-start">{isAr ? 'الاستحقاق' : 'Due Date'}</th>
+                      <th className="p-3 text-end">{isAr ? 'أصل المبلغ' : 'Principal'}</th>
+                      <th className="p-3 text-end">{isAr ? 'المسدد' : 'Paid'}</th>
+                      <th className="p-3 text-end">{isAr ? 'المتبقي' : 'Remaining'}</th>
+                      <th className="p-3 text-center">{t.status}</th>
+                      <th className="p-3 text-center">{t.actions}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-[#1F332B]">
+                    {loansList
+                      .filter((l) => loanTypeFilter === 'all' || l.loanType === loanTypeFilter)
+                      .map((l) => (
+                        <tr key={l.id} className="hover:bg-slate-50/70 dark:hover:bg-[#1A2C24]/40">
+                          <td className="p-3">
+                            <p className="font-bold">{l.partyName}</p>
+                            <p className="text-[10px] font-mono text-slate-400">
+                              {l.id} {l.chequeNumber ? `· #${l.chequeNumber}` : ''}
+                            </p>
+                          </td>
+                          <td className="p-3 text-[11px] font-bold">
+                            {l.loanType === 'receivable'
+                              ? isAr ? 'قرض ممنوح' : 'Receivable'
+                              : l.loanType === 'payable'
+                              ? isAr ? 'قرض مستحق' : 'Payable'
+                              : isAr ? 'شيك مؤجل' : 'Deferred Cheque'}
+                          </td>
+                          <td className="p-3 font-mono">{l.dueDate.slice(0, 10)}</td>
+                          <td className="p-3 text-end font-mono tabular-nums">{formatCurrency(l.principalAmount, cur, { isAr })}</td>
+                          <td className="p-3 text-end font-mono tabular-nums text-emerald-600">{formatCurrency(l.paidAmount, cur, { isAr })}</td>
+                          <td className="p-3 text-end font-mono font-extrabold tabular-nums text-rose-600">{formatCurrency(l.remainingAmount, cur, { isAr })}</td>
+                          <td className="p-3 text-center">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${l.status === 'settled' ? 'bg-emerald-500/15 text-emerald-600' : l.status === 'overdue' ? 'bg-red-500/15 text-red-600' : 'bg-amber-500/15 text-amber-700 dark:text-amber-300'}`}>
+                              {l.status === 'settled' ? (isAr ? 'مسدد' : 'Settled') : l.status === 'overdue' ? (isAr ? 'متأخر' : 'Overdue') : (isAr ? 'نشط' : 'Active')}
+                            </span>
+                          </td>
+                          <td className="p-3 text-center">
+                            <div className="flex items-center justify-center gap-1">
+                              {(l.status === 'active' || l.status === 'overdue') && l.remainingAmount > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSettleTarget(l);
+                                    setSettleAmount(String(l.remainingAmount));
+                                    setSettleBankId(l.bankId ?? state.banks[0]?.id ?? '');
+                                  }}
+                                  className="px-2 py-1 rounded-lg bg-[#0A3D2C] text-white text-[10px] font-bold cursor-pointer"
+                                >
+                                  {isAr ? 'تسوية دفعة' : 'Settle'}
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLoanError('');
+                                  setLoanForm({
+                                    loanType: l.loanType,
+                                    partyName: l.partyName,
+                                    principalAmount: String(l.principalAmount),
+                                    interestRate: String(l.interestRate ?? 0),
+                                    startDate: l.startDate.slice(0, 10),
+                                    dueDate: l.dueDate.slice(0, 10),
+                                    bankId: l.bankId ?? state.banks[0]?.id ?? '',
+                                    chequeNumber: l.chequeNumber ?? '',
+                                    branchId: l.branchId ?? state.branches[0]?.id ?? '',
+                                    notes: l.notes ?? '',
+                                  });
+                                  setLoanModal({ open: true, editId: l.id });
+                                }}
+                                className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-[#1A2C24] text-slate-500 cursor-pointer"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                              {canDelete && (
+                                <button
+                                  type="button"
+                                  onClick={() => actions.deleteLoan(l.id)}
+                                  className="p-1.5 rounded-lg text-red-500 hover:bg-red-500/10 cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Fixed Asset Add/Edit Modal */}
+      {assetModal.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs overflow-y-auto">
+          <div className="w-full max-w-lg rounded-[22px] bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] p-5 space-y-3 my-auto">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-extrabold">{assetModal.editId ? t.edit : isAr ? 'إضافة أصل ثابت' : 'Add Fixed Asset'}</h3>
+              <button type="button" onClick={() => setAssetModal({ open: false })} className="p-1 cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2.5">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'اسم الأصل *' : 'Asset Name *'}</label>
+                <input value={assetForm.name} onChange={(e) => setAssetForm({ ...assetForm, name: e.target.value })} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-bold" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'الكود' : 'Code'}</label>
+                <input value={assetForm.code} onChange={(e) => setAssetForm({ ...assetForm, code: e.target.value })} placeholder="FA-001" className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">{t.category}</label>
+                <input value={assetForm.category} onChange={(e) => setAssetForm({ ...assetForm, category: e.target.value })} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'تاريخ الشراء *' : 'Acquisition Date *'}</label>
+                <input type="date" value={assetForm.acquisitionDate} onChange={(e) => setAssetForm({ ...assetForm, acquisitionDate: e.target.value })} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'التكلفة *' : 'Cost *'}</label>
+                <input type="number" min={0} step="0.01" value={assetForm.cost} onChange={(e) => setAssetForm({ ...assetForm, cost: e.target.value })} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'قيمة الخردة' : 'Salvage Value'}</label>
+                <input type="number" min={0} step="0.01" value={assetForm.salvageValue} onChange={(e) => setAssetForm({ ...assetForm, salvageValue: e.target.value })} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'العمر الإنتاجي (أشهر) *' : 'Useful Life (Months) *'}</label>
+                <input type="number" min={1} value={assetForm.usefulLifeMonths} onChange={(e) => setAssetForm({ ...assetForm, usefulLifeMonths: e.target.value })} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">{t.branch}</label>
+                <select value={assetForm.branchId} onChange={(e) => setAssetForm({ ...assetForm, branchId: e.target.value })} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs">
+                  {state.branches.map((b) => <option key={b.id} value={b.id}>{isAr ? b.nameAr : b.nameEn}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2.5">
+              <input value={assetForm.costCenter} onChange={(e) => setAssetForm({ ...assetForm, costCenter: e.target.value })} placeholder={t.costCenter} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+              <input value={assetForm.notes} onChange={(e) => setAssetForm({ ...assetForm, notes: e.target.value })} placeholder={t.notes} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+            </div>
+            {assetError && <p className="text-xs font-bold text-red-600">{assetError}</p>}
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={() => setAssetModal({ open: false })} className="px-4 py-2 rounded-xl border text-xs font-bold cursor-pointer">{t.cancel}</button>
+              <button
+                type="button"
+                onClick={() => {
+                  const costVal = parseFloat(assetForm.cost) || 0;
+                  const salvageVal = parseFloat(assetForm.salvageValue) || 0;
+                  const life = Math.max(1, parseInt(assetForm.usefulLifeMonths, 10) || 60);
+                  if (!assetForm.name.trim() || costVal <= 0) {
+                    setAssetError(isAr ? 'اسم الأصل والتكلفة > 0 إلزاميان *' : 'Asset name and positive cost are required *');
+                    return;
+                  }
+                  const existing = assetModal.editId ? assetsList.find((x) => x.id === assetModal.editId) : undefined;
+                  const payload: Omit<FixedAsset, 'id'> = {
+                    code: assetForm.code.trim() || undefined,
+                    name: assetForm.name.trim(),
+                    category: assetForm.category.trim() || 'General',
+                    acquisitionDate: assetForm.acquisitionDate,
+                    cost: costVal,
+                    salvageValue: salvageVal,
+                    usefulLifeMonths: life,
+                    accumulatedDepreciation: existing?.accumulatedDepreciation ?? 0,
+                    depreciationMethod: 'straight_line',
+                    branchId: assetForm.branchId || undefined,
+                    costCenter: assetForm.costCenter.trim() || undefined,
+                    status: existing?.status ?? 'active',
+                    lastDepreciationDate: existing?.lastDepreciationDate,
+                    notes: assetForm.notes.trim() || undefined,
+                  };
+                  actions.saveFixedAsset(payload, assetModal.editId);
+                  setAssetModal({ open: false });
+                  actions.notify(isAr ? 'تم حفظ الأصل الثابت بنجاح' : 'Fixed asset saved');
+                }}
+                className="px-5 py-2 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer"
+              >
+                {t.save}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Loan / Deferred Cheque Add/Edit Modal */}
+      {loanModal.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs overflow-y-auto">
+          <div className="w-full max-w-lg rounded-[22px] bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] p-5 space-y-3 my-auto">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-extrabold">{loanModal.editId ? t.edit : isAr ? 'إضافة قرض / شيك مؤجل' : 'Add Loan / Deferred Cheque'}</h3>
+              <button type="button" onClick={() => setLoanModal({ open: false })} className="p-1 cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2.5">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'النوع *' : 'Type *'}</label>
+                <select value={loanForm.loanType} onChange={(e) => setLoanForm({ ...loanForm, loanType: e.target.value as LoanRecord['loanType'] })} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-bold">
+                  <option value="payable">{isAr ? 'قرض مستحق (علينا)' : 'Loan Payable'}</option>
+                  <option value="receivable">{isAr ? 'قرض ممنوح (لنا)' : 'Loan Receivable'}</option>
+                  <option value="cheque_deferred">{isAr ? 'شيك مؤجل' : 'Deferred Cheque'}</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'اسم الطرف *' : 'Party Name *'}</label>
+                <input value={loanForm.partyName} onChange={(e) => setLoanForm({ ...loanForm, partyName: e.target.value })} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-bold" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'أصل المبلغ *' : 'Principal *'}</label>
+                <input type="number" min={0} step="0.01" value={loanForm.principalAmount} onChange={(e) => setLoanForm({ ...loanForm, principalAmount: e.target.value })} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'نسبة الفائدة %' : 'Interest %'}</label>
+                <input type="number" min={0} step="0.1" value={loanForm.interestRate} onChange={(e) => setLoanForm({ ...loanForm, interestRate: e.target.value })} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'تاريخ البداية' : 'Start Date'}</label>
+                <input type="date" value={loanForm.startDate} onChange={(e) => setLoanForm({ ...loanForm, startDate: e.target.value })} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'تاريخ الاستحقاق *' : 'Due Date *'}</label>
+                <input type="date" value={loanForm.dueDate} onChange={(e) => setLoanForm({ ...loanForm, dueDate: e.target.value })} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">{t.banks}</label>
+                <select value={loanForm.bankId} onChange={(e) => setLoanForm({ ...loanForm, bankId: e.target.value })} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs">
+                  {state.banks.map((b) => <option key={b.id} value={b.id}>{isAr ? b.nameAr : b.nameEn}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'رقم الشيك (إن وجد)' : 'Cheque No.'}</label>
+                <input value={loanForm.chequeNumber} onChange={(e) => setLoanForm({ ...loanForm, chequeNumber: e.target.value })} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+              </div>
+            </div>
+            <input value={loanForm.notes} onChange={(e) => setLoanForm({ ...loanForm, notes: e.target.value })} placeholder={t.notes} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+            {loanError && <p className="text-xs font-bold text-red-600">{loanError}</p>}
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={() => setLoanModal({ open: false })} className="px-4 py-2 rounded-xl border text-xs font-bold cursor-pointer">{t.cancel}</button>
+              <button
+                type="button"
+                onClick={() => {
+                  const principal = parseFloat(loanForm.principalAmount) || 0;
+                  if (!loanForm.partyName.trim() || principal <= 0) {
+                    setLoanError(isAr ? 'اسم الطرف والمبلغ > 0 إلزاميان *' : 'Party name and positive principal are required *');
+                    return;
+                  }
+                  const existing = loanModal.editId ? loansList.find((x) => x.id === loanModal.editId) : undefined;
+                  const paid = existing?.paidAmount ?? 0;
+                  const payload: Omit<LoanRecord, 'id'> = {
+                    loanType: loanForm.loanType,
+                    partyName: loanForm.partyName.trim(),
+                    principalAmount: principal,
+                    paidAmount: paid,
+                    remainingAmount: Math.max(0, principal - paid),
+                    interestRate: parseFloat(loanForm.interestRate) || 0,
+                    startDate: loanForm.startDate,
+                    dueDate: loanForm.dueDate,
+                    bankId: loanForm.bankId || undefined,
+                    chequeNumber: loanForm.chequeNumber.trim() || undefined,
+                    status: existing?.status ?? 'active',
+                    branchId: loanForm.branchId || undefined,
+                    notes: loanForm.notes.trim() || undefined,
+                  };
+                  actions.saveLoan(payload, loanModal.editId);
+                  setLoanModal({ open: false });
+                  actions.notify(isAr ? 'تم حفظ السجل بنجاح' : 'Loan / Cheque saved');
+                }}
+                className="px-5 py-2 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer"
+              >
+                {t.save}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Settle Loan Payment Mini Modal */}
+      {settleTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs">
+          <div className="w-full max-w-sm rounded-[20px] bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] p-5 space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-extrabold">{isAr ? 'تسوية دفعة' : 'Settle Payment'} · {settleTarget.id}</h3>
+              <button type="button" onClick={() => setSettleTarget(null)} className="p-1 cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-slate-500">
+              {settleTarget.partyName} · {isAr ? 'المتبقي:' : 'Remaining:'} {formatCurrency(settleTarget.remainingAmount, cur, { isAr })}
+            </p>
+            <input
+              type="number"
+              min={0.01}
+              step="0.01"
+              max={settleTarget.remainingAmount}
+              value={settleAmount}
+              onChange={(e) => setSettleAmount(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono font-bold"
+            />
+            <select value={settleBankId} onChange={(e) => setSettleBankId(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs">
+              {state.banks.map((b) => <option key={b.id} value={b.id}>{isAr ? b.nameAr : b.nameEn}</option>)}
+            </select>
+            <div className="flex gap-2 pt-1">
+              <button type="button" onClick={() => setSettleTarget(null)} className="flex-1 py-2 rounded-xl border text-xs font-bold cursor-pointer">{t.cancel}</button>
+              <button
+                type="button"
+                onClick={() => {
+                  const amt = parseFloat(settleAmount) || 0;
+                  if (amt <= 0) return;
+                  const ok = actions.settleLoanPayment(settleTarget.id, amt, settleBankId);
+                  if (ok) {
+                    setSettleTarget(null);
+                    actions.notify(isAr ? 'تمت تسوية الدفعة وترحيل القيد' : 'Payment settled & journal posted');
+                  }
+                }}
+                className="flex-1 py-2 rounded-xl bg-[#0A3D2C] text-white text-xs font-bold cursor-pointer"
+              >
+                {isAr ? 'تأكيد التسوية' : 'Confirm'}
+              </button>
             </div>
           </div>
         </div>

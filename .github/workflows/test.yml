@@ -1,0 +1,36 @@
+name: Web CI — Lint, Test & Build
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  verify:
+    name: Typecheck, Unit Tests, Rules Lint & Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript typecheck
+        run: npm run lint
+
+      - name: Run accounting & ZATCA unit tests
+        run: npm run test
+
+      - name: Lint Firestore security rules
+        run: npx eslint firestore.rules
+
+      - name: Build production bundle
+        run: npm run build

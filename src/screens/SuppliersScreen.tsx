@@ -1,9 +1,10 @@
 import React, { useMemo, useState } from 'react';
-import { Edit2, FileText, MapPin, Paperclip, Plus, Printer, Search, ShoppingBag, Star, Trash2, Upload, X } from 'lucide-react';
+import { Download, Edit2, FileText, MapPin, Paperclip, Plus, Printer, Search, ShoppingBag, Star, Trash2, Upload, X } from 'lucide-react';
 import { DataImportModal } from '../components/DataImportModal';
 import { strings } from '../data/translations';
 import { CurrencyCode, PartyStatus, PaymentMethodType, Supplier, SupplierType } from '../types/erp';
 import { formatCurrency } from '../utils/currencies';
+import { downloadTextFile } from '../utils/export';
 import { compressImageToBase64 } from '../utils/image';
 import { ScreenProps } from './types';
 
@@ -17,6 +18,7 @@ export const SuppliersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
   const [supSearch, setSupSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | SupplierType>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | PartyStatus>('all');
+  const [branchFilter, setBranchFilter] = useState<string>('all');
   const [supModal, setSupModal] = useState<{ open: boolean; editId?: string }>({ open: false });
   const [formSection, setFormSection] = useState<'basic' | 'bank' | 'supply'>('basic');
   const [formError, setFormError] = useState('');
@@ -81,7 +83,8 @@ export const SuppliersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
       s.phone.toLowerCase().includes(q);
     const matchesType = typeFilter === 'all' || s.supplierType === typeFilter;
     const matchesStatus = statusFilter === 'all' || (s.status ?? 'active') === statusFilter;
-    return matchesSearch && matchesType && matchesStatus;
+    const matchesBranch = branchFilter === 'all' || !s.branchId || s.branchId === branchFilter;
+    return matchesSearch && matchesType && matchesStatus && matchesBranch;
   });
 
   const handleAttachmentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -105,8 +108,39 @@ export const SuppliersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
 
   const enabledCurrencies = state.settings.enabledCurrencies ?? [state.settings.currency];
 
+  const supKpis = useMemo(() => {
+    const totalPayable = visibleSuppliers.reduce((s, x) => s + (x.payable || 0), 0);
+    const activeCount = visibleSuppliers.filter((x) => (x.status ?? 'active') === 'active').length;
+    const rated = visibleSuppliers.filter((x) => typeof x.qualityRating === 'number');
+    const avgRating = rated.length
+      ? (rated.reduce((s, x) => s + (x.qualityRating ?? 5), 0) / rated.length).toFixed(1)
+      : '5.0';
+    return { count: visibleSuppliers.length, totalPayable, activeCount, avgRating };
+  }, [visibleSuppliers]);
+
   return (
     <div className="space-y-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <p className="text-[11px] font-bold text-slate-500">{isAr ? 'إجمالي الموردين' : 'Total Suppliers'}</p>
+          <p className="text-lg font-extrabold font-mono tabular-nums mt-1">{supKpis.count}</p>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <p className="text-[11px] font-bold text-slate-500">{isAr ? 'مستحقات الموردين' : 'Accounts Payable'}</p>
+          <p className="text-lg font-extrabold font-mono tabular-nums text-red-600 mt-1">
+            {formatCurrency(supKpis.totalPayable, cur, { isAr })}
+          </p>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <p className="text-[11px] font-bold text-slate-500">{isAr ? 'الموردون النشطون' : 'Active Suppliers'}</p>
+          <p className="text-lg font-extrabold font-mono tabular-nums text-emerald-600 mt-1">{supKpis.activeCount}</p>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <p className="text-[11px] font-bold text-slate-500">{isAr ? 'متوسط تقييم الجودة' : 'Avg Quality Rating'}</p>
+          <p className="text-lg font-extrabold font-mono tabular-nums text-[#C9A227] mt-1">{supKpis.avgRating} / 5</p>
+        </div>
+      </div>
+
       <div className="flex flex-wrap items-center gap-2.5">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="w-4 h-4 text-slate-400 absolute top-1/2 -translate-y-1/2 start-3.5" />
@@ -142,6 +176,34 @@ export const SuppliersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
           <option value="paused">{isAr ? 'متوقف' : 'Paused'}</option>
           <option value="blocked">{isAr ? 'محظور' : 'Blocked'}</option>
         </select>
+        <select
+          value={branchFilter}
+          onChange={(e) => setBranchFilter(e.target.value)}
+          className="px-3 py-2.5 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold"
+        >
+          <option value="all">{isAr ? 'كل الفروع' : 'All Branches'}</option>
+          {state.branches.map((b) => (
+            <option key={b.id} value={b.id}>{isAr ? b.nameAr : b.nameEn}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() => {
+            const csv = ['ID,Code,Name,Company,Phone,Email,Category,TaxNumber,IBAN,Payable,Rating,Status']
+              .concat(
+                visibleSuppliers.map(
+                  (s) =>
+                    `${s.id},"${s.code ?? ''}","${s.name}","${s.companyName ?? ''}",${s.phone},${s.email ?? ''},"${s.category}","${s.taxNumber ?? ''}","${s.iban ?? ''}",${s.payable},${s.qualityRating ?? 5},${s.status ?? 'active'}`,
+                ),
+              )
+              .join('\n');
+            downloadTextFile('ostora_suppliers.csv', csv);
+          }}
+          className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-[#1F332B] bg-white dark:bg-[#121E19] text-xs font-bold cursor-pointer"
+        >
+          <Download className="w-4 h-4" />
+          <span>{t.exportCsv}</span>
+        </button>
         <button
           onClick={() => setImportOpen(true)}
           className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl border border-[#0A3D2C] dark:border-[#C9A227] bg-white dark:bg-[#121E19] text-[#0A3D2C] dark:text-[#C9A227] text-xs font-bold cursor-pointer"
@@ -366,8 +428,14 @@ export const SuppliersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                   <label className="text-[11px] font-bold text-slate-500">{t.fullName} *</label>
                   <input value={supForm.name} maxLength={160} onChange={(e) => setSupForm({ ...supForm, name: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-bold" />
                 </div>
-                <input value={supForm.companyName} onChange={(e) => setSupForm({ ...supForm, companyName: e.target.value })} placeholder={t.companyName} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
-                <input value={supForm.contactPerson} onChange={(e) => setSupForm({ ...supForm, contactPerson: e.target.value })} placeholder={isAr ? 'مسؤول التواصل' : 'Contact Person'} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{t.companyName}</label>
+                  <input value={supForm.companyName} onChange={(e) => setSupForm({ ...supForm, companyName: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{isAr ? 'مسؤول التواصل' : 'Contact Person'}</label>
+                  <input value={supForm.contactPerson} onChange={(e) => setSupForm({ ...supForm, contactPerson: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
                 <div>
                   <label className="text-[11px] font-bold text-slate-500">{t.phone} *</label>
                   <input type="tel" value={supForm.phone} onChange={(e) => setSupForm({ ...supForm, phone: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
@@ -376,38 +444,77 @@ export const SuppliersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                   <label className="text-[11px] font-bold text-slate-500">{t.whatsapp}</label>
                   <input type="tel" value={supForm.whatsapp} onChange={(e) => setSupForm({ ...supForm, whatsapp: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
                 </div>
-                <input type="email" value={supForm.email} onChange={(e) => setSupForm({ ...supForm, email: e.target.value })} placeholder={t.email} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
-                <input value={supForm.category} onChange={(e) => setSupForm({ ...supForm, category: e.target.value })} placeholder={t.category} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
-                <select value={supForm.supplierType} onChange={(e) => setSupForm({ ...supForm, supplierType: e.target.value as SupplierType })} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs">
-                  <option value="local">{isAr ? 'محلي' : 'Local'}</option>
-                  <option value="importer">{isAr ? 'مستورد' : 'Importer'}</option>
-                  <option value="manufacturer">{isAr ? 'مصنع' : 'Manufacturer'}</option>
-                  <option value="distributor">{isAr ? 'موزع' : 'Distributor'}</option>
-                  <option value="services">{isAr ? 'خدمات' : 'Services'}</option>
-                  <option value="primary">{isAr ? 'مورد رئيسي' : 'Primary'}</option>
-                  <option value="secondary">{isAr ? 'مورد فرعي' : 'Secondary'}</option>
-                </select>
-                <select value={supForm.status} onChange={(e) => setSupForm({ ...supForm, status: e.target.value as PartyStatus })} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs">
-                  <option value="active">{isAr ? 'نشط' : 'Active'}</option>
-                  <option value="paused">{isAr ? 'متوقف' : 'Paused'}</option>
-                  <option value="blocked">{isAr ? 'محظور' : 'Blocked'}</option>
-                </select>
-                <input value={supForm.city} onChange={(e) => setSupForm({ ...supForm, city: e.target.value })} placeholder={isAr ? 'المدينة' : 'City'} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
-                <input value={supForm.address} onChange={(e) => setSupForm({ ...supForm, address: e.target.value })} placeholder={t.address} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
-                <input value={supForm.mapUrl} onChange={(e) => setSupForm({ ...supForm, mapUrl: e.target.value })} placeholder={isAr ? 'رابط الخريطة' : 'Map URL'} className="sm:col-span-2 px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{t.email}</label>
+                  <input type="email" value={supForm.email} onChange={(e) => setSupForm({ ...supForm, email: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{t.category}</label>
+                  <input value={supForm.category} onChange={(e) => setSupForm({ ...supForm, category: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{isAr ? 'تصنيف المورد' : 'Supplier Type'}</label>
+                  <select value={supForm.supplierType} onChange={(e) => setSupForm({ ...supForm, supplierType: e.target.value as SupplierType })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs">
+                    <option value="local">{isAr ? 'محلي' : 'Local'}</option>
+                    <option value="importer">{isAr ? 'مستورد' : 'Importer'}</option>
+                    <option value="manufacturer">{isAr ? 'مصنع' : 'Manufacturer'}</option>
+                    <option value="distributor">{isAr ? 'موزع' : 'Distributor'}</option>
+                    <option value="services">{isAr ? 'خدمات' : 'Services'}</option>
+                    <option value="primary">{isAr ? 'مورد رئيسي' : 'Primary'}</option>
+                    <option value="secondary">{isAr ? 'مورد فرعي' : 'Secondary'}</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{t.status}</label>
+                  <select value={supForm.status} onChange={(e) => setSupForm({ ...supForm, status: e.target.value as PartyStatus })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs">
+                    <option value="active">{isAr ? 'نشط' : 'Active'}</option>
+                    <option value="paused">{isAr ? 'متوقف' : 'Paused'}</option>
+                    <option value="blocked">{isAr ? 'محظور' : 'Blocked'}</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{isAr ? 'المدينة' : 'City'}</label>
+                  <input value={supForm.city} onChange={(e) => setSupForm({ ...supForm, city: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{t.address}</label>
+                  <input value={supForm.address} onChange={(e) => setSupForm({ ...supForm, address: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="text-[11px] font-bold text-slate-500">{isAr ? 'رابط الخريطة' : 'Google Maps URL'}</label>
+                  <input value={supForm.mapUrl} onChange={(e) => setSupForm({ ...supForm, mapUrl: e.target.value })} placeholder="https://maps.google.com/..." className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
               </div>
             )}
 
             {formSection === 'bank' && (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <input value={supForm.taxNumber} onChange={(e) => setSupForm({ ...supForm, taxNumber: e.target.value })} placeholder={t.taxNumber} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
-                <input value={supForm.crNumber} onChange={(e) => setSupForm({ ...supForm, crNumber: e.target.value })} placeholder={t.crNumber} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
-                <input value={supForm.bankName} onChange={(e) => setSupForm({ ...supForm, bankName: e.target.value })} placeholder={isAr ? 'اسم البنك' : 'Bank Name'} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
-                <input value={supForm.bankAccount} onChange={(e) => setSupForm({ ...supForm, bankAccount: e.target.value })} placeholder={t.accountNumberLabel} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
-                <input value={supForm.iban} onChange={(e) => setSupForm({ ...supForm, iban: e.target.value })} placeholder="IBAN" className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
-                <select value={supForm.currency} onChange={(e) => setSupForm({ ...supForm, currency: e.target.value as CurrencyCode })} className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs">
-                  {enabledCurrencies.map((c) => <option key={c} value={c}>{c}</option>)}
-                </select>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{t.taxNumber}</label>
+                  <input value={supForm.taxNumber} onChange={(e) => setSupForm({ ...supForm, taxNumber: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{t.crNumber}</label>
+                  <input value={supForm.crNumber} onChange={(e) => setSupForm({ ...supForm, crNumber: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{isAr ? 'اسم البنك' : 'Bank Name'}</label>
+                  <input value={supForm.bankName} onChange={(e) => setSupForm({ ...supForm, bankName: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{t.accountNumberLabel}</label>
+                  <input value={supForm.bankAccount} onChange={(e) => setSupForm({ ...supForm, bankAccount: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">IBAN</label>
+                  <input value={supForm.iban} onChange={(e) => setSupForm({ ...supForm, iban: e.target.value })} placeholder="SA..." className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{t.currency}</label>
+                  <select value={supForm.currency} onChange={(e) => setSupForm({ ...supForm, currency: e.target.value as CurrencyCode })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs">
+                    {enabledCurrencies.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
                 <div>
                   <label className="text-[11px] font-bold text-slate-500">{isAr ? 'رصيد افتتاحي' : 'Opening Balance'}</label>
                   <input type="number" min={0} step="0.01" value={supForm.openingBalance} onChange={(e) => setSupForm({ ...supForm, openingBalance: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
@@ -445,8 +552,14 @@ export const SuppliersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                     <input type="number" min={0} step="0.01" value={supForm.lastPurchasePrice} onChange={(e) => setSupForm({ ...supForm, lastPurchasePrice: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs font-mono" />
                   </div>
                 </div>
-                <input value={supForm.suppliedItems} onChange={(e) => setSupForm({ ...supForm, suppliedItems: e.target.value })} placeholder={isAr ? 'الأصناف التي يوردها المورد' : 'Supplied Items'} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
-                <input value={supForm.supplyTerms} onChange={(e) => setSupForm({ ...supForm, supplyTerms: e.target.value })} placeholder={isAr ? 'شروط التوريد والتسليم' : 'Supply & Delivery Terms'} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{isAr ? 'الأصناف المورّدة' : 'Supplied Items'}</label>
+                  <input value={supForm.suppliedItems} onChange={(e) => setSupForm({ ...supForm, suppliedItems: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{isAr ? 'شروط التوريد والتسليم' : 'Supply & Delivery Terms'}</label>
+                  <input value={supForm.supplyTerms} onChange={(e) => setSupForm({ ...supForm, supplyTerms: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 p-3 rounded-xl bg-slate-50 dark:bg-[#0A120F] border">
                   <div>
@@ -491,8 +604,14 @@ export const SuppliersScreen: React.FC<ScreenProps> = ({ store, onNavigate }) =>
                     <span className="text-xs text-emerald-600 font-bold">✓ {isAr ? 'مرفق محفوظ' : 'Attached'}</span>
                   )}
                 </div>
-                <textarea rows={2} value={supForm.contractsNotes} onChange={(e) => setSupForm({ ...supForm, contractsNotes: e.target.value })} placeholder={isAr ? 'ملاحظات العقود وأسعار الشراء الخاصة' : 'Contracts & Special Pricing Notes'} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
-                <textarea rows={2} value={supForm.notes} onChange={(e) => setSupForm({ ...supForm, notes: e.target.value })} placeholder={t.notes} className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{isAr ? 'ملاحظات العقود وأسعار الشراء الخاصة' : 'Contracts & Special Pricing Notes'}</label>
+                  <textarea rows={2} value={supForm.contractsNotes} onChange={(e) => setSupForm({ ...supForm, contractsNotes: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">{t.notes}</label>
+                  <textarea rows={2} value={supForm.notes} onChange={(e) => setSupForm({ ...supForm, notes: e.target.value })} className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0A120F] border text-xs" />
+                </div>
               </div>
             )}
 

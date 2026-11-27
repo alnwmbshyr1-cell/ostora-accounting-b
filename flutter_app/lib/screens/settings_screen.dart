@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import '../l10n/app_strings.dart';
+import '../models/models.dart';
 import '../services/app_provider.dart';
 import '../services/db_service.dart';
 import '../theme/app_theme.dart';
@@ -114,11 +115,85 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 trailing: DropdownButton<String>(
                   value: prov.settings.currency,
                   underline: const SizedBox.shrink(),
-                  items: ['SAR', 'YER', 'EGP', 'AED']
+                  items: kAllSupportedCurrencies
                       .map((c) => DropdownMenuItem(value: c, child: Text(c)))
                       .toList(),
                   onChanged: (c) {
                     if (c != null) prov.updateSettings(prov.settings.copyWith(currency: c));
+                  },
+                ),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.visibility_rounded),
+                title: Text(AppStrings.t('display_currency', ar)),
+                trailing: DropdownButton<String>(
+                  value: kAllSupportedCurrencies.contains(prov.settings.displayCurrency)
+                      ? prov.settings.displayCurrency
+                      : prov.settings.currency,
+                  underline: const SizedBox.shrink(),
+                  items: kAllSupportedCurrencies
+                      .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                      .toList(),
+                  onChanged: (c) {
+                    if (c != null) prov.updateSettings(prov.settings.copyWith(displayCurrency: c));
+                  },
+                ),
+              ),
+              const Divider(height: 1),
+              SwitchListTile(
+                secondary: const Icon(Icons.sync_rounded),
+                title: Text(AppStrings.t('fx_auto_update', ar)),
+                value: prov.settings.fxAutoUpdate,
+                onChanged: (v) => prov.updateSettings(prov.settings.copyWith(fxAutoUpdate: v)),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.schedule_rounded),
+                title: Text(AppStrings.t('fx_interval', ar)),
+                trailing: DropdownButton<int>(
+                  value: [1, 6, 12, 24].contains(prov.settings.fxAutoIntervalHours)
+                      ? prov.settings.fxAutoIntervalHours
+                      : 6,
+                  underline: const SizedBox.shrink(),
+                  items: const [1, 6, 12, 24]
+                      .map((h) => DropdownMenuItem(value: h, child: Text('${h}h')))
+                      .toList(),
+                  onChanged: (h) {
+                    if (h != null) prov.updateSettings(prov.settings.copyWith(fxAutoIntervalHours: h));
+                  },
+                ),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.style_rounded),
+                title: Text(AppStrings.t('currency_display_style', ar)),
+                trailing: DropdownButton<String>(
+                  value: prov.settings.currencyDisplayStyle,
+                  underline: const SizedBox.shrink(),
+                  items: [
+                    DropdownMenuItem(value: 'symbol', child: Text(ar ? 'الرمز' : 'Symbol')),
+                    DropdownMenuItem(value: 'code', child: Text(ar ? 'الرمز ISO' : 'ISO Code')),
+                  ],
+                  onChanged: (v) {
+                    if (v != null) prov.updateSettings(prov.settings.copyWith(currencyDisplayStyle: v));
+                  },
+                ),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.pin_rounded),
+                title: Text(AppStrings.t('currency_decimals', ar)),
+                trailing: DropdownButton<String>(
+                  value: prov.settings.currencyDecimalMode,
+                  underline: const SizedBox.shrink(),
+                  items: [
+                    DropdownMenuItem(value: 'auto', child: Text(ar ? 'تلقائي' : 'Auto')),
+                    const DropdownMenuItem(value: '2', child: Text('2')),
+                    const DropdownMenuItem(value: '0', child: Text('0')),
+                  ],
+                  onChanged: (v) {
+                    if (v != null) prov.updateSettings(prov.settings.copyWith(currencyDecimalMode: v));
                   },
                 ),
               ),
@@ -128,6 +203,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 title: Text(AppStrings.t('dark_mode', ar)),
                 value: prov.settings.isDarkMode,
                 onChanged: (v) => prov.updateSettings(prov.settings.copyWith(isDarkMode: v)),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.shield_outlined, color: AppTheme.primaryEmerald),
+                title: Text(AppStrings.t('privacy_policy', ar)),
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: () => showDialog(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: Text(AppStrings.t('privacy_policy', ar)),
+                    content: Text(
+                      ar
+                          ? 'تُحفظ بيانات منشأتك محلياً وتُزامن بأمان عبر Firebase Auth & Firestore مع عزل لمساحات العمل وعدم تخزين أي كلمات مرور للموظفين. للتواصل: alnwmbshyr1@gmail.com.'
+                          : 'Workspace records persist locally and sync via Firebase Auth & Firestore with strict tenant isolation and zero employee password storage. Contact: alnwmbshyr1@gmail.com.',
+                    ),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(ctx), child: Text(ar ? 'إغلاق' : 'Close')),
+                    ],
+                  ),
+                ),
               ),
             ],
           ),

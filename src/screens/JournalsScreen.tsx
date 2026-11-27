@@ -1,10 +1,11 @@
 import React, { useMemo, useState } from 'react';
-import { BookOpen, Edit2, Paperclip, Plus, Search, Trash2, X } from 'lucide-react';
+import { BookOpen, Download, Edit2, Paperclip, Plus, Scale, Search, Trash2, X } from 'lucide-react';
 import { strings } from '../data/translations';
 import { computeAccountLedger, computeTrialBalanceFromJournals } from '../domain/accounting';
 import { fromHalalas, toHalalas } from '../domain/halala';
 import { JournalLine } from '../types/erp';
 import { formatCurrency, formatCurrencyNumber } from '../utils/currencies';
+import { downloadTextFile } from '../utils/export';
 import { compressImageToBase64 } from '../utils/image';
 import { ScreenProps } from './types';
 
@@ -17,13 +18,14 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
 
   const [viewMode, setViewMode] = useState<'entries' | 'ledger'>('entries');
   const [entrySearch, setEntrySearch] = useState('');
-  const [typeFilter, setTypeFilter] = useState<'all' | 'manual' | 'auto'>('all');
+  const [typeFilter, setTypeFilter] = useState<'all' | 'manual' | 'auto' | 'closing'>('all');
+  const [costCenterFilter, setCostCenterFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'approved' | 'draft'>('all');
   const [ledgerFilter, setLedgerFilter] = useState('');
   const [jrnModal, setJrnModal] = useState<{ open: boolean; editId?: string }>({ open: false });
   const [jrnForm, setJrnForm] = useState({
     date: new Date().toISOString().slice(0, 10),
-    entryType: 'manual' as 'manual' | 'auto',
+    entryType: 'manual' as 'manual' | 'auto' | 'closing',
     description: '',
     reference: 'MANUAL',
     branchId: state.branches[0]?.id ?? '',
@@ -51,10 +53,16 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
     [ledgerFilter, state.journals],
   );
 
+  const costCenters = useMemo(
+    () => Array.from(new Set(state.journals.map((j) => j.costCenter).filter((x): x is string => Boolean(x)))),
+    [state.journals],
+  );
+
   const qSearch = entrySearch.trim().toLowerCase();
   const visibleJournals = state.journals.filter((j) => {
-    const inferredType = j.entryType ?? (j.reference === 'MANUAL' ? 'manual' : 'auto');
+    const inferredType = j.entryType ?? (j.reference === 'MANUAL' ? 'manual' : j.reference.startsWith('CLOSE-') ? 'closing' : 'auto');
     if (typeFilter !== 'all' && inferredType !== typeFilter) return false;
+    if (costCenterFilter && (j.costCenter ?? '') !== costCenterFilter) return false;
     if (statusFilter !== 'all' && (j.status ?? 'approved') !== statusFilter) return false;
     if (!qSearch) return true;
     return (
@@ -124,30 +132,77 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
           </span>
         </div>
 
-        <button
-          onClick={() => {
-            setJrnError('');
-            setJrnForm({
-              date: new Date().toISOString().slice(0, 10),
-              entryType: 'manual',
-              description: '',
-              reference: 'MANUAL',
-              branchId: state.settings.defaultBranchId ?? state.branches[0]?.id ?? '',
-              costCenter: '',
-              status: 'approved',
-              attachmentBase64: '',
-            });
-            setJrnLines([
-              { account: '1010 - النقدية والبنوك', debit: '', credit: '0', description: '' },
-              { account: '4010 - إيرادات المبيعات', debit: '0', credit: '', description: '' },
-            ]);
-            setJrnModal({ open: true });
-          }}
-          className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0A3D2C] text-white font-bold text-sm cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          <span>{t.addJournal}</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              const csv = ['ID,Date,Reference,Type,Status,CostCenter,Description,TotalDebit,TotalCredit']
+                .concat(
+                  visibleJournals.map((j) => {
+                    const td = fromHalalas(j.lines.reduce((s, l) => s + toHalalas(l.debit), 0));
+                    const tc = fromHalalas(j.lines.reduce((s, l) => s + toHalalas(l.credit), 0));
+                    return `${j.id},${j.date.slice(0, 10)},${j.reference},${j.entryType ?? 'manual'},${j.status ?? 'approved'},"${(j.costCenter ?? '').replace(/"/g, '""')}","${j.description.replace(/"/g, '""')}",${td},${tc}`;
+                  }),
+                )
+                .join('\n');
+              downloadTextFile('ostora_journals.csv', csv);
+            }}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-[#1F332B] bg-white dark:bg-[#121E19] text-xs font-bold cursor-pointer"
+          >
+            <Download className="w-4 h-4" />
+            <span>{t.exportCsv}</span>
+          </button>
+          <button
+            onClick={() => {
+              setJrnError('');
+              setJrnForm({
+                date: new Date().toISOString().slice(0, 10),
+                entryType: 'manual',
+                description: '',
+                reference: 'MANUAL',
+                branchId: state.settings.defaultBranchId ?? state.branches[0]?.id ?? '',
+                costCenter: '',
+                status: 'approved',
+                attachmentBase64: '',
+              });
+              setJrnLines([
+                { account: '1010 - النقدية والبنوك', debit: '', credit: '0', description: '' },
+                { account: '4010 - إيرادات المبيعات', debit: '0', credit: '', description: '' },
+              ]);
+              setJrnModal({ open: true });
+            }}
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0A3D2C] text-white font-bold text-sm cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>{t.addJournal}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* KPI Summary Strip */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'إجمالي القيود المرحّلة' : 'Total Journal Entries'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums mt-1 block">{state.journals.length}</span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'إجمالي المدين' : 'Total Debit'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-emerald-700 dark:text-emerald-400 mt-1 block">
+            {formatCurrency(trialSummary.totalDebit, cur, { isAr })}
+          </span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'إجمالي الدائن' : 'Total Credit'}</span>
+          <span className="text-lg font-extrabold font-mono tabular-nums text-rose-600 mt-1 block">
+            {formatCurrency(trialSummary.totalCredit, cur, { isAr })}
+          </span>
+        </div>
+        <div className="bg-white dark:bg-[#121E19] border border-[#C9A227]/35 rounded-[20px] p-4">
+          <span className="text-[11px] font-bold text-slate-500 block">{isAr ? 'حالة التوازن العام' : 'General Ledger Balance'}</span>
+          <span className={`text-sm font-extrabold mt-1.5 block ${trialSummary.isBalanced ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-600'}`}>
+            {trialSummary.isBalanced ? (isAr ? 'متوازن 100% ✓' : 'Balanced 100% ✓') : (isAr ? 'يوجد فرق محاسبي' : 'Variance Detected')}
+          </span>
+        </div>
       </div>
 
       {viewMode === 'entries' && (
@@ -162,11 +217,20 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
               className="w-full ps-10 pe-4 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs sm:text-sm outline-none focus:border-[#0A3D2C]"
             />
           </div>
-          <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as 'all' | 'manual' | 'auto')} className="px-3 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold">
+          <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as 'all' | 'manual' | 'auto' | 'closing')} className="px-3 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold">
             <option value="all">{isAr ? 'كل الأنواع' : 'All Types'}</option>
             <option value="manual">{isAr ? 'قيد يدوي' : 'Manual'}</option>
             <option value="auto">{isAr ? 'قيد آلي' : 'Automatic'}</option>
+            <option value="closing">{isAr ? 'قيد إقفال سنوي' : 'Year-End Closing'}</option>
           </select>
+          {costCenters.length > 0 && (
+            <select value={costCenterFilter} onChange={(e) => setCostCenterFilter(e.target.value)} className="px-3 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold">
+              <option value="">{isAr ? 'كل مراكز التكلفة' : 'All Cost Centers'}</option>
+              {costCenters.map((cc) => (
+                <option key={cc} value={cc}>{cc}</option>
+              ))}
+            </select>
+          )}
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as 'all' | 'approved' | 'draft')} className="px-3 py-2 rounded-xl bg-white dark:bg-[#121E19] border border-slate-200 dark:border-[#1F332B] text-xs font-bold">
             <option value="all">{t.all}</option>
             <option value="approved">{isAr ? 'معتمد' : 'Approved'}</option>
@@ -257,6 +321,11 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
                         </span>
                         {j.status === 'draft' && (
                           <span className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-[10px] font-bold">{t.draft}</span>
+                        )}
+                        {(j.entryType === 'closing' || j.reference.startsWith('CLOSE-')) && (
+                          <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[10px] font-bold">
+                            {isAr ? 'إقفال سنوي' : 'Year-End Closing'}
+                          </span>
                         )}
                         {j.costCenter && (
                           <span className="px-1.5 py-0.5 rounded bg-[#0A3D2C]/10 text-[#0A3D2C] dark:text-[#C9A227] text-[10px] font-bold">{j.costCenter}</span>
@@ -385,7 +454,14 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
               ))}
             </datalist>
 
-            <div className="space-y-2 max-h-60 overflow-y-auto">
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              <div className="grid grid-cols-12 gap-1.5 px-1 text-[10px] font-bold text-slate-500">
+                <span className="col-span-4">{t.account} *</span>
+                <span className="col-span-3">{isAr ? 'بيان السطر' : 'Line Note'}</span>
+                <span className="col-span-2 text-center">{t.debit}</span>
+                <span className="col-span-2 text-center">{t.credit}</span>
+                <span className="col-span-1"></span>
+              </div>
               {jrnLines.map((line, idx) => (
                 <div key={idx} className="grid grid-cols-12 gap-1.5 items-center">
                   <input
@@ -450,14 +526,21 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-50 dark:bg-[#0A120F] border text-xs font-bold cursor-pointer">
-                <Paperclip className="w-3.5 h-3.5 text-[#0A3D2C] dark:text-[#C9A227]" />
-                <span>{isAr ? 'مرفق مستند القيد' : 'Attach Voucher'}</span>
-                <input type="file" accept="image/*,application/pdf" onChange={handleAttachment} className="hidden" />
-              </label>
-              {jrnForm.attachmentBase64 && (
-                <span className="text-xs text-emerald-600 font-bold">✓ {isAr ? 'مرفق محفوظ' : 'Attached'}</span>
-              )}
+              <div className="flex items-center gap-2">
+                <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-50 dark:bg-[#0A120F] border text-xs font-bold cursor-pointer">
+                  <Paperclip className="w-3.5 h-3.5 text-[#0A3D2C] dark:text-[#C9A227]" />
+                  <span>{isAr ? 'مرفق مستند القيد' : 'Attach Voucher'}</span>
+                  <input type="file" accept="image/*,application/pdf" onChange={handleAttachment} className="hidden" />
+                </label>
+                {jrnForm.attachmentBase64 && (
+                  <>
+                    {jrnForm.attachmentBase64.startsWith('data:image/') && (
+                      <img src={jrnForm.attachmentBase64} alt="Voucher" className="h-8 w-8 rounded object-cover border" />
+                    )}
+                    <span className="text-xs text-emerald-600 font-bold">✓ {isAr ? 'مرفق محفوظ' : 'Attached'}</span>
+                  </>
+                )}
+              </div>
               <select value={jrnForm.status} onChange={(e) => setJrnForm({ ...jrnForm, status: e.target.value as 'draft' | 'approved' })} className="px-3 py-1.5 rounded-lg bg-slate-50 dark:bg-[#0A120F] border text-xs font-bold">
                 <option value="approved">{isAr ? 'معتمد (ترحيل)' : 'Approved'}</option>
                 <option value="draft">{t.draft}</option>
@@ -468,9 +551,32 @@ export const JournalsScreen: React.FC<ScreenProps> = ({ store }) => {
               <span>
                 {t.debit}: {formatCurrencyNumber(fromHalalas(sumDebitH), cur)} · {t.credit}: {formatCurrencyNumber(fromHalalas(sumCreditH), cur)} · {isAr ? 'الفرق:' : 'Diff:'} {formatCurrency(fromHalalas(Math.abs(sumDebitH - sumCreditH)), cur, { isAr })}
               </span>
-              <span className={isBalanced ? 'text-emerald-600' : 'text-amber-600'}>
-                {isBalanced ? (isAr ? 'متوازن ✓' : 'Balanced ✓') : isAr ? 'غير متوازن' : 'Unbalanced'}
-              </span>
+              <div className="flex items-center gap-2">
+                {!isBalanced && (sumDebitH > 0 || sumCreditH > 0) && jrnLines.length >= 2 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = [...jrnLines];
+                      const lastIdx = next.length - 1;
+                      const otherDebitH = next.slice(0, lastIdx).reduce((s, l) => s + Math.max(0, toHalalas(parseFloat(l.debit) || 0)), 0);
+                      const otherCreditH = next.slice(0, lastIdx).reduce((s, l) => s + Math.max(0, toHalalas(parseFloat(l.credit) || 0)), 0);
+                      if (otherDebitH > otherCreditH) {
+                        next[lastIdx] = { ...next[lastIdx], debit: '0', credit: String(fromHalalas(otherDebitH - otherCreditH)) };
+                      } else if (otherCreditH > otherDebitH) {
+                        next[lastIdx] = { ...next[lastIdx], debit: String(fromHalalas(otherCreditH - otherDebitH)), credit: '0' };
+                      }
+                      setJrnLines(next);
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#C9A227] text-slate-950 font-sans text-[11px] font-extrabold cursor-pointer"
+                  >
+                    <Scale className="w-3 h-3" />
+                    <span>{isAr ? 'موازنة تلقائية' : 'Auto-Balance'}</span>
+                  </button>
+                )}
+                <span className={isBalanced ? 'text-emerald-600' : 'text-amber-600'}>
+                  {isBalanced ? (isAr ? 'متوازن ✓' : 'Balanced ✓') : isAr ? 'غير متوازن' : 'Unbalanced'}
+                </span>
+              </div>
             </div>
 
             {jrnError && <p className="text-xs font-bold text-red-600">{jrnError}</p>}

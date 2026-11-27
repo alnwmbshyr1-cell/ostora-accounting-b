@@ -1,3 +1,14 @@
+import type { LanguageCode } from '../types/erp';
+
+export const LANGUAGE_OPTIONS: { code: LanguageCode; nativeLabel: string }[] = [
+  { code: 'ar', nativeLabel: 'العربية (RTL)' },
+  { code: 'en', nativeLabel: 'English (LTR)' },
+  { code: 'fr', nativeLabel: 'Français' },
+  { code: 'es', nativeLabel: 'Español' },
+  { code: 'tr', nativeLabel: 'Türkçe' },
+  { code: 'ur', nativeLabel: 'اردو (RTL)' },
+];
+
 export const strings = {
   ar: {
     appName: 'أسطورة المحاسبة',
@@ -435,6 +446,8 @@ export const strings = {
     downloadPdfFile: 'تحميل ملف PDF',
     downloadZatcaXml: 'تنزيل XML فاتورة (ZATCA 2)',
     amountInWords: 'المبلغ كتابةً',
+    actions: 'الإجراءات',
+    loading: 'جاري التحميل...',
   },
   en: {
     appName: 'Legend of Accounting',
@@ -871,6 +884,8 @@ export const strings = {
     downloadPdfFile: 'Download PDF',
     downloadZatcaXml: 'Download ZATCA XML (UBL 2.1)',
     amountInWords: 'Amount in Words',
+    actions: 'Actions',
+    loading: 'Loading...',
   },
 } as const;
 

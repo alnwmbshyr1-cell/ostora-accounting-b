@@ -1,0 +1,46 @@
+name: Deploy Web ERP
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-deploy:
+    name: Build & Deploy Bundle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify checks before build
+        run: |
+          npm run lint
+          npm run test
+          npx eslint firestore.rules
+
+      - name: Build production web assets
+        run: npm run build
+
+      - name: Upload production dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ostora-erp-web-dist
+          path: dist
+
+      - name: Deploy to Firebase Hosting (when FIREBASE_TOKEN is configured)
+        if: ${{ secrets.FIREBASE_TOKEN != '' }}
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_TOKEN }}
+          channelId: live
